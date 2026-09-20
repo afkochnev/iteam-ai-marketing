@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: iteam_test
+          POSTGRES_USER: iteam
+          POSTGRES_PASSWORD: iteam
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U iteam -d iteam_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://iteam:iteam@localhost:5432/iteam_test
+      JWT_SECRET: test-only-secret
+      ADMIN_EMAIL: admin@example.com
+      ADMIN_PASSWORD: test-password
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.lock
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy app
+      - run: alembic upgrade head
+      - run: alembic check
+      - run: pytest
+      - run: alembic downgrade base
+      - run: alembic upgrade head
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build
