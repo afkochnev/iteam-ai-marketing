@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     admin_email: str = "admin@example.com"
     admin_password: str = "change-me-before-use"
     admin_full_name: str = "iTeam Administrator"
+    openai_api_key: str | None = None
+    openai_default_model: str | None = None
+    openai_agents_disable_tracing: bool = True
+    agent_max_turns: int = 8
+    agent_run_timeout_seconds: int = 180
+    agent_max_retries: int = 3
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

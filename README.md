@@ -1,6 +1,6 @@
 # iTeam AI Marketing Department
 
-Основа web-приложения для управляемого AI-отдела маркетинга iTeam. Репозиторий развивается последовательно по master specification. Текущий scope: **Итерация 4 — Tasks и Task Dependencies**.
+Основа web-приложения для управляемого AI-отдела маркетинга iTeam. Репозиторий развивается последовательно по master specification. Текущий scope: **Итерация 5 — Agent Runtime**.
 
 ## Архитектура
 
@@ -84,7 +84,7 @@ docker compose exec backend alembic downgrade base
 docker compose exec backend python -m app.seed
 ```
 
-Миграции последовательно создают пользователей, конфигурацию агентов и Campaigns. Все миграции обратимы; актуальность ORM metadata проверяется командой `alembic check`.
+Миграции последовательно создают пользователей, конфигурацию агентов, Campaigns, Tasks, AgentRuns и ToolCalls. Все миграции обратимы; актуальность ORM metadata проверяется командой `alembic check`.
 
 ## Authentication
 
@@ -111,7 +111,7 @@ docker compose exec backend python -m app.seed
 - не перезаписывает изменённые prompt, model, status, autonomy level или description;
 - не включает обратно отключённые tools и не сбрасывает `requires_approval`/settings.
 
-Admin может изменять конфигурацию и tool permissions на `/agents`; Manager имеет read-only доступ. Реального Agent Runtime, OpenAI API и исполняемых tool-функций в этой итерации нет.
+Admin может изменять конфигурацию и tool permissions на `/agents`; Manager имеет read-only доступ. Runtime использует сохранённые в БД prompt/model snapshots, но исполняемых tool-функций в текущей итерации ещё нет.
 
 Agents API:
 
@@ -156,11 +156,41 @@ Task API:
 - `POST /api/v1/tasks/{id}/dependencies`
 - `DELETE /api/v1/tasks/{id}/dependencies/{dependency_task_id}`
 
-AI-выполнение задач ещё не реализовано. Manual start/complete endpoints используются только для проверки workflow engine; в следующих итерациях эти transitions будет инициировать worker/AgentRunner.
+Manual start/complete endpoints остаются доступны для проверки workflow engine. Для `MANUAL` Task с назначенным активным агентом также доступен реальный фоновый AI-run; остальные TaskType намеренно заблокированы до соответствующих бизнес-итераций.
+
+## Agent Runtime
+
+Backend использует зафиксированный `openai-agents==0.10.5`. SDK выполняет OpenAI-модели через Responses API. HTTP endpoint только валидирует запрос, создаёт `AgentRun` со статусом `QUEUED` и ставит Celery job в Redis; вызов `await Runner.run(...)` выполняется worker-процессом вне HTTP request-response цикла.
+
+Runtime универсален: он загружает из PostgreSQL prompt, model override и enabled tool permissions назначенного агента. Фактическая модель выбирается из `agents.model`, затем из `OPENAI_DEFAULT_MODEL`. System prompt и его SHA-256 сохраняются в каждом AgentRun. Task context передаётся как user input и не дописывается в system prompt.
+
+Lifecycle:
+
+```text
+Task READY → AgentRun QUEUED → RUNNING → COMPLETED/FAILED/CANCELLED
+                Task IN_PROGRESS → COMPLETED/FAILED/CANCELLED
+```
+
+Успешное завершение использует существующий dependency resolver и переводит доступные downstream Tasks из `BLOCKED` в `READY`. Partial unique index PostgreSQL допускает только один активный run (`QUEUED`, `RUNNING`, `WAITING_APPROVAL`) на Task. Повторная Celery delivery идемпотентна. При отмене Task во время model call поздний ответ сохраняется только в AgentRun и не переводит Task обратно в `COMPLETED`.
+
+Ограничения runtime задаются `AGENT_MAX_TURNS`, `AGENT_RUN_TIMEOUT_SECONDS` и `AGENT_MAX_RETRIES`. Retry — явная операция для `FAILED` Task, создающая новый AgentRun без удаления истории. Usage (`request_count`, input/output/total tokens) сохраняется после успешного SDK run; `estimated_cost` пока остаётся `null`.
+
+SDK tracing регулируется `OPENAI_AGENTS_DISABLE_TRACING`. Trace metadata содержит только campaign/task/agent/run identifiers, а передача sensitive inputs/outputs в tracing отключена. Собственные AgentRun и ToolCall остаются бизнес-аудитом приложения. Tool registry пока пуст: runtime передаёт модели только пересечение enabled permissions и реально зарегистрированных implementations, поэтому будущие seeded permissions не ломают `MANUAL` run.
+
+Agent Runtime API (Admin и Manager):
+
+- `POST /api/v1/tasks/{id}/run`
+- `POST /api/v1/tasks/{id}/retry`
+- `GET /api/v1/agent-runs?task_id=...&agent_id=...&campaign_id=...&status=...`
+- `GET /api/v1/agent-runs/{id}`
+
+Для ручного live smoke test настройте `OPENAI_API_KEY` и `OPENAI_DEFAULT_MODEL`, создайте `MANUAL` Task с активным Agent и нажмите «Запустить AI». В CI и обычном `pytest` `Runner.run` подменяется; реальные API credits не расходуются.
+
+**Iteration 5 доказывает только универсальное AI-выполнение.** Наличие Marketing Director, Knowledge Keeper, Writer и SMM Manager в БД ещё не означает, что они выполняют свои бизнес-типы задач. CampaignPlan, knowledge search, создание статей и SMM появятся в следующих итерациях.
 
 ## Environment
 
-Скопируйте `.env.example` в `.env`, замените `JWT_SECRET`, `ADMIN_PASSWORD` и остальные placeholder-значения. Не коммитьте реальные секреты. `OPENAI_API_KEY` пока не используется.
+Скопируйте `.env.example` в `.env`, замените `JWT_SECRET`, `ADMIN_PASSWORD` и остальные placeholder-значения. Не коммитьте реальные секреты. `OPENAI_API_KEY` передаётся только backend и worker через server-side `.env`; frontend получает только `NEXT_PUBLIC_API_URL`.
 
 ## Тестовая база данных
 

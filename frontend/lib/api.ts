@@ -17,6 +17,8 @@ export interface TaskReference { id: string; title: string; status: TaskStatus; 
 export interface TaskListItem { id: string; campaign_id: string; campaign: { id: string; name: string }; task_type: TaskType; title: string; assigned_agent: { id: string; name: string; slug: string } | null; priority: TaskPriority; status: TaskStatus; deadline: string | null; created_at: string; updated_at: string; }
 export interface Task extends TaskListItem { parent_task_id: string | null; parent_task: TaskReference | null; description: string | null; assigned_agent_id: string | null; input_data: Record<string, unknown>; output_data: Record<string, unknown>; requires_approval: boolean; error_message: string | null; retry_count: number; started_at: string | null; completed_at: string | null; dependencies: TaskReference[]; dependents: TaskReference[]; }
 export interface TaskInput { campaign_id: string; parent_task_id?: string | null; task_type: TaskType; title: string; description?: string | null; assigned_agent_id?: string | null; priority: TaskPriority; input_data?: Record<string, unknown>; requires_approval?: boolean; deadline?: string | null; dependency_ids?: string[]; }
+export type AgentRunStatus = "QUEUED" | "RUNNING" | "WAITING_APPROVAL" | "COMPLETED" | "FAILED" | "CANCELLED";
+export interface AgentRun { id: string; task_id: string; agent_id: string; campaign_id: string; status: AgentRunStatus; model: string; created_at: string; agent?: { id: string; name: string; slug: string }; output_data?: { text?: string } | null; request_count?: number | null; input_tokens?: number | null; output_tokens?: number | null; total_tokens?: number | null; trace_id?: string | null; error_code?: string | null; error_message?: string | null; started_at?: string | null; completed_at?: string | null; }
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
@@ -63,6 +65,13 @@ export const tasksApi = {
   start: (id: string) => request<Task>(`/tasks/${id}/start`, { method: "POST" }),
   complete: (id: string, output_data: Record<string, unknown> = {}) => request<Task>(`/tasks/${id}/complete`, { method: "POST", body: JSON.stringify({ output_data }) }),
   cancel: (id: string) => request<Task>(`/tasks/${id}/cancel`, { method: "POST" }),
+  run: (id: string) => request<AgentRun>(`/tasks/${id}/run`, { method: "POST" }),
+  retry: (id: string) => request<AgentRun>(`/tasks/${id}/retry`, { method: "POST" }),
   addDependency: (id: string, depends_on_task_id: string) => request<Task>(`/tasks/${id}/dependencies`, { method: "POST", body: JSON.stringify({ depends_on_task_id }) }),
   removeDependency: (id: string, dependencyId: string) => request<Task>(`/tasks/${id}/dependencies/${dependencyId}`, { method: "DELETE" }),
+};
+
+export const agentRunsApi = {
+  list: (filters: Record<string, string | undefined> = {}) => { const query = new URLSearchParams(Object.entries(filters).filter((entry): entry is [string, string] => Boolean(entry[1]))); return request<AgentRun[]>(`/agent-runs${query.size ? `?${query}` : ""}`); },
+  get: (id: string) => request<AgentRun>(`/agent-runs/${id}`),
 };

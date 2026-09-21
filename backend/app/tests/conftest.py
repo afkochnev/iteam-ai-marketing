@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import async_session_factory, engine, get_db_session
 from app.main import app
 from app.models.agent import Agent
+from app.models.agent_run import AgentRun, ToolCall
 from app.models.campaign import Campaign
 from app.models.task import Task, TaskDependency
 from app.models.user import User
@@ -17,6 +18,8 @@ from app.models.user import User
 async def db_session() -> AsyncIterator[AsyncSession]:
     await engine.dispose()
     async with async_session_factory() as session:
+        await session.execute(delete(ToolCall))
+        await session.execute(delete(AgentRun))
         await session.execute(delete(TaskDependency))
         await session.execute(delete(Task))
         await session.execute(delete(Campaign))
@@ -25,6 +28,8 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.commit()
         yield session
         await session.rollback()
+        await session.execute(delete(ToolCall))
+        await session.execute(delete(AgentRun))
         await session.execute(delete(TaskDependency))
         await session.execute(delete(Task))
         await session.execute(delete(Campaign))

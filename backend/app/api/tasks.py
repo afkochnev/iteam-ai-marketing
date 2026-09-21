@@ -5,6 +5,7 @@ from fastapi import APIRouter, Query, status
 
 from app.api.dependencies import CurrentUser, SessionDependency
 from app.models.task import TaskPriority, TaskStatus, TaskType
+from app.schemas.agent_run import AgentRunSummary
 from app.schemas.task import (
     TaskCompleteRequest,
     TaskCreate,
@@ -15,6 +16,7 @@ from app.schemas.task import (
     task_to_list_item,
     task_to_response,
 )
+from app.services.agent_run_service import AgentRunService
 from app.services.task_service import TaskService
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -76,6 +78,46 @@ async def cancel_task(
     task_id: UUID, _user: CurrentUser, session: SessionDependency
 ) -> TaskResponse:
     return task_to_response(await TaskService(session).cancel_task(task_id))
+
+
+@router.post("/{task_id}/run", response_model=AgentRunSummary, status_code=status.HTTP_202_ACCEPTED)
+async def run_task(
+    task_id: UUID, _user: CurrentUser, session: SessionDependency
+) -> AgentRunSummary:
+    service = AgentRunService(session)
+    run = await service.enqueue(await service.create_queued_run(task_id))
+    return AgentRunSummary.model_validate(
+        {
+            "id": run.id,
+            "task_id": run.task_id,
+            "agent_id": run.agent_id,
+            "campaign_id": run.campaign_id,
+            "status": run.status,
+            "model": run.model,
+            "created_at": run.created_at,
+        }
+    )
+
+
+@router.post(
+    "/{task_id}/retry", response_model=AgentRunSummary, status_code=status.HTTP_202_ACCEPTED
+)
+async def retry_task(
+    task_id: UUID, _user: CurrentUser, session: SessionDependency
+) -> AgentRunSummary:
+    service = AgentRunService(session)
+    run = await service.enqueue(await service.create_queued_run(task_id, retry=True))
+    return AgentRunSummary.model_validate(
+        {
+            "id": run.id,
+            "task_id": run.task_id,
+            "agent_id": run.agent_id,
+            "campaign_id": run.campaign_id,
+            "status": run.status,
+            "model": run.model,
+            "created_at": run.created_at,
+        }
+    )
 
 
 @router.post(
