@@ -1,0 +1,28 @@
+"use client";
+
+import Link from "next/link";
+import { useParams } from "next/navigation";
+import { useCallback, useEffect, useState } from "react";
+
+import { tasksApi, type Task, type TaskListItem, type TaskPriority } from "@/lib/api";
+import { TASK_PRIORITIES, TASK_PRIORITY_LABELS, TASK_STATUS_LABELS, TASK_TYPE_LABELS, taskDate } from "@/lib/tasks";
+
+export default function TaskDetailsPage() {
+  const { id } = useParams<{ id: string }>(); const [task, setTask] = useState<Task | null>(null); const [available, setAvailable] = useState<TaskListItem[]>([]); const [dependency, setDependency] = useState(""); const [editing, setEditing] = useState(false); const [title, setTitle] = useState(""); const [priority, setPriority] = useState<TaskPriority>("NORMAL"); const [error, setError] = useState("");
+  const load = useCallback(() => tasksApi.get(id).then((value) => { setTask(value); setTitle(value.title); setPriority(value.priority); return tasksApi.list({ campaign_id: value.campaign_id }); }).then((rows) => setAvailable(rows.filter((item) => item.id !== id))).catch((reason: Error) => setError(reason.message)), [id]);
+  useEffect(() => { load(); }, [load]);
+  async function action(operation: "start" | "complete" | "cancel") { try { const value = operation === "start" ? await tasksApi.start(id) : operation === "complete" ? await tasksApi.complete(id, { result: "Manual task completed" }) : await tasksApi.cancel(id); setTask(value); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось изменить задачу."); } }
+  async function save() { try { setTask(await tasksApi.update(id, { title, priority })); setEditing(false); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось сохранить задачу."); } }
+  async function addDependency() { if (!dependency) return; try { setTask(await tasksApi.addDependency(id, dependency)); setDependency(""); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось добавить зависимость."); } }
+  async function removeDependency(dependencyId: string) { try { setTask(await tasksApi.removeDependency(id, dependencyId)); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось удалить зависимость."); } }
+  if (!task && !error) return <main><p>Загружаем задачу…</p></main>;
+  if (!task) return <main><p role="alert" className="error">{error}</p></main>;
+  const editable = !["IN_PROGRESS", "COMPLETED", "CANCELLED"].includes(task.status);
+  return <main><section className="wide"><header className="page-header"><div><p className="eyebrow">Задача</p>{editing ? <input aria-label="Название" value={title} onChange={(e) => setTitle(e.target.value)} /> : <h1>{task.title}</h1>}<p>{TASK_STATUS_LABELS[task.status]}</p></div><Link href="/tasks">К задачам</Link></header>{error && <p role="alert" className="error">{error}</p>}
+    {editing && <div className="actions"><select aria-label="Приоритет" value={priority} onChange={(e) => setPriority(e.target.value as TaskPriority)}>{TASK_PRIORITIES.map((item) => <option key={item} value={item}>{TASK_PRIORITY_LABELS[item]}</option>)}</select><button onClick={save}>Сохранить</button><button className="secondary" onClick={() => setEditing(false)}>Отмена</button></div>}
+    <div className="details-grid"><div><dt>Кампания</dt><dd><Link href={`/campaigns/${task.campaign_id}`}>{task.campaign.name}</Link></dd></div><div><dt>Тип</dt><dd>{TASK_TYPE_LABELS[task.task_type]}</dd></div><div><dt>Агент</dt><dd>{task.assigned_agent?.name ?? "Не назначен"}</dd></div><div><dt>Приоритет</dt><dd>{TASK_PRIORITY_LABELS[task.priority]}</dd></div><div><dt>Deadline</dt><dd>{taskDate(task.deadline)}</dd></div><div><dt>Родительская задача</dt><dd>{task.parent_task ? <Link href={`/tasks/${task.parent_task.id}`}>{task.parent_task.title}</Link> : "Нет"}</dd></div><div><dt>Создана</dt><dd>{taskDate(task.created_at)}</dd></div><div><dt>Начата</dt><dd>{taskDate(task.started_at)}</dd></div><div><dt>Завершена</dt><dd>{taskDate(task.completed_at)}</dd></div><div><dt>Описание</dt><dd>{task.description ?? "Нет"}</dd></div></div>
+    <h2>Input Data</h2><pre>{JSON.stringify(task.input_data, null, 2)}</pre><h2>Output Data</h2><pre>{JSON.stringify(task.output_data, null, 2)}</pre>
+    <div className="details-grid"><div><h2>Зависимости</h2>{task.dependencies.length ? <ul>{task.dependencies.map((item) => <li key={item.id}><Link href={`/tasks/${item.id}`}>{item.title}</Link> — {TASK_STATUS_LABELS[item.status]} {editable && <button className="link-button" onClick={() => removeDependency(item.id)}>Удалить</button>}</li>)}</ul> : <p>Нет зависимостей</p>}{editable && <div className="actions"><select aria-label="Добавить зависимость" value={dependency} onChange={(e) => setDependency(e.target.value)}><option value="">Выберите задачу</option>{available.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select><button onClick={addDependency}>Добавить</button></div>}</div><div><h2>Зависимые задачи</h2>{task.dependents.length ? <ul>{task.dependents.map((item) => <li key={item.id}><Link href={`/tasks/${item.id}`}>{item.title}</Link> — {TASK_STATUS_LABELS[item.status]}</li>)}</ul> : <p>Нет зависимых задач</p>}</div></div>
+    <div className="actions">{editable && <button className="secondary" onClick={() => setEditing(true)}>Редактировать</button>}{task.status === "READY" && <button onClick={() => action("start")}>Начать</button>}{task.status === "IN_PROGRESS" && <button onClick={() => action("complete")}>Завершить</button>}{["READY", "BLOCKED", "IN_PROGRESS"].includes(task.status) && <button className="secondary" onClick={() => action("cancel")}>Отменить</button>}</div>
+  </section></main>;
+}

@@ -1,6 +1,6 @@
 # iTeam AI Marketing Department
 
-Основа web-приложения для управляемого AI-отдела маркетинга iTeam. Репозиторий развивается последовательно по master specification. Текущий scope: **Итерация 3 — Campaigns**.
+Основа web-приложения для управляемого AI-отдела маркетинга iTeam. Репозиторий развивается последовательно по master specification. Текущий scope: **Итерация 4 — Tasks и Task Dependencies**.
 
 ## Архитектура
 
@@ -137,6 +137,26 @@ Campaign API (Admin и Manager):
 - `POST /api/v1/campaigns/{id}/archive`
 
 Проверки Campaigns входят в обычные backend/frontend test suites. Для отдельного backend-прогона используйте `pytest app/tests/test_campaigns.py` после подготовки тестовой PostgreSQL по инструкции ниже.
+
+## Task Workflow
+
+Task — универсальная единица работы внутри Campaign. Задача имеет тип (`CAMPAIGN_PLANNING`, `KNOWLEDGE_RESEARCH`, `WRITE_ARTICLE`, `CREATE_SOCIAL_POSTS`, `CONTENT_REVISION` или `MANUAL`), приоритет, назначенного агента, входные/выходные JSON-данные и lifecycle status.
+
+Статусы: `NEW`, `BLOCKED`, `READY`, `IN_PROGRESS`, `WAITING_REVIEW`, `WAITING_APPROVAL`, `APPROVED`, `COMPLETED`, `FAILED`, `CANCELLED`. Обычная созданная задача сразу становится `READY`, если у неё нет незавершённых зависимостей, иначе — `BLOCKED`. Только `COMPLETED` считается успешным terminal status и разблокирует downstream-задачи; `FAILED`, `CANCELLED` и `APPROVED` не разблокируют их.
+
+Dependencies определяют порядок выполнения и не смешиваются с иерархией `parent_task_id`. Service layer запрещает self-, cross-Campaign и cyclic dependencies. При завершении задачи статусы всех непосредственно зависимых задач пересчитываются в той же транзакции. Удаление последней незавершённой dependency также переводит задачу в `READY`.
+
+Task API:
+
+- `GET/POST /api/v1/tasks`
+- `GET/PATCH /api/v1/tasks/{id}`
+- `POST /api/v1/tasks/{id}/start`
+- `POST /api/v1/tasks/{id}/complete`
+- `POST /api/v1/tasks/{id}/cancel`
+- `POST /api/v1/tasks/{id}/dependencies`
+- `DELETE /api/v1/tasks/{id}/dependencies/{dependency_task_id}`
+
+AI-выполнение задач ещё не реализовано. Manual start/complete endpoints используются только для проверки workflow engine; в следующих итерациях эти transitions будет инициировать worker/AgentRunner.
 
 ## Environment
 

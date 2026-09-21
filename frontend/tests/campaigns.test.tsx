@@ -6,14 +6,14 @@ import EditCampaignPage from "../app/campaigns/[id]/edit/page";
 import NewCampaignPage from "../app/campaigns/new/page";
 import CampaignsPage from "../app/campaigns/page";
 
-const { replace, push, list, get, create, update, archive } = vi.hoisted(() => ({
-  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), archive: vi.fn(),
+const { replace, push, list, get, create, update, archive, taskList } = vi.hoisted(() => ({
+  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), archive: vi.fn(), taskList: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace, push }), useParams: () => ({ id: "campaign-1" }) }));
 vi.mock("@/components/auth-provider", () => ({ useAuth: () => ({ user: { role: "ADMIN" }, loading: false }) }));
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
-  return { ...actual, campaignsApi: { list, get, create, update, archive } };
+  return { ...actual, campaignsApi: { list, get, create, update, archive }, tasksApi: { ...actual.tasksApi, list: taskList } };
 });
 
 const campaign = {
@@ -26,7 +26,7 @@ const campaign = {
 };
 
 describe("Campaigns UI", () => {
-  beforeEach(() => { vi.clearAllMocks(); list.mockResolvedValue([campaign]); get.mockResolvedValue(campaign); vi.spyOn(window, "confirm").mockReturnValue(true); });
+  beforeEach(() => { vi.clearAllMocks(); list.mockResolvedValue([campaign]); get.mockResolvedValue(campaign); taskList.mockResolvedValue([]); vi.spyOn(window, "confirm").mockReturnValue(true); });
 
   it("renders campaign list and empty state", async () => {
     const first = render(<CampaignsPage />);

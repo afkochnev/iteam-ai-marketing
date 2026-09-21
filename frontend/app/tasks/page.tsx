@@ -1,0 +1,17 @@
+"use client";
+
+import Link from "next/link";
+import { useEffect, useState } from "react";
+
+import { agentsApi, campaignsApi, tasksApi, type AgentListItem, type CampaignListItem, type TaskListItem } from "@/lib/api";
+import { TASK_PRIORITIES, TASK_PRIORITY_LABELS, TASK_STATUSES, TASK_STATUS_LABELS, TASK_TYPES, TASK_TYPE_LABELS, taskDate } from "@/lib/tasks";
+
+export default function TasksPage() {
+  const [tasks, setTasks] = useState<TaskListItem[]>([]); const [campaigns, setCampaigns] = useState<CampaignListItem[]>([]); const [agents, setAgents] = useState<AgentListItem[]>([]); const [filters, setFilters] = useState<Record<string, string>>({}); const [loading, setLoading] = useState(true); const [error, setError] = useState("");
+  useEffect(() => { Promise.all([tasksApi.list(filters), campaignsApi.list(), agentsApi.list()]).then(([taskRows, campaignRows, agentRows]) => { setTasks(taskRows); setCampaigns(campaignRows); setAgents(agentRows); }).catch((reason: Error) => setError(reason.message)).finally(() => setLoading(false)); }, [filters]);
+  const filter = (key: string, value: string) => setFilters((current) => ({ ...current, [key]: value }));
+  return <main><section className="wide"><header className="page-header"><div><p className="eyebrow">Workflow</p><h1>Задачи</h1></div><Link className="button-link" href="/tasks/new">Новая задача</Link></header>
+    <div className="filters"><select aria-label="Кампания" value={filters.campaign_id ?? ""} onChange={(e) => filter("campaign_id", e.target.value)}><option value="">Все кампании</option>{campaigns.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select aria-label="Агент" value={filters.agent_id ?? ""} onChange={(e) => filter("agent_id", e.target.value)}><option value="">Все агенты</option>{agents.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><select aria-label="Статус" value={filters.status ?? ""} onChange={(e) => filter("status", e.target.value)}><option value="">Все статусы</option>{TASK_STATUSES.map((item) => <option key={item} value={item}>{TASK_STATUS_LABELS[item]}</option>)}</select><select aria-label="Тип" value={filters.task_type ?? ""} onChange={(e) => filter("task_type", e.target.value)}><option value="">Все типы</option>{TASK_TYPES.map((item) => <option key={item} value={item}>{TASK_TYPE_LABELS[item]}</option>)}</select><select aria-label="Приоритет" value={filters.priority ?? ""} onChange={(e) => filter("priority", e.target.value)}><option value="">Все приоритеты</option>{TASK_PRIORITIES.map((item) => <option key={item} value={item}>{TASK_PRIORITY_LABELS[item]}</option>)}</select></div>
+    {loading ? <p>Загружаем задачи…</p> : error ? <p role="alert" className="error">{error}</p> : tasks.length === 0 ? <div className="empty"><h2>Задач пока нет</h2><p>Создайте первую задачу для кампании.</p></div> : <div className="table-wrap"><table><thead><tr><th>Название</th><th>Кампания</th><th>Тип</th><th>Агент</th><th>Статус</th><th>Приоритет</th><th>Deadline</th><th>Создана</th></tr></thead><tbody>{tasks.map((task) => <tr key={task.id}><td><Link href={`/tasks/${task.id}`}>{task.title}</Link></td><td>{task.campaign.name}</td><td>{TASK_TYPE_LABELS[task.task_type]}</td><td>{task.assigned_agent?.name ?? "Не назначен"}</td><td>{TASK_STATUS_LABELS[task.status]}</td><td>{TASK_PRIORITY_LABELS[task.priority]}</td><td>{taskDate(task.deadline)}</td><td>{taskDate(task.created_at)}</td></tr>)}</tbody></table></div>}
+  </section></main>;
+}

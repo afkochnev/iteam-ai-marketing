@@ -45,5 +45,15 @@ nav { margin: 1.5rem 0; }
 .details-grid div { padding: 1rem; border: 1px solid #d5ddd4; border-radius: 10px; }
 .details-grid dd { margin-top: .5rem; white-space: pre-wrap; }
 .actions { display: flex; gap: .75rem; align-items: center; }
+.filters { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .75rem; margin: 1rem 0; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { padding: .7rem; border-bottom: 1px solid #d8dee9; text-align: left; vertical-align: top; }
+.summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: .75rem; margin: 1rem 0; }
+.summary-grid div { border: 1px solid #d8dee9; border-radius: 8px; padding: .8rem; display: grid; gap: .2rem; }
+.summary-grid strong { font-size: 1.4rem; }
+.link-button { margin: 0; border: 0; padding: 0; background: transparent; color: #9b2c2c; text-decoration: underline; }
+.checkbox { display: flex; align-items: center; gap: .5rem; }
+.checkbox input { width: auto; }
 @media (max-width: 700px) { .tool { grid-template-columns: 1fr; } .page-header { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 850px) { .campaign-row { grid-template-columns: 1fr; } .details-grid, .date-grid { grid-template-columns: 1fr; } }
