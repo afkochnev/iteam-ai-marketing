@@ -102,5 +102,19 @@ class CampaignResponse(CampaignListItem):
     offer: str | None
     desired_result: str | None
     strategy: dict[str, object] | None
+    strategy_version: int
     created_by: UUID
     creator: CampaignCreator
+
+
+class StrategyGenerationResponse(BaseModel):
+    campaign_id: UUID
+    planning_task_id: UUID
+    agent_run_id: UUID
+    status: CampaignStatus
+
+
+class StrategyApprovalResponse(BaseModel):
+    campaign: CampaignResponse
+    approval_id: UUID
+    generated_task_ids: list[UUID]

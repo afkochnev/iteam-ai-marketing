@@ -38,5 +38,13 @@ async def _execute(run_id: UUID) -> None:
         async with async_session_factory() as session:
             await AgentRunService(session).finish_failure(run_id, runtime_error)
         return
-    async with async_session_factory() as session:
-        await AgentRunService(session).finish_success(run_id, result)
+    try:
+        async with async_session_factory() as session:
+            await AgentRunService(session).finish_success(run_id, result)
+    except Exception:
+        logger.exception("Agent result persistence failed", extra={"agent_run_id": str(run_id)})
+        runtime_error = AgentRuntimeError(
+            "AGENT_RESULT_PROCESSING_FAILED", "Не удалось сохранить результат агента."
+        )
+        async with async_session_factory() as session:
+            await AgentRunService(session).finish_failure(run_id, runtime_error)

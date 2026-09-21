@@ -10,6 +10,7 @@ from app.models import (  # noqa: F401
     Agent,
     AgentRun,
     AgentTool,
+    Approval,
     Campaign,
     Task,
     TaskDependency,

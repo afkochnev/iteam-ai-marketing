@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.agents.factory import AgentRuntimeContext, AgentSnapshot
+from app.agents.output_registry import output_type_registry
 from app.agents.tool_registry import tool_registry
 from app.core.config import settings
 from app.core.errors import AppError
@@ -19,6 +20,7 @@ from app.models.task import Task, TaskStatus, TaskType
 from app.repositories.agent_runs import AgentRunRepository
 from app.repositories.tasks import TaskRepository
 from app.services.agent_runner_service import AgentRuntimeError, RuntimeResult
+from app.services.task_result_processors import result_processor_registry
 from app.services.task_service import TaskService
 
 logger = logging.getLogger(__name__)
@@ -46,7 +48,7 @@ class AgentRunService:
             raise AppError(
                 "CAMPAIGN_ARCHIVED", "Архивная кампания доступна только для чтения.", 409
             )
-        if task.task_type is not TaskType.MANUAL:
+        if task.task_type not in {TaskType.MANUAL, TaskType.CAMPAIGN_PLANNING}:
             raise AppError(
                 "TASK_TYPE_NOT_EXECUTABLE", "Этот тип задачи пока нельзя выполнять через AI.", 409
             )
@@ -77,6 +79,12 @@ class AgentRunService:
             raise AppError("TASK_AGENT_NOT_ASSIGNED", "Задаче не назначен агент.", 409)
         if agent.status is not AgentStatus.ACTIVE:
             raise AppError("AGENT_INACTIVE", "Назначенный агент неактивен.", 409)
+        if task.task_type is TaskType.CAMPAIGN_PLANNING and agent.slug != "marketing_director":
+            raise AppError(
+                "INVALID_AGENT_FOR_TASK_TYPE",
+                "Планирование кампании может выполнять только Marketing Director.",
+                409,
+            )
         model = agent.model or settings.openai_default_model
         if not model:
             raise AppError("AGENT_MODEL_NOT_CONFIGURED", "Модель агента не настроена.", 409)
@@ -171,12 +179,18 @@ class AgentRunService:
         agent = task.assigned_agent
         assert agent is not None
         enabled = [item.tool_name for item in agent.tools if item.is_enabled]
-        snapshot = AgentSnapshot(agent.name, run.prompt_snapshot, run.model, enabled)
+        snapshot = AgentSnapshot(
+            agent.name,
+            run.prompt_snapshot,
+            run.model,
+            enabled,
+            output_type_registry.get(task.task_type),
+        )
         await self.session.commit()
         return (
             snapshot,
             str(run.input_data["text"]),
-            AgentRuntimeContext(run.agent_id, run.task_id, run.campaign_id, run.id),
+            AgentRuntimeContext(run.agent_id, run.task_id, run.campaign_id, run.id, task.task_type),
             trace_id,
         )
 
@@ -204,7 +218,14 @@ class AgentRunService:
             return
         values["status"] = AgentRunStatus.COMPLETED
         await self.repository.update(run, values)
-        await TaskService(self.session).complete_task(task.id, result.output_data)
+        try:
+            await result_processor_registry.get(task.task_type).process(
+                self.session, run, task, result.output_data
+            )
+            await self.session.commit()
+        except AppError as exc:
+            await self.session.rollback()
+            await self.finish_failure(run_id, AgentRuntimeError(exc.code, exc.message))
 
     async def finish_failure(self, run_id: UUID, error: AgentRuntimeError) -> None:
         run = await self.repository.get_by_id(run_id, lock=True)
@@ -229,6 +250,17 @@ class AgentRunService:
 
 def build_task_input(task: Task) -> str:
     campaign = task.campaign
+    revision_context = ""
+    if task.task_type is TaskType.CAMPAIGN_PLANNING:
+        revision_context = f"""
+Версия стратегии: {task.input_data.get("strategy_version")}
+Предыдущая стратегия: {task.input_data.get("previous_strategy", "Нет")}
+Комментарий человека: {task.input_data.get("reviewer_feedback", "Нет")}
+Период: {campaign.start_date or "Не указан"} — {campaign.end_date or "Не указан"}
+Оффер: {campaign.offer or "Не указан"}
+Желаемый результат: {campaign.desired_result or "Не указан"}
+Контекст кампании: {campaign.description or "Не указан"}
+"""
     return f"""Выполни следующую задачу.
 
 Кампания: {campaign.name}
@@ -239,4 +271,5 @@ def build_task_input(task: Task) -> str:
 Задача: {task.title}
 Тип: {task.task_type.value}
 Описание: {task.description or "Не указано"}
-Дополнительные входные данные: {task.input_data}"""
+Дополнительные входные данные: {task.input_data}
+{revision_context}"""

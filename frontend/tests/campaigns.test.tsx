@@ -6,27 +6,27 @@ import EditCampaignPage from "../app/campaigns/[id]/edit/page";
 import NewCampaignPage from "../app/campaigns/new/page";
 import CampaignsPage from "../app/campaigns/page";
 
-const { replace, push, list, get, create, update, archive, taskList } = vi.hoisted(() => ({
-  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), archive: vi.fn(), taskList: vi.fn(),
+const { replace, push, list, get, create, update, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList } = vi.hoisted(() => ({
+  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace, push }), useParams: () => ({ id: "campaign-1" }) }));
 vi.mock("@/components/auth-provider", () => ({ useAuth: () => ({ user: { role: "ADMIN" }, loading: false }) }));
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
-  return { ...actual, campaignsApi: { list, get, create, update, archive }, tasksApi: { ...actual.tasksApi, list: taskList } };
+  return { ...actual, campaignsApi: { list, get, create, update, archive, generateStrategy, approveStrategy, requestStrategyRevision: requestRevision, rejectStrategy }, approvalsApi: { list: approvalList, get: vi.fn() }, tasksApi: { ...actual.tasksApi, list: taskList } };
 });
 
 const campaign = {
   id: "campaign-1", name: "AI-диагностика", description: "Контекст", goal: "30 заявок",
   product: "Диагностика", target_audience: "CEO", offer: "Онлайн-диагностика",
   desired_result: "30 заявок", start_date: "2026-10-01", end_date: "2026-10-31",
-  status: "DRAFT" as const, strategy: null, created_by: "user-1",
+  status: "DRAFT" as const, strategy: null, strategy_version: 0, created_by: "user-1",
   creator: { id: "user-1", full_name: "Admin", email: "admin@example.com" },
   created_at: "2026-09-21T10:00:00Z", updated_at: "2026-09-21T10:00:00Z",
 };
 
 describe("Campaigns UI", () => {
-  beforeEach(() => { vi.clearAllMocks(); list.mockResolvedValue([campaign]); get.mockResolvedValue(campaign); taskList.mockResolvedValue([]); vi.spyOn(window, "confirm").mockReturnValue(true); });
+  beforeEach(() => { vi.clearAllMocks(); list.mockResolvedValue([campaign]); get.mockResolvedValue(campaign); taskList.mockResolvedValue([]); approvalList.mockResolvedValue([]); vi.spyOn(window, "confirm").mockReturnValue(true); });
 
   it("renders campaign list and empty state", async () => {
     const first = render(<CampaignsPage />);
@@ -83,5 +83,35 @@ describe("Campaigns UI", () => {
     fireEvent.change(screen.getByLabelText("Дата окончания"), { target: { value: "2026-10-01" } });
     fireEvent.click(screen.getByRole("button", { name: "Создать кампанию" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Дата окончания не может быть раньше даты начала.");
+  });
+
+  it("generates a strategy from DRAFT", async () => {
+    generateStrategy.mockResolvedValue({ status: "PLANNING" });
+    render(<CampaignDetailsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Сформировать стратегию" }));
+    await waitFor(() => expect(generateStrategy).toHaveBeenCalledWith("campaign-1"));
+  });
+
+  it("renders plan, approves, and submits revision feedback", async () => {
+    const strategy = {
+      campaign_summary: "Резюме кампании", positioning: "Позиционирование", target_audience: "CEO",
+      main_message: "Главное сообщение", content_strategy: "Контентная стратегия",
+      content_topics: ["Тема 1", "Тема 2", "Тема 3"],
+      recommended_article: { title: "Статья", objective: "Цель", angle: "Ракурс", cta: "CTA" },
+      social_strategy: { channels: ["TELEGRAM", "VK"], post_count: 5, approach: "Подход" },
+      tasks: [{ key: "research", task_type: "KNOWLEDGE_RESEARCH", title: "Найти знания", description: "Описание", agent_slug: "knowledge_keeper", priority: "NORMAL", brief: "Brief", depends_on: [] }],
+    };
+    get.mockResolvedValue({ ...campaign, status: "WAITING_APPROVAL", strategy_version: 1, strategy });
+    approvalList.mockResolvedValue([{ id: "approval-1", object_type: "CAMPAIGN_STRATEGY", object_id: campaign.id, subject_version: 1, status: "PENDING", reviewed_by_user_id: null, comment: null, subject_snapshot: strategy, metadata: {}, created_at: campaign.created_at, resolved_at: null, updated_at: campaign.updated_at }]);
+    approveStrategy.mockResolvedValue({});
+    requestRevision.mockResolvedValue({});
+    render(<CampaignDetailsPage />);
+    expect(await screen.findByText("Резюме кампании")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Утвердить стратегию" }));
+    await waitFor(() => expect(approveStrategy).toHaveBeenCalledWith("campaign-1"));
+    fireEvent.click(screen.getByRole("button", { name: "Запросить доработку" }));
+    fireEvent.change(screen.getByLabelText("Что необходимо изменить?"), { target: { value: "Усилить фокус" } });
+    fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
+    await waitFor(() => expect(requestRevision).toHaveBeenCalledWith("campaign-1", "Усилить фокус"));
   });
 });

@@ -1,6 +1,6 @@
 # iTeam AI Marketing Department
 
-Основа web-приложения для управляемого AI-отдела маркетинга iTeam. Репозиторий развивается последовательно по master specification. Текущий scope: **Итерация 5 — Agent Runtime**.
+Основа web-приложения для управляемого AI-отдела маркетинга iTeam. Репозиторий развивается последовательно по master specification. Текущий scope: **Итерация 6 — Marketing Director и согласование стратегии**.
 
 ## Архитектура
 
@@ -186,7 +186,32 @@ Agent Runtime API (Admin и Manager):
 
 Для ручного live smoke test настройте `OPENAI_API_KEY` и `OPENAI_DEFAULT_MODEL`, создайте `MANUAL` Task с активным Agent и нажмите «Запустить AI». В CI и обычном `pytest` `Runner.run` подменяется; реальные API credits не расходуются.
 
-**Iteration 5 доказывает только универсальное AI-выполнение.** Наличие Marketing Director, Knowledge Keeper, Writer и SMM Manager в БД ещё не означает, что они выполняют свои бизнес-типы задач. CampaignPlan, knowledge search, создание статей и SMM появятся в следующих итерациях.
+**Iteration 5 доказывает универсальное AI-выполнение.** Специализированные типы включаются отдельно: CampaignPlan добавлен в Iteration 6, а knowledge search, создание статей и SMM остаются следующими этапами.
+
+## Marketing Director Workflow
+
+Marketing Director стал первым специализированным бизнес-агентом. Для Campaign в статусе `DRAFT` endpoint `POST /api/v1/campaigns/{id}/generate-strategy` атомарно переводит Campaign в `PLANNING`, создаёт `CAMPAIGN_PLANNING` Task, назначает системного агента `marketing_director` и ставит AgentRun в Celery.
+
+SDK Agent использует `output_type=CampaignPlan`. Pydantic и application validators проверяют структуру, разрешённые типы/агентов, уникальность ключей, существование dependencies, отсутствие циклов и обязательную цепочку knowledge → article → social. Валидный результат сохраняется как JSON, увеличивает `strategy_version`, переводит Campaign в `WAITING_APPROVAL` и создаёт `PENDING` Approval со snapshot стратегии. Невалидный или failed run не меняет стратегию и не создаёт Approval.
+
+Согласование поддерживает три операции:
+
+- `POST /api/v1/campaigns/{id}/approve-strategy` — валидирует snapshot, проверяет активность downstream agents, создаёт Tasks/dependencies через TaskService и переводит Campaign в `ACTIVE`;
+- `POST /api/v1/campaigns/{id}/request-strategy-revision` — сохраняет feedback, закрывает текущий Approval как `REVISION_REQUESTED` и автоматически запускает следующую planning Task;
+- `POST /api/v1/campaigns/{id}/reject-strategy` — сохраняет причину, оставляет snapshot в истории и возвращает Campaign в `DRAFT`.
+
+Approval history доступна через `GET /api/v1/approvals` и `GET /api/v1/approvals/{id}`. Partial unique index запрещает два pending approval одной версии. Row locks и metadata с generated Task IDs обеспечивают идемпотентное согласование без дублирования графа.
+
+Архитектурный принцип workflow:
+
+```text
+LLM proposes.
+Application validates.
+Human approves.
+Application executes.
+```
+
+Marketing Director не получает executable `create_internal_task`: AI только предлагает CampaignPlan. Бизнес-данные и Task graph изменяет application layer после human approval. Созданные `KNOWLEDGE_RESEARCH`, `WRITE_ARTICLE` и `CREATE_SOCIAL_POSTS` Tasks пока не исполняются AI-runtime — это scope следующих итераций.
 
 ## Environment
 

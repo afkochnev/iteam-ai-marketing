@@ -9,7 +9,9 @@ export interface AgentUpdate { description?: string | null; system_prompt?: stri
 export type CampaignStatus = "DRAFT" | "PLANNING" | "WAITING_APPROVAL" | "ACTIVE" | "PAUSED" | "COMPLETED" | "ARCHIVED";
 export interface CampaignInput { name: string; description?: string | null; goal: string; product?: string | null; target_audience?: string | null; offer?: string | null; desired_result?: string | null; start_date?: string | null; end_date?: string | null; }
 export interface CampaignListItem { id: string; name: string; goal: string; product: string | null; status: CampaignStatus; start_date: string | null; end_date: string | null; created_at: string; updated_at: string; }
-export interface Campaign extends CampaignListItem { description: string | null; target_audience: string | null; offer: string | null; desired_result: string | null; strategy: Record<string, unknown> | null; created_by: string; creator: { id: string; full_name: string | null; email: string }; }
+export interface PlannedTask { key: string; task_type: TaskType; title: string; description: string; agent_slug: string; priority: TaskPriority; brief: string; depends_on: string[]; }
+export interface CampaignPlan { campaign_summary: string; positioning: string; target_audience: string; main_message: string; content_strategy: string; content_topics: string[]; recommended_article: { title: string; objective: string; angle: string; cta: string }; social_strategy: { channels: string[]; post_count: number; approach: string }; tasks: PlannedTask[]; }
+export interface Campaign extends CampaignListItem { description: string | null; target_audience: string | null; offer: string | null; desired_result: string | null; strategy: CampaignPlan | null; strategy_version: number; created_by: string; creator: { id: string; full_name: string | null; email: string }; }
 export type TaskStatus = "NEW" | "BLOCKED" | "READY" | "IN_PROGRESS" | "WAITING_REVIEW" | "WAITING_APPROVAL" | "APPROVED" | "COMPLETED" | "FAILED" | "CANCELLED";
 export type TaskPriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
 export type TaskType = "CAMPAIGN_PLANNING" | "KNOWLEDGE_RESEARCH" | "WRITE_ARTICLE" | "CREATE_SOCIAL_POSTS" | "CONTENT_REVISION" | "MANUAL";
@@ -19,6 +21,8 @@ export interface Task extends TaskListItem { parent_task_id: string | null; pare
 export interface TaskInput { campaign_id: string; parent_task_id?: string | null; task_type: TaskType; title: string; description?: string | null; assigned_agent_id?: string | null; priority: TaskPriority; input_data?: Record<string, unknown>; requires_approval?: boolean; deadline?: string | null; dependency_ids?: string[]; }
 export type AgentRunStatus = "QUEUED" | "RUNNING" | "WAITING_APPROVAL" | "COMPLETED" | "FAILED" | "CANCELLED";
 export interface AgentRun { id: string; task_id: string; agent_id: string; campaign_id: string; status: AgentRunStatus; model: string; created_at: string; agent?: { id: string; name: string; slug: string }; output_data?: { text?: string } | null; request_count?: number | null; input_tokens?: number | null; output_tokens?: number | null; total_tokens?: number | null; trace_id?: string | null; error_code?: string | null; error_message?: string | null; started_at?: string | null; completed_at?: string | null; }
+export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED" | "REVISION_REQUESTED";
+export interface Approval { id: string; object_type: "CAMPAIGN_STRATEGY" | "CONTENT_ITEM"; object_id: string; subject_version: number; status: ApprovalStatus; reviewed_by_user_id: string | null; comment: string | null; subject_snapshot: CampaignPlan; metadata: Record<string, unknown>; created_at: string; resolved_at: string | null; updated_at: string; }
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
@@ -55,6 +59,15 @@ export const campaignsApi = {
   create: (payload: CampaignInput) => request<Campaign>("/campaigns", { method: "POST", body: JSON.stringify(payload) }),
   update: (id: string, payload: Partial<CampaignInput>) => request<Campaign>(`/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   archive: (id: string) => request<Campaign>(`/campaigns/${id}/archive`, { method: "POST" }),
+  generateStrategy: (id: string) => request<{ campaign_id: string; planning_task_id: string; agent_run_id: string; status: CampaignStatus }>(`/campaigns/${id}/generate-strategy`, { method: "POST" }),
+  approveStrategy: (id: string, comment?: string) => request<{ campaign: Campaign; approval_id: string; generated_task_ids: string[] }>(`/campaigns/${id}/approve-strategy`, { method: "POST", body: JSON.stringify({ comment: comment || null }) }),
+  requestStrategyRevision: (id: string, comment: string) => request(`/campaigns/${id}/request-strategy-revision`, { method: "POST", body: JSON.stringify({ comment }) }),
+  rejectStrategy: (id: string, comment: string) => request<Campaign>(`/campaigns/${id}/reject-strategy`, { method: "POST", body: JSON.stringify({ comment }) }),
+};
+
+export const approvalsApi = {
+  list: (filters: Record<string, string | undefined> = {}) => { const query = new URLSearchParams(Object.entries(filters).filter((entry): entry is [string, string] => Boolean(entry[1]))); return request<Approval[]>(`/approvals${query.size ? `?${query}` : ""}`); },
+  get: (id: string) => request<Approval>(`/approvals/${id}`),
 };
 
 export const tasksApi = {

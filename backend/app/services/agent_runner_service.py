@@ -4,8 +4,10 @@ from typing import Any
 
 from agents import RunConfig, Runner
 from agents.exceptions import MaxTurnsExceeded, ModelBehaviorError
+from pydantic import ValidationError
 
 from app.agents.factory import AgentRuntimeContext, AgentSnapshot, create_runtime_agent
+from app.agents.output_registry import output_type_registry
 from app.agents.tool_registry import tool_registry
 from app.core.config import settings
 
@@ -80,8 +82,14 @@ class AgentRunnerService:
                 "AGENT_PROVIDER_ERROR", "Не удалось выполнить запрос к AI-провайдеру."
             ) from exc
         usage = result.context_wrapper.usage
+        try:
+            output_data = output_type_registry.normalize(result.final_output, context.task_type)
+        except ValidationError as exc:
+            raise AgentRuntimeError(
+                "INVALID_CAMPAIGN_PLAN", "Структура стратегии не прошла проверку."
+            ) from exc
         return RuntimeResult(
-            output_data={"text": str(result.final_output)},
+            output_data=output_data,
             request_count=usage.requests,
             input_tokens=usage.input_tokens,
             output_tokens=usage.output_tokens,

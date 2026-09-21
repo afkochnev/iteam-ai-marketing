@@ -39,7 +39,7 @@ class TaskService:
             raise AppError("TASK_NOT_FOUND", "Задача не найдена.", 404)
         return task
 
-    async def create_task(self, payload: TaskCreate) -> Task:
+    async def create_task(self, payload: TaskCreate, *, commit: bool = True) -> Task:
         campaign = await self._get_campaign(payload.campaign_id)
         self._ensure_campaign_editable(campaign)
         if (
@@ -74,7 +74,10 @@ class TaskService:
         task = await self.repository.create(values)
         for dependency_id in dependency_ids:
             await self.repository.add_dependency(task.id, dependency_id)
-        await self.session.commit()
+        if commit:
+            await self.session.commit()
+        else:
+            await self.session.flush()
         return await self.get_task(task.id)
 
     async def update_task(self, task_id: UUID, payload: TaskUpdate) -> Task:
@@ -137,7 +140,9 @@ class TaskService:
         await self.session.commit()
         return await self.get_task(task.id)
 
-    async def complete_task(self, task_id: UUID, output_data: dict[str, object]) -> Task:
+    async def complete_task(
+        self, task_id: UUID, output_data: dict[str, object], *, commit: bool = True
+    ) -> Task:
         task = await self.get_task(task_id)
         self._ensure_campaign_editable(task.campaign)
         if task.status is not TaskStatus.IN_PROGRESS:
@@ -155,7 +160,10 @@ class TaskService:
         for dependent in await self.repository.get_dependents(task.id):
             if dependent.status is TaskStatus.BLOCKED:
                 await self._resolve_status(dependent)
-        await self.session.commit()
+        if commit:
+            await self.session.commit()
+        else:
+            await self.session.flush()
         return await self.get_task(task.id)
 
     async def cancel_task(self, task_id: UUID) -> Task:
@@ -166,6 +174,12 @@ class TaskService:
                 "INVALID_TASK_TRANSITION", "Задачу в текущем статусе нельзя отменить.", 409
             )
         await self.repository.update(task, {"status": TaskStatus.CANCELLED})
+        if (
+            task.task_type is TaskType.CAMPAIGN_PLANNING
+            and task.campaign.status is CampaignStatus.PLANNING
+            and task.input_data.get("strategy_version") == task.campaign.strategy_version + 1
+        ):
+            task.campaign.status = CampaignStatus.DRAFT
         await self.session.commit()
         return await self.get_task(task.id)
 

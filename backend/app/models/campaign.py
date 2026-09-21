@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import Date, Enum, ForeignKey, Index, String, Text
+from sqlalchemy import Date, Enum, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -46,6 +46,9 @@ class Campaign(UUIDTimestampMixin, Base):
         default=CampaignStatus.DRAFT,
     )
     strategy: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    strategy_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text("0")
+    )
     created_by: Mapped[UUID] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
     )

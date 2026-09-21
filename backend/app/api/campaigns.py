@@ -5,7 +5,16 @@ from fastapi import APIRouter, Query, status
 
 from app.api.dependencies import CurrentUser, SessionDependency
 from app.models.campaign import CampaignStatus
-from app.schemas.campaign import CampaignCreate, CampaignListItem, CampaignResponse, CampaignUpdate
+from app.schemas.approval import ApprovalActionRequest, RequiredApprovalComment
+from app.schemas.campaign import (
+    CampaignCreate,
+    CampaignListItem,
+    CampaignResponse,
+    CampaignUpdate,
+    StrategyApprovalResponse,
+    StrategyGenerationResponse,
+)
+from app.services.campaign_planning_service import CampaignPlanningService
 from app.services.campaign_service import CampaignService
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
@@ -60,3 +69,72 @@ async def archive_campaign(
 ) -> CampaignResponse:
     campaign = await CampaignService(session).archive_campaign(campaign_id)
     return CampaignResponse.model_validate(campaign)
+
+
+@router.post(
+    "/{campaign_id}/generate-strategy",
+    response_model=StrategyGenerationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def generate_strategy(
+    campaign_id: UUID, _user: CurrentUser, session: SessionDependency
+) -> StrategyGenerationResponse:
+    campaign, task, run = await CampaignPlanningService(session).generate(campaign_id)
+    return StrategyGenerationResponse(
+        campaign_id=campaign.id,
+        planning_task_id=task.id,
+        agent_run_id=run.id,
+        status=campaign.status,
+    )
+
+
+@router.post("/{campaign_id}/approve-strategy", response_model=StrategyApprovalResponse)
+async def approve_strategy(
+    campaign_id: UUID,
+    payload: ApprovalActionRequest,
+    current_user: CurrentUser,
+    session: SessionDependency,
+) -> StrategyApprovalResponse:
+    campaign, approval, tasks = await CampaignPlanningService(session).approve(
+        campaign_id, current_user, payload.comment
+    )
+    current = await CampaignService(session).get_campaign(campaign.id)
+    return StrategyApprovalResponse(
+        campaign=CampaignResponse.model_validate(current),
+        approval_id=approval.id,
+        generated_task_ids=[task.id for task in tasks],
+    )
+
+
+@router.post("/{campaign_id}/reject-strategy", response_model=CampaignResponse)
+async def reject_strategy(
+    campaign_id: UUID,
+    payload: RequiredApprovalComment,
+    current_user: CurrentUser,
+    session: SessionDependency,
+) -> CampaignResponse:
+    await CampaignPlanningService(session).reject(campaign_id, current_user, payload.comment)
+    current = await CampaignService(session).get_campaign(campaign_id)
+    return CampaignResponse.model_validate(current)
+
+
+@router.post(
+    "/{campaign_id}/request-strategy-revision",
+    response_model=StrategyGenerationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def request_strategy_revision(
+    campaign_id: UUID,
+    payload: RequiredApprovalComment,
+    current_user: CurrentUser,
+    session: SessionDependency,
+) -> StrategyGenerationResponse:
+    campaign, task, run = await CampaignPlanningService(session).request_revision(
+        campaign_id, current_user, payload.comment
+    )
+    return StrategyGenerationResponse(
+        campaign_id=campaign.id,
+        planning_task_id=task.id,
+        agent_run_id=run.id,
+        status=campaign.status,
+    )

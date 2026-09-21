@@ -15,12 +15,14 @@ from app.models.campaign import Campaign
 from app.models.task import Task, TaskStatus, TaskType
 from app.models.user import User, UserRole
 from app.repositories.users import UserRepository
+from app.schemas.agent_outputs import CampaignPlan
 from app.schemas.campaign import CampaignCreate
 from app.schemas.task import TaskCreate
 from app.services.agent_run_service import AgentRunService
 from app.services.agent_runner_service import AgentRunnerService, AgentRuntimeError, RuntimeResult
 from app.services.campaign_service import CampaignService
 from app.services.task_service import TaskService
+from app.tests.test_campaign_planning import plan_data
 
 
 async def runtime_fixture(
@@ -209,3 +211,25 @@ async def test_agent_run_api_and_retry(
     )
     retry = await client.post(f"/api/v1/tasks/{task.id}/retry")
     assert retry.status_code == 202 and retry.json()["id"] != run_id
+
+
+async def test_runner_normalizes_structured_campaign_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    usage = SimpleNamespace(requests=1, input_tokens=5, output_tokens=6, total_tokens=11)
+    plan = CampaignPlan.model_validate(plan_data())
+    fake = SimpleNamespace(final_output=plan, context_wrapper=SimpleNamespace(usage=usage))
+
+    async def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        return fake
+
+    monkeypatch.setattr("app.services.agent_runner_service.Runner.run", fake_run)
+    context = AgentRuntimeContext(uuid4(), uuid4(), uuid4(), uuid4(), TaskType.CAMPAIGN_PLANNING)
+    result = await AgentRunnerService().run(
+        AgentSnapshot("Director", "Prompt", "model", [], CampaignPlan),
+        "Input",
+        context,
+        None,
+    )
+    assert result.output_data["main_message"] == plan.main_message
