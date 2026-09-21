@@ -1,6 +1,6 @@
 # iTeam AI Marketing Department
 
-Основа web-приложения для управляемого AI-отдела маркетинга iTeam. Репозиторий развивается последовательно по master specification. Текущий scope: **Итерация 1 — Database и Auth**.
+Основа web-приложения для управляемого AI-отдела маркетинга iTeam. Репозиторий развивается последовательно по master specification. Текущий scope: **Итерация 3 — Campaigns**.
 
 ## Архитектура
 
@@ -84,7 +84,7 @@ docker compose exec backend alembic downgrade base
 docker compose exec backend python -m app.seed
 ```
 
-Первая обратимая migration создаёт `users`, PostgreSQL enum `user_role` и case-insensitive unique index по `lower(email)`.
+Миграции последовательно создают пользователей, конфигурацию агентов и Campaigns. Все миграции обратимы; актуальность ORM metadata проверяется командой `alembic check`.
 
 ## Authentication
 
@@ -119,6 +119,24 @@ Agents API:
 - `GET /api/v1/agents/{id}`
 - `PATCH /api/v1/agents/{id}` — только Admin
 - `PATCH /api/v1/agents/{agent_id}/tools/{tool_id}` — только Admin
+
+## Campaigns
+
+Campaign — маркетинговая инициатива и будущий родитель для стратегии, задач, контента и согласований. В этой итерации Campaign хранит бизнес-контекст, период, автора и полный lifecycle status enum. Поле `strategy` зарезервировано для Marketing Director и недоступно в формах и обычном PATCH.
+
+Поддерживаются статусы `DRAFT`, `PLANNING`, `WAITING_APPROVAL`, `ACTIVE`, `PAUSED`, `COMPLETED` и `ARCHIVED`. Сейчас пользовательский workflow намеренно ограничен: новая Campaign всегда создаётся как `DRAFT`, а единственная доступная lifecycle-операция переводит любое неархивное состояние в `ARCHIVED`. Произвольное изменение status запрещено. Архивирование идемпотентно, архивные записи доступны только для чтения и физически не удаляются.
+
+Список `/campaigns` по умолчанию не показывает архивные записи; фильтр статуса позволяет отдельно выбрать `ARCHIVED` или любой другой status. Список упорядочен по дате создания, затем по UUID.
+
+Campaign API (Admin и Manager):
+
+- `GET /api/v1/campaigns?status=DRAFT`
+- `POST /api/v1/campaigns`
+- `GET /api/v1/campaigns/{id}`
+- `PATCH /api/v1/campaigns/{id}`
+- `POST /api/v1/campaigns/{id}/archive`
+
+Проверки Campaigns входят в обычные backend/frontend test suites. Для отдельного backend-прогона используйте `pytest app/tests/test_campaigns.py` после подготовки тестовой PostgreSQL по инструкции ниже.
 
 ## Environment
 
