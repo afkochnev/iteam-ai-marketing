@@ -23,6 +23,11 @@ export type AgentRunStatus = "QUEUED" | "RUNNING" | "WAITING_APPROVAL" | "COMPLE
 export interface AgentRun { id: string; task_id: string; agent_id: string; campaign_id: string; status: AgentRunStatus; model: string; created_at: string; agent?: { id: string; name: string; slug: string }; output_data?: { text?: string } | null; request_count?: number | null; input_tokens?: number | null; output_tokens?: number | null; total_tokens?: number | null; trace_id?: string | null; error_code?: string | null; error_message?: string | null; started_at?: string | null; completed_at?: string | null; }
 export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED" | "REVISION_REQUESTED";
 export interface Approval { id: string; object_type: "CAMPAIGN_STRATEGY" | "CONTENT_ITEM"; object_id: string; subject_version: number; status: ApprovalStatus; reviewed_by_user_id: string | null; comment: string | null; subject_snapshot: CampaignPlan; metadata: Record<string, unknown>; created_at: string; resolved_at: string | null; updated_at: string; }
+export type KnowledgeItemStatus = "UPLOADING" | "INDEXING" | "READY" | "FAILED" | "ARCHIVED";
+export interface KnowledgeStore { id: string; provider: "OPENAI"; name: string; external_store_id: string; status: "ACTIVE" | "ERROR" | "INACTIVE"; is_active: boolean; created_at: string; }
+export interface KnowledgeItem { id: string; source_id: string; title: string; author: string | null; content_type: string; original_filename: string | null; mime_type: string | null; file_size_bytes: number | null; source_url: string | null; openai_file_id: string | null; vector_store_file_id: string | null; status: KnowledgeItemStatus; metadata: Record<string, unknown>; error_code: string | null; error_message: string | null; created_by: string; created_at: string; updated_at: string; indexed_at: string | null; archived_at: string | null; }
+export interface KnowledgeSearchResult { knowledge_item_id: string; source_id: string; source_title: string; filename: string; file_id: string; excerpt: string; score: number | null; metadata: Record<string, unknown>; }
+export interface KnowledgeSearchResponse { query: string; result_count: number; results: KnowledgeSearchResult[]; }
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
@@ -35,6 +40,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const fallback = response.status === 403 ? "Недостаточно прав для выполнения действия." : "Ошибка запроса.";
     const validationMessage = body.error?.details?.errors?.[0]?.message;
     throw new ApiError(validationMessage ?? body.error?.message ?? fallback, response.status);
+  }
+  return response.json() as Promise<T>;
+}
+
+async function uploadRequest<T>(path: string, body: FormData): Promise<T> {
+  const response = await fetch(`${API_URL}${path}`, { method: "POST", body, credentials: "include" });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => ({}))) as ApiErrorBody;
+    throw new ApiError(payload.error?.message ?? "Ошибка загрузки.", response.status);
   }
   return response.json() as Promise<T>;
 }
@@ -87,4 +101,14 @@ export const tasksApi = {
 export const agentRunsApi = {
   list: (filters: Record<string, string | undefined> = {}) => { const query = new URLSearchParams(Object.entries(filters).filter((entry): entry is [string, string] => Boolean(entry[1]))); return request<AgentRun[]>(`/agent-runs${query.size ? `?${query}` : ""}`); },
   get: (id: string) => request<AgentRun>(`/agent-runs/${id}`),
+};
+
+export const knowledgeApi = {
+  getStore: () => request<KnowledgeStore | null>("/knowledge/store"),
+  initializeStore: () => request<KnowledgeStore>("/knowledge/store/initialize", { method: "POST" }),
+  listItems: () => request<KnowledgeItem[]>("/knowledge/items"),
+  upload: (file: File, title: string, author: string) => { const body = new FormData(); body.append("file", file); if (title) body.append("title", title); if (author) body.append("author", author); return uploadRequest<KnowledgeItem>("/knowledge/upload", body); },
+  retry: (id: string) => request<KnowledgeItem>(`/knowledge/items/${id}/retry`, { method: "POST" }),
+  archive: (id: string) => request<KnowledgeItem>(`/knowledge/items/${id}/archive`, { method: "POST" }),
+  search: (query: string, max_results = 10) => request<KnowledgeSearchResponse>("/knowledge/search", { method: "POST", body: JSON.stringify({ query, max_results }) }),
 };

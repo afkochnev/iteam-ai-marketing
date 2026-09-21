@@ -24,6 +24,10 @@ class Settings(BaseSettings):
     agent_max_turns: int = 8
     agent_run_timeout_seconds: int = 180
     agent_max_retries: int = 3
+    openai_vector_store_id: str | None = None
+    knowledge_max_upload_mb: int = 25
+    knowledge_index_timeout_seconds: int = 300
+    knowledge_index_poll_interval_seconds: float = 2.0
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

@@ -5,6 +5,7 @@ from app.api.agents import router as agents_router
 from app.api.approvals import router as approvals_router
 from app.api.auth import router as auth_router
 from app.api.campaigns import router as campaigns_router
+from app.api.knowledge import router as knowledge_router
 from app.api.tasks import router as tasks_router
 
 api_router = APIRouter()
@@ -14,6 +15,7 @@ api_router.include_router(agent_runs_router)
 api_router.include_router(approvals_router)
 api_router.include_router(campaigns_router)
 api_router.include_router(tasks_router)
+api_router.include_router(knowledge_router)
 
 
 @api_router.get("/health", tags=["system"])

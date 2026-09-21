@@ -8,6 +8,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.agents import knowledge_tools  # noqa: F401
 from app.agents.factory import AgentRuntimeContext, AgentSnapshot
 from app.agents.output_registry import output_type_registry
 from app.agents.tool_registry import tool_registry

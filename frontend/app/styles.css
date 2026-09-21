@@ -55,5 +55,6 @@ th, td { padding: .7rem; border-bottom: 1px solid #d8dee9; text-align: left; ver
 .link-button { margin: 0; border: 0; padding: 0; background: transparent; color: #9b2c2c; text-decoration: underline; }
 .checkbox { display: flex; align-items: center; gap: .5rem; }
 .checkbox input { width: auto; }
+.search-results { display: grid; gap: 1rem; margin-top: 1rem; }
 @media (max-width: 700px) { .tool { grid-template-columns: 1fr; } .page-header { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 850px) { .campaign-row { grid-template-columns: 1fr; } .details-grid, .date-grid { grid-template-columns: 1fr; } }

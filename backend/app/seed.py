@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.security import hash_password
 from app.models.agent import Agent, AgentRole, AgentSlug, AgentStatus, AgentTool
+from app.models.knowledge import KnowledgeSource, KnowledgeSourceStatus, KnowledgeSourceType
 from app.models.user import UserRole
 from app.repositories.agents import AgentRepository
 from app.repositories.users import UserRepository
@@ -111,9 +112,35 @@ async def seed_agents() -> tuple[int, int]:
     return agents_created, tools_created
 
 
+async def seed_knowledge_sources() -> bool:
+    async with async_session_factory() as session:
+        from sqlalchemy import select
+
+        existing = await session.scalar(
+            select(KnowledgeSource).where(
+                KnowledgeSource.source_type == KnowledgeSourceType.FILE_UPLOAD
+            )
+        )
+        if existing:
+            print("Knowledge source 'Ручные загрузки' already exists.")
+            return False
+        session.add(
+            KnowledgeSource(
+                name="Ручные загрузки",
+                source_type=KnowledgeSourceType.FILE_UPLOAD,
+                status=KnowledgeSourceStatus.ACTIVE,
+                metadata_={},
+            )
+        )
+        await session.commit()
+        print("Knowledge source 'Ручные загрузки' created.")
+        return True
+
+
 async def seed_all() -> None:
     await seed_admin()
     await seed_agents()
+    await seed_knowledge_sources()
 
 
 if __name__ == "__main__":

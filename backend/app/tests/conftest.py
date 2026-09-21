@@ -11,6 +11,7 @@ from app.models.agent import Agent
 from app.models.agent_run import AgentRun, ToolCall
 from app.models.approval import Approval
 from app.models.campaign import Campaign
+from app.models.knowledge import KnowledgeItem, KnowledgeSource, KnowledgeStore
 from app.models.task import Task, TaskDependency
 from app.models.user import User
 
@@ -20,6 +21,9 @@ async def db_session() -> AsyncIterator[AsyncSession]:
     await engine.dispose()
     async with async_session_factory() as session:
         await session.execute(delete(ToolCall))
+        await session.execute(delete(KnowledgeItem))
+        await session.execute(delete(KnowledgeSource))
+        await session.execute(delete(KnowledgeStore))
         await session.execute(delete(Approval))
         await session.execute(delete(AgentRun))
         await session.execute(delete(TaskDependency))
@@ -31,6 +35,9 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         yield session
         await session.rollback()
         await session.execute(delete(ToolCall))
+        await session.execute(delete(KnowledgeItem))
+        await session.execute(delete(KnowledgeSource))
+        await session.execute(delete(KnowledgeStore))
         await session.execute(delete(Approval))
         await session.execute(delete(AgentRun))
         await session.execute(delete(TaskDependency))

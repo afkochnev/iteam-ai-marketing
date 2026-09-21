@@ -175,7 +175,7 @@ Task READY → AgentRun QUEUED → RUNNING → COMPLETED/FAILED/CANCELLED
 
 Ограничения runtime задаются `AGENT_MAX_TURNS`, `AGENT_RUN_TIMEOUT_SECONDS` и `AGENT_MAX_RETRIES`. Retry — явная операция для `FAILED` Task, создающая новый AgentRun без удаления истории. Usage (`request_count`, input/output/total tokens) сохраняется после успешного SDK run; `estimated_cost` пока остаётся `null`.
 
-SDK tracing регулируется `OPENAI_AGENTS_DISABLE_TRACING`. Trace metadata содержит только campaign/task/agent/run identifiers, а передача sensitive inputs/outputs в tracing отключена. Собственные AgentRun и ToolCall остаются бизнес-аудитом приложения. Tool registry пока пуст: runtime передаёт модели только пересечение enabled permissions и реально зарегистрированных implementations, поэтому будущие seeded permissions не ломают `MANUAL` run.
+SDK tracing регулируется `OPENAI_AGENTS_DISABLE_TRACING`. Trace metadata содержит только campaign/task/agent/run identifiers, а передача sensitive inputs/outputs в tracing отключена. Собственные AgentRun и ToolCall остаются бизнес-аудитом приложения. Runtime передаёт модели только пересечение enabled permissions и реально зарегистрированных implementations, поэтому будущие seeded permissions не ломают `MANUAL` run.
 
 Agent Runtime API (Admin и Manager):
 
@@ -212,6 +212,36 @@ Application executes.
 ```
 
 Marketing Director не получает executable `create_internal_task`: AI только предлагает CampaignPlan. Бизнес-данные и Task graph изменяет application layer после human approval. Созданные `KNOWLEDGE_RESEARCH`, `WRITE_ARTICLE` и `CREATE_SOCIAL_POSTS` Tasks пока не исполняются AI-runtime — это scope следующих итераций.
+
+## Knowledge Base
+
+База знаний разделена на три бизнес-сущности. `KnowledgeStore` связывает приложение с одним активным OpenAI Vector Store, `KnowledgeSource` описывает происхождение материалов (в MVP — «Ручные загрузки»), а `KnowledgeItem` хранит локальную identity, provenance, внешние IDs и lifecycle документа. PostgreSQL хранит бизнес-метаданные и audit state; исходный файл и retrieval index находятся у OpenAI. Полный текст документов в PostgreSQL не дублируется.
+
+Admin инициализирует Vector Store через `POST /api/v1/knowledge/store/initialize`. Если задан `OPENAI_VECTOR_STORE_ID`, существующий store проверяется и регистрируется; иначе создаётся `iTeam Knowledge Base`. Повторный вызов возвращает текущий active store. Source of truth после bootstrap — `knowledge_stores.external_store_id`.
+
+Upload lifecycle:
+
+```text
+UPLOADING → OpenAI File → INDEXING → Vector Store → READY
+                                      ↘ FAILED
+READY/FAILED → ARCHIVED
+```
+
+Поддерживаются `.pdf`, `.docx`, `.txt` и `.md`, размер ограничивает `KNOWLEDGE_MAX_UPLOAD_MB`. HTTP endpoint не ждёт индексацию: worker получает только KnowledgeItem ID, attach выполняется идемпотентно, provider auto chunking остаётся включённым. Таймаут и polling задаются `KNOWLEDGE_INDEX_TIMEOUT_SECONDS` и `KNOWLEDGE_INDEX_POLL_INTERVAL_SECONDS`. Archive удаляет attachment из active Vector Store и исключает документ из retrieval, не удаляя локальный audit record или OpenAI File.
+
+Knowledge API:
+
+- `GET /api/v1/knowledge/store`, `GET /sources`, `GET /items`, `GET /items/{id}` — Admin и Manager;
+- `POST /api/v1/knowledge/store/initialize`, `/upload`, `/items/{id}/retry`, `/items/{id}/archive` — только Admin;
+- `POST /api/v1/knowledge/search` — Admin и Manager.
+
+Поиск выполняется напрямую через OpenAI Vector Store Search, без LLM и без SQL LIKE. Каждый provider result сопоставляется с локальным READY KnowledgeItem по OpenAI file ID. Несопоставленные и архивные результаты отбрасываются. Ответ всегда содержит KnowledgeItem/source IDs, source title, filename, OpenAI file ID, excerpt и provider relevance score: provenance обязательна.
+
+`search_knowledge` зарегистрирован как typed Agents SDK FunctionTool. Модели он доступен только при одновременно включённом `agent_tools.search_knowledge` и наличии implementation в registry. Каждый вызов создаёт `ToolCall` (`STARTED → COMPLETED/FAILED`) с аргументами и ограниченным structured result. Для ручного smoke runtime можно назначить `MANUAL` Task Knowledge Keeper; специализированный `KNOWLEDGE_RESEARCH` workflow намеренно остаётся заблокированным до следующей итерации.
+
+Для live smoke задайте `OPENAI_API_KEY`, инициализируйте store, загрузите небольшой MD/TXT через `/knowledge`, дождитесь `READY`, выполните поиск по уникальному marker и затем архивируйте тестовый KnowledgeItem. Автоматические тесты мокируют Files, Vector Stores и Search и не расходуют API credits.
+
+**Knowledge Base и search tool работоспособны. Workflow агента `KNOWLEDGE_RESEARCH` ещё не реализован.**
 
 ## Environment
 
