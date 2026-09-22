@@ -10,7 +10,7 @@ from app.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="execute_agent_run")  # type: ignore[untyped-decorator]
+@celery_app.task(name="execute_agent_run")  # type: ignore[misc]
 def execute_agent_run(agent_run_id: str) -> None:
     asyncio.run(_execute(UUID(agent_run_id)))
 

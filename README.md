@@ -318,3 +318,25 @@ immutable target/version и комментарий пользователя, с�
 результат создаёт следующую ContentVersion и новый pending Approval, не изменяя
 предыдущие версии. Activity Log хранит ключевые события workflow. Внешняя
 публикация не выполняется.
+
+## Runtime Resilience and Operations
+
+Transient agent/provider, timeout и queue errors возвращают задачу в READY до
+`AGENT_MAX_RETRIES`; dispatcher передаёт Celery countdown с экспоненциальной
+задержкой от `AGENT_RETRY_BACKOFF_SECONDS`. Ошибки provenance, permissions и business
+insufficiency не повторяются автоматически. После исчерпания лимита задача
+остаётся FAILED и доступна для явного административного retry.
+
+`AGENT_RUN_TIMEOUT_SECONDS`, `AGENT_MAX_TURNS` и
+`TASK_STUCK_AFTER_SECONDS` ограничивают выполнение. Периодический recovery job
+находит stale RUNNING AgentRuns с блокировкой PostgreSQL, завершает их как
+`AGENT_STUCK` и сохраняет Activity Log. Поздний результат FAILED, CANCELLED или
+stale run не меняет бизнес-данные.
+
+`GET /health` остаётся лёгкой liveness-проверкой; `/health/ready` проверяет
+PostgreSQL и Redis. Администратору доступен `/api/v1/system/status` с
+агрегатами задач, запусков, stuck tasks, pending approvals и последней
+активностью. Секреты и payload провайдера в этот endpoint не попадают.
+
+В production middleware ограничивает login, AI actions и загрузку материалов
+по настраиваемым минутным лимитам и возвращает единый `429 RATE_LIMITED`.

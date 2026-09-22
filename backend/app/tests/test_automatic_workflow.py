@@ -6,6 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.content import approve_content, request_revision
+from app.core.config import settings
 from app.models.activity import ActivityLog
 from app.models.agent import Agent, AgentTool
 from app.models.agent_run import AgentRun, AgentRunStatus, ToolCall, ToolCallStatus
@@ -34,7 +35,7 @@ from app.models.user import User
 from app.schemas.content import ContentApprovalRequest
 from app.schemas.task import TaskCreate
 from app.services.agent_run_service import AgentRunService
-from app.services.agent_runner_service import RuntimeResult
+from app.services.agent_runner_service import AgentRuntimeError, RuntimeResult
 from app.services.approval_service import ApprovalService
 from app.services.campaign_planning_service import CampaignPlanningService
 from app.services.knowledge_search_service import build_result_key
@@ -145,14 +146,24 @@ async def test_dispatcher_runs_knowledge_writer_and_smm_without_manual_runs(
     await db_session.commit()
     await CampaignPlanningService(db_session).approve(campaign.id, user, "Strategy approved")
     manual_calls: list[str] = []
+    knowledge_failed_once = False
+    retry_countdowns: list[int] = []
     original_enqueue = AgentRunService.enqueue
 
-    async def fake_enqueue(service: AgentRunService, run: AgentRun):  # type: ignore[no-untyped-def]
+    async def fake_enqueue(service: AgentRunService, run: AgentRun, *, countdown: int = 0):  # type: ignore[no-untyped-def]
+        retry_countdowns.append(countdown)
         claimed = await service.claim(run.id)
         assert claimed is not None
         task = await service.session.get(Task, run.task_id)
         assert task is not None
         if task.task_type is TaskType.KNOWLEDGE_RESEARCH:
+            nonlocal knowledge_failed_once
+            if not knowledge_failed_once:
+                knowledge_failed_once = True
+                await service.finish_failure(
+                    run.id, AgentRuntimeError("AGENT_TIMEOUT", "temporary provider timeout")
+                )
+                return run
             key = build_result_key(item.id, "file-management", "Материал об управляемости.")
             service.session.add(
                 ToolCall(
@@ -299,7 +310,7 @@ async def test_dispatcher_runs_knowledge_writer_and_smm_without_manual_runs(
     # runtime claim, processors and all database transitions remain real.
     AgentRunService.enqueue = fake_enqueue  # type: ignore[method-assign]
     try:
-        for _ in range(3):
+        for _ in range(4):
             await TaskDispatcherService(db_session).dispatch_ready_tasks()
     finally:
         AgentRunService.enqueue = original_enqueue  # type: ignore[method-assign]
@@ -318,12 +329,37 @@ async def test_dispatcher_runs_knowledge_writer_and_smm_without_manual_runs(
         if task.task_type
         in {TaskType.KNOWLEDGE_RESEARCH, TaskType.WRITE_ARTICLE, TaskType.CREATE_SOCIAL_POSTS}
     )
+    assert knowledge_failed_once
+    assert settings.agent_retry_backoff_seconds in retry_countdowns
     assert (
         await db_session.scalar(
             select(func.count()).select_from(AgentRun).where(AgentRun.campaign_id == campaign.id)
         )
-        == 4
+        == 5
     )
+    knowledge_runs = list(
+        (
+            await db_session.scalars(
+                select(AgentRun)
+                .join(Task, Task.id == AgentRun.task_id)
+                .where(Task.task_type == TaskType.KNOWLEDGE_RESEARCH)
+                .order_by(AgentRun.created_at)
+            )
+        ).all()
+    )
+    assert len(knowledge_runs) == 2
+    assert knowledge_runs[0].status is AgentRunStatus.FAILED
+    assert knowledge_runs[0].error_code == "AGENT_TIMEOUT"
+    assert knowledge_runs[1].status is AgentRunStatus.COMPLETED
+    activity_events = {
+        row.event_type
+        for row in (
+            await db_session.scalars(
+                select(ActivityLog).where(ActivityLog.campaign_id == campaign.id)
+            )
+        ).all()
+    }
+    assert {"AGENT_RUN_FAILED", "TASK_RETRY_SCHEDULED"}.issubset(activity_events)
     assert (
         await db_session.scalar(
             select(func.count())

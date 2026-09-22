@@ -29,4 +29,15 @@ describe("Protected dashboard", () => {
     await waitFor(() => expect(logout).toHaveBeenCalled());
     expect(replace).toHaveBeenCalledWith("/login");
   });
+
+  it("shows operational aggregates and empty state", async () => {
+    currentUser = { full_name: "Admin User", email: "admin@example.com", role: "ADMIN" };
+    vi.spyOn(global, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      tasks: { READY: 0, IN_PROGRESS: 0, FAILED: 0 }, agent_runs: { RUNNING: 0, FAILED: 0 },
+      stuck_tasks: 0, pending_approvals: 0, last_activity_at: null,
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    render(<Home />);
+    await waitFor(() => expect(screen.getByText("Проблем не обнаружено.")).toBeInTheDocument());
+    expect(screen.getByText("Зависшие задачи")).toBeInTheDocument();
+  });
 });

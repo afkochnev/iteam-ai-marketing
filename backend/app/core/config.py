@@ -24,8 +24,15 @@ class Settings(BaseSettings):
     agent_max_turns: int = 8
     agent_run_timeout_seconds: int = 180
     agent_max_retries: int = 3
+    agent_output_repair_attempts: int = 2
+    agent_retry_backoff_seconds: int = 5
+    task_stuck_after_seconds: int = 600
+    rate_limit_login_per_minute: int = 10
+    rate_limit_ai_actions_per_minute: int = 30
+    rate_limit_uploads_per_minute: int = 10
     openai_vector_store_id: str | None = None
     knowledge_max_upload_mb: int = 25
+    max_upload_size_mb: int = 25
     knowledge_index_timeout_seconds: int = 300
     knowledge_index_poll_interval_seconds: float = 2.0
     task_dispatch_interval_seconds: int = 10

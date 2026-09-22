@@ -55,53 +55,64 @@ class AgentRunnerService:
             tracing_disabled=settings.openai_agents_disable_tracing,
             trace_include_sensitive_data=False,
         )
-        try:
-            result = await asyncio.wait_for(
-                Runner.run(
-                    sdk_agent,
-                    task_input,
-                    context=context,
-                    max_turns=settings.agent_max_turns,
-                    run_config=config,
-                ),
-                timeout=settings.agent_run_timeout_seconds,
+        error_code = {
+            TaskType.CAMPAIGN_PLANNING: "INVALID_CAMPAIGN_PLAN",
+            TaskType.KNOWLEDGE_RESEARCH: "INVALID_KNOWLEDGE_RESEARCH_RESULT",
+            TaskType.WRITE_ARTICLE: "INVALID_ARTICLE_RESULT",
+            TaskType.CREATE_SOCIAL_POSTS: "INVALID_SOCIAL_POST_RESULT",
+        }.get(context.output_task_type or context.task_type, "INVALID_AGENT_OUTPUT")
+        current_input = task_input
+        for repair_attempt in range(settings.agent_output_repair_attempts + 1):
+            try:
+                result = await asyncio.wait_for(
+                    Runner.run(
+                        sdk_agent,
+                        current_input,
+                        context=context,
+                        max_turns=settings.agent_max_turns,
+                        run_config=config,
+                    ),
+                    timeout=settings.agent_run_timeout_seconds,
+                )
+            except TimeoutError as exc:
+                raise AgentRuntimeError(
+                    "AGENT_TIMEOUT", "Превышено время выполнения агента."
+                ) from exc
+            except MaxTurnsExceeded as exc:
+                raise AgentRuntimeError(
+                    "AGENT_MAX_TURNS_EXCEEDED", "Превышено число шагов агента."
+                ) from exc
+            except ModelBehaviorError as exc:
+                raise AgentRuntimeError(
+                    "AGENT_MODEL_BEHAVIOR_ERROR", "Модель вернула недопустимый результат."
+                ) from exc
+            except AgentRuntimeError:
+                raise
+            except Exception as exc:
+                raise AgentRuntimeError(
+                    "AGENT_PROVIDER_ERROR", "Не удалось выполнить запрос к AI-провайдеру."
+                ) from exc
+            usage = result.context_wrapper.usage
+            try:
+                output_data = output_type_registry.normalize(
+                    result.final_output, context.output_task_type or context.task_type
+                )
+            except ValidationError as exc:
+                if repair_attempt >= settings.agent_output_repair_attempts:
+                    raise AgentRuntimeError(
+                        error_code, "Структура результата агента не прошла проверку."
+                    ) from exc
+                current_input = (
+                    f"{task_input}\n\nПредыдущий результат был недопустим. "
+                    "Повтори ответ строго в требуемом структурированном формате."
+                )
+                continue
+            return RuntimeResult(
+                output_data=output_data,
+                request_count=usage.requests,
+                input_tokens=usage.input_tokens,
+                output_tokens=usage.output_tokens,
+                total_tokens=usage.total_tokens,
+                trace_id=trace_id,
             )
-        except TimeoutError as exc:
-            raise AgentRuntimeError("AGENT_TIMEOUT", "Превышено время выполнения агента.") from exc
-        except MaxTurnsExceeded as exc:
-            raise AgentRuntimeError(
-                "AGENT_MAX_TURNS_EXCEEDED", "Превышено число шагов агента."
-            ) from exc
-        except ModelBehaviorError as exc:
-            raise AgentRuntimeError(
-                "AGENT_MODEL_BEHAVIOR_ERROR", "Модель вернула недопустимый результат."
-            ) from exc
-        except AgentRuntimeError:
-            raise
-        except Exception as exc:
-            raise AgentRuntimeError(
-                "AGENT_PROVIDER_ERROR", "Не удалось выполнить запрос к AI-провайдеру."
-            ) from exc
-        usage = result.context_wrapper.usage
-        try:
-            output_data = output_type_registry.normalize(
-                result.final_output, context.output_task_type or context.task_type
-            )
-        except ValidationError as exc:
-            error_code = {
-                TaskType.CAMPAIGN_PLANNING: "INVALID_CAMPAIGN_PLAN",
-                TaskType.KNOWLEDGE_RESEARCH: "INVALID_KNOWLEDGE_RESEARCH_RESULT",
-                TaskType.WRITE_ARTICLE: "INVALID_ARTICLE_RESULT",
-                TaskType.CREATE_SOCIAL_POSTS: "INVALID_SOCIAL_POST_RESULT",
-            }.get(context.output_task_type or context.task_type, "INVALID_AGENT_OUTPUT")
-            raise AgentRuntimeError(
-                error_code, "Структура результата агента не прошла проверку."
-            ) from exc
-        return RuntimeResult(
-            output_data=output_data,
-            request_count=usage.requests,
-            input_tokens=usage.input_tokens,
-            output_tokens=usage.output_tokens,
-            total_tokens=usage.total_tokens,
-            trace_id=trace_id,
-        )
+        raise AgentRuntimeError(error_code, "Структура результата агента не прошла проверку.")

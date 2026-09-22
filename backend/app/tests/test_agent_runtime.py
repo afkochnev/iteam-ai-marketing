@@ -118,7 +118,7 @@ async def test_failure_retry_and_cancellation_race(
     first = await service.create_queued_run(task.id)
     assert await service.claim(first.id)
     await service.finish_failure(first.id, AgentRuntimeError("AGENT_PROVIDER_ERROR", "Safe error"))
-    assert (await TaskService(db_session).get_task(task.id)).status is TaskStatus.FAILED
+    assert (await TaskService(db_session).get_task(task.id)).status is TaskStatus.READY
     second = await service.create_queued_run(task.id, retry=True)
     assert second.id != first.id
     assert (await TaskService(db_session).get_task(task.id)).retry_count == 1

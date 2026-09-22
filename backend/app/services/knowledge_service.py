@@ -54,7 +54,7 @@ class KnowledgeService:
             raise AppError("UNSUPPORTED_KNOWLEDGE_FILE", "Поддерживаются PDF, DOCX, TXT и MD.", 422)
         if not content:
             raise AppError("EMPTY_KNOWLEDGE_FILE", "Файл не может быть пустым.", 422)
-        if len(content) > settings.knowledge_max_upload_mb * 1024 * 1024:
+        if len(content) > settings.max_upload_size_mb * 1024 * 1024:
             raise AppError("KNOWLEDGE_FILE_TOO_LARGE", "Файл превышает допустимый размер.", 413)
         source = await self.repository.default_source()
         if source is None:

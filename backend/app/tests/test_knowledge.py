@@ -156,6 +156,22 @@ async def test_upload_validation_and_lifecycle(db_session: AsyncSession) -> None
         )
 
 
+async def test_upload_endpoint_rejects_oversized_file_without_partial_item(
+    client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner = await user(db_session)
+    await source(db_session)
+    await login(client, owner)
+    monkeypatch.setattr(settings, "max_upload_size_mb", 1)
+    response = await client.post(
+        "/api/v1/knowledge/upload",
+        files={"file": ("large.txt", b"x" * (1024 * 1024 + 1), "text/plain")},
+    )
+    assert response.status_code == 413
+    assert response.json()["error"]["code"] == "KNOWLEDGE_FILE_TOO_LARGE"
+    assert await db_session.scalar(select(KnowledgeItem.id)) is None
+
+
 async def test_search_maps_provenance_and_skips_unknown(db_session: AsyncSession) -> None:
     owner = await user(db_session)
     item_source = await source(db_session)

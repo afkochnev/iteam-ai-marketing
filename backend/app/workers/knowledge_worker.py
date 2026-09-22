@@ -12,7 +12,7 @@ from app.workers.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(name="index_knowledge_item")  # type: ignore[untyped-decorator]
+@celery_app.task(name="index_knowledge_item")  # type: ignore[misc]
 def index_knowledge_item(knowledge_item_id: str) -> None:
     asyncio.run(_index(UUID(knowledge_item_id)))
 

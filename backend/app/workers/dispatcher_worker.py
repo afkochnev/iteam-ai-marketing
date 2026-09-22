@@ -8,7 +8,7 @@ from app.services.task_dispatcher_service import TaskDispatcherService
 from app.workers.celery_app import celery_app
 
 
-@celery_app.task(name="dispatch_ready_tasks")  # type: ignore[untyped-decorator]
+@celery_app.task(name="dispatch_ready_tasks")  # type: ignore[misc]
 def dispatch_ready_tasks() -> None:
     asyncio.run(_dispatch())
 

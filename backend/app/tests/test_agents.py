@@ -158,3 +158,12 @@ async def test_tool_update_rbac(client: AsyncClient, db_session: AsyncSession) -
     assert (
         await client.patch(f"/api/v1/agents/{writer_id}/tools/{tool_id}", json={"is_enabled": True})
     ).status_code == 403
+
+
+async def test_system_status_is_admin_only(client: AsyncClient, db_session: AsyncSession) -> None:
+    assert (await client.get("/api/v1/system/status")).status_code == 401
+    await create_user_and_login(client, db_session, UserRole.MANAGER)
+    assert (await client.get("/api/v1/system/status")).status_code == 403
+    await client.post("/api/v1/auth/logout")
+    await create_user_and_login(client, db_session, UserRole.ADMIN)
+    assert (await client.get("/api/v1/system/status")).status_code == 200

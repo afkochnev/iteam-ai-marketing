@@ -43,6 +43,7 @@ from app.repositories.agent_runs import AgentRunRepository
 from app.repositories.tasks import TaskRepository
 from app.services.activity_log_service import ActivityLogService
 from app.services.agent_runner_service import AgentRuntimeError, RuntimeResult
+from app.services.retry_policy import can_retry, retry_exhausted
 from app.services.task_result_processors import result_processor_registry
 from app.services.task_service import TaskService
 
@@ -83,26 +84,32 @@ class AgentRunService:
                 "TASK_TYPE_NOT_EXECUTABLE", "Этот тип задачи пока нельзя выполнять через AI.", 409
             )
         if retry:
-            if task.status is not TaskStatus.FAILED:
+            if task.status is TaskStatus.READY and task.retry_count > 0:
+                # A transient failure may already have scheduled an automatic
+                # retry.  Manual retry is idempotent in that state and should
+                # not consume a second retry budget slot.
+                pass
+            elif task.status is not TaskStatus.FAILED:
                 raise AppError(
                     "INVALID_TASK_TRANSITION", "Повторить можно только задачу с ошибкой.", 409
                 )
-            if task.retry_count >= settings.agent_max_retries:
+            elif task.retry_count >= settings.agent_max_retries:
                 raise AppError(
                     "TASK_RETRY_LIMIT_REACHED", "Достигнут лимит повторных запусков.", 409
                 )
-            dependencies = [
-                await TaskService(self.session).get_task(item)
-                for item in await TaskRepository(self.session).dependency_ids(task.id)
-            ]
-            if not all(item.status is TaskStatus.COMPLETED for item in dependencies):
-                raise AppError("TASK_NOT_READY", "Зависимости задачи ещё не завершены.", 409)
-            task.retry_count += 1
-            task.status = TaskStatus.READY
-            task.error_message = None
-            task.started_at = None
-            task.completed_at = None
-            task.output_data = {}
+            if task.status is TaskStatus.FAILED:
+                dependencies = [
+                    await TaskService(self.session).get_task(item)
+                    for item in await TaskRepository(self.session).dependency_ids(task.id)
+                ]
+                if not all(item.status is TaskStatus.COMPLETED for item in dependencies):
+                    raise AppError("TASK_NOT_READY", "Зависимости задачи ещё не завершены.", 409)
+                task.retry_count += 1
+                task.status = TaskStatus.READY
+                task.error_message = None
+                task.started_at = None
+                task.completed_at = None
+                task.output_data = {}
         elif task.status is not TaskStatus.READY:
             raise AppError("TASK_NOT_READY", "Запустить можно только готовую задачу.", 409)
         agent = task.assigned_agent
@@ -355,11 +362,14 @@ class AgentRunService:
             ) from exc
         return await self.get_run(run.id)
 
-    async def enqueue(self, run: AgentRun) -> AgentRun:
+    async def enqueue(self, run: AgentRun, *, countdown: int = 0) -> AgentRun:
         try:
             from app.workers.agent_worker import execute_agent_run
 
-            result = execute_agent_run.delay(str(run.id))
+            if countdown > 0:
+                result = execute_agent_run.apply_async(args=[str(run.id)], countdown=countdown)
+            else:
+                result = execute_agent_run.delay(str(run.id))
             await self.repository.update(run, {"queue_job_id": result.id})
             await self.session.commit()
         except Exception as exc:
@@ -500,9 +510,32 @@ class AgentRunService:
             run.error_message = str(error)
             run.completed_at = now
             if task:
-                task.status = TaskStatus.FAILED
                 task.error_message = str(error)
                 task.completed_at = now
+                if can_retry(error.code, task.retry_count):
+                    task.retry_count += 1
+                    task.status = TaskStatus.READY
+                    task.started_at = None
+                    task.completed_at = None
+                    await ActivityLogService(self.session).record(
+                        "TASK_RETRY_SCHEDULED",
+                        operation_key=f"retry-scheduled:{run.id}",
+                        campaign_id=task.campaign_id,
+                        task_id=task.id,
+                        agent_id=run.agent_id,
+                        metadata={"error_code": error.code, "retry_count": task.retry_count},
+                    )
+                else:
+                    task.status = TaskStatus.FAILED
+                    if retry_exhausted(error.code, task.retry_count):
+                        await ActivityLogService(self.session).record(
+                            "TASK_RETRY_EXHAUSTED",
+                            operation_key=f"retry-exhausted:{task.id}:{task.retry_count}",
+                            campaign_id=task.campaign_id,
+                            task_id=task.id,
+                            agent_id=run.agent_id,
+                            metadata={"error_code": error.code, "retry_count": task.retry_count},
+                        )
                 await ActivityLogService(self.session).record(
                     "AGENT_RUN_FAILED",
                     operation_key=f"agent-failed:{run.id}",

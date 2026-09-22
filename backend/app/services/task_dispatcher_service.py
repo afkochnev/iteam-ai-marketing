@@ -10,6 +10,7 @@ from app.core.errors import AppError
 from app.models.task import Task, TaskStatus, TaskType
 from app.services.activity_log_service import ActivityLogService
 from app.services.agent_run_service import AgentRunService
+from app.services.retry_policy import classify_error
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,13 @@ class TaskDispatcherService:
             try:
                 run_service = AgentRunService(self.session)
                 run = await run_service.create_queued_run(task_id)
-                await run_service.enqueue(run)
+                retry_task = await self.session.get(Task, task_id)
+                retry_count = retry_task.retry_count if retry_task is not None else 0
+                delay = classify_error("AGENT_TIMEOUT", max(0, retry_count - 1)).delay_seconds
+                if retry_count:
+                    await run_service.enqueue(run, countdown=delay)
+                else:
+                    await run_service.enqueue(run)
                 task = await self.session.get(Task, task_id)
                 if task:
                     await ActivityLogService(self.session).record(
