@@ -47,7 +47,7 @@ async def search_knowledge(
                 stored_audit.completed_at = datetime.now(UTC)
                 await session.commit()
         return json.dumps(payload, ensure_ascii=False)
-    except Exception as exc:
+    except Exception:
         logger.exception(
             "search_knowledge tool failed", extra={"agent_run_id": str(ctx.context.agent_run_id)}
         )
@@ -58,7 +58,7 @@ async def search_knowledge(
                 stored_audit.error_message = "Поиск по базе знаний завершился ошибкой."
                 stored_audit.completed_at = datetime.now(UTC)
                 await session.commit()
-        raise exc
+        raise
 
 
 tool_registry.register("search_knowledge", search_knowledge)

@@ -19,7 +19,11 @@ from app.schemas.agent_outputs import CampaignPlan
 from app.schemas.campaign import CampaignCreate
 from app.schemas.task import TaskCreate
 from app.services.agent_run_service import AgentRunService
-from app.services.agent_runner_service import AgentRunnerService, AgentRuntimeError, RuntimeResult
+from app.services.agent_runner_service import (
+    AgentRunnerService,
+    AgentRuntimeError,
+    RuntimeResult,
+)
 from app.services.campaign_service import CampaignService
 from app.services.task_service import TaskService
 from app.tests.test_campaign_planning import plan_data

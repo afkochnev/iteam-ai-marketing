@@ -6,7 +6,11 @@ from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.security import hash_password
 from app.models.agent import Agent, AgentRole, AgentSlug, AgentStatus, AgentTool
-from app.models.knowledge import KnowledgeSource, KnowledgeSourceStatus, KnowledgeSourceType
+from app.models.knowledge import (
+    KnowledgeSource,
+    KnowledgeSourceStatus,
+    KnowledgeSourceType,
+)
 from app.models.user import UserRole
 from app.repositories.agents import AgentRepository
 from app.repositories.users import UserRepository

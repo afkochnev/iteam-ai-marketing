@@ -268,7 +268,7 @@ Knowledge Pack API (Admin и Manager):
 - `GET /api/v1/knowledge-packs?campaign_id=...&task_id=...&status=READY`
 - `GET /api/v1/knowledge-packs/{id}`
 
-Task UI показывает verified summary, gaps и provenance каждого фрагмента: source, filename, relevance score, excerpt и selection reason. Запуск остаётся ручным; автоматический dispatcher цепочки ещё не реализован. Writer и остальные специализированные исполнители по-прежнему заблокированы до следующих итераций.
+Task UI показывает verified summary, gaps и provenance каждого фрагмента: source, filename, relevance score, excerpt и selection reason.
 
 ## Environment
 
@@ -304,3 +304,17 @@ SMM Manager выполняет `CREATE_SOCIAL_POSTS` только для акт�
 Результат валидируется как `SocialPostPackResult`: проверяются количество постов, каналы из стратегии кампании, порядок публикации и ссылки на реальные разделы исходной Article Version. Создаются отдельный `SOCIAL_POST_PACK`, индивидуальные `SOCIAL_POST` ContentItems и `ContentDerivation` к статье. Публикация наружу не выполняется.
 
 Article и Social Post Pack имеют независимые `CONTENT_ITEM` approvals. Согласование проверяет immutable version snapshot, поддерживает approve/reject и для Pack атомарно меняет статусы дочерних постов. Approve не означает публикацию.
+
+## Automatic Task Dispatch and Revisions
+
+Celery Beat запускает application `TaskDispatcherService`. Он выбирает READY AI
+tasks через PostgreSQL `FOR UPDATE SKIP LOCKED` и ставит единичный AgentRun в
+очередь. Автоматически выполняются KNOWLEDGE_RESEARCH, WRITE_ARTICLE и
+CREATE_SOCIAL_POSTS; ручные задачи и стратегическое планирование остаются
+явными human actions.
+
+Для Article и Social Post Pack доступен `request-revision`. Backend фиксирует
+immutable target/version и комментарий пользователя, создаёт CONTENT_REVISION;
+результат создаёт следующую ContentVersion и новый pending Approval, не изменяя
+предыдущие версии. Activity Log хранит ключевые события workflow. Внешняя
+публикация не выполняется.

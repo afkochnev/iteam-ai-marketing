@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     knowledge_max_upload_mb: int = 25
     knowledge_index_timeout_seconds: int = 300
     knowledge_index_poll_interval_seconds: float = 2.0
+    task_dispatch_interval_seconds: int = 10
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

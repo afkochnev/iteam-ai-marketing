@@ -84,13 +84,16 @@ class AgentRunnerService:
             ) from exc
         usage = result.context_wrapper.usage
         try:
-            output_data = output_type_registry.normalize(result.final_output, context.task_type)
+            output_data = output_type_registry.normalize(
+                result.final_output, context.output_task_type or context.task_type
+            )
         except ValidationError as exc:
             error_code = {
                 TaskType.CAMPAIGN_PLANNING: "INVALID_CAMPAIGN_PLAN",
                 TaskType.KNOWLEDGE_RESEARCH: "INVALID_KNOWLEDGE_RESEARCH_RESULT",
                 TaskType.WRITE_ARTICLE: "INVALID_ARTICLE_RESULT",
-            }.get(context.task_type, "INVALID_AGENT_OUTPUT")
+                TaskType.CREATE_SOCIAL_POSTS: "INVALID_SOCIAL_POST_RESULT",
+            }.get(context.output_task_type or context.task_type, "INVALID_AGENT_OUTPUT")
             raise AgentRuntimeError(
                 error_code, "Структура результата агента не прошла проверку."
             ) from exc

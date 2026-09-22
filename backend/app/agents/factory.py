@@ -17,6 +17,7 @@ class AgentRuntimeContext:
     task_type: TaskType = TaskType.MANUAL
     allowed_knowledge_pack_ids: tuple[UUID, ...] = ()
     allowed_content_version_ids: tuple[UUID, ...] = ()
+    output_task_type: TaskType | None = None
 
 
 @dataclass(frozen=True)

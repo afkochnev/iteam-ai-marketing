@@ -14,6 +14,7 @@ from app.repositories.agents import AgentRepository
 from app.repositories.approvals import ApprovalRepository
 from app.schemas.agent_outputs import CampaignPlan
 from app.schemas.task import TaskCreate
+from app.services.activity_log_service import ActivityLogService
 from app.services.agent_run_service import AgentRunService
 from app.services.approval_service import ApprovalService
 from app.services.task_service import TaskService
@@ -157,6 +158,14 @@ class CampaignPlanningService:
             "generated_task_count": len(created),
         }
         campaign.status = CampaignStatus.ACTIVE
+        await ActivityLogService(self.session).record(
+            "STRATEGY_APPROVED",
+            operation_key=f"strategy-approved:{approval.id}",
+            campaign_id=campaign.id,
+            user_id=reviewer.id,
+            approval_id=approval.id,
+            metadata={"generated_task_count": len(created)},
+        )
         await self.session.commit()
         return campaign, approval, list(created.values())
 

@@ -20,7 +20,11 @@ from app.models.content import (
     ContentVersionSource,
 )
 from app.models.knowledge import KnowledgeItem, KnowledgeItemStatus
-from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem, KnowledgePackStatus
+from app.models.knowledge_pack import (
+    KnowledgePack,
+    KnowledgePackItem,
+    KnowledgePackStatus,
+)
 from app.models.task import Task, TaskStatus, TaskType
 from app.repositories.knowledge_packs import KnowledgePackRepository
 from app.schemas.agent_outputs import (
@@ -30,6 +34,7 @@ from app.schemas.agent_outputs import (
     SocialPostPackResult,
 )
 from app.schemas.knowledge import KnowledgeSearchResult
+from app.services.activity_log_service import ActivityLogService
 from app.services.approval_service import ApprovalService
 from app.services.knowledge_search_service import build_result_key
 from app.services.task_service import TaskService
@@ -167,6 +172,14 @@ class KnowledgeResearchResultProcessor:
         )
         session.add(pack)
         await session.flush()
+        await ActivityLogService(session).record(
+            "KNOWLEDGE_PACK_CREATED",
+            operation_key=f"knowledge-pack-created:{run.id}",
+            campaign_id=task.campaign_id,
+            task_id=task.id,
+            agent_id=run.agent_id,
+            metadata={"knowledge_pack_id": str(pack.id)},
+        )
         reasons = {item.result_key: item.selection_reason for item in research.selected_results}
         for position, (source, tool_call) in enumerate(selected_rows, start=1):
             session.add(
@@ -290,6 +303,93 @@ class WriterResultProcessor:
         }
         if any(source_id not in rows for source_id in selected):
             raise AppError("INVALID_ARTICLE_SOURCE", "Источник статьи не найден.", 422)
+        if task.task_type is TaskType.CONTENT_REVISION:
+            if task.input_data.get("revision_target_type") != ContentType.ARTICLE.value:
+                raise AppError(
+                    "INVALID_REVISION_TARGET", "Эта задача не является доработкой статьи.", 409
+                )
+            content_id = UUID(str(task.input_data["content_item_id"]))
+            item = (
+                await session.execute(
+                    select(ContentItem).where(ContentItem.id == content_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if item is None or item.content_type is not ContentType.ARTICLE:
+                raise AppError("INVALID_REVISION_TARGET", "Статья для доработки не найдена.", 409)
+            current_number = int(
+                await session.scalar(
+                    select(ContentVersion.version_number).where(
+                        ContentVersion.id == item.current_version_id
+                    )
+                )
+                or 0
+            )
+            generation_key = f"article:revision:{task.id}"
+            existing_version = await session.scalar(
+                select(ContentVersion).where(
+                    ContentVersion.source_agent_run_id == run.id,
+                    ContentVersion.generation_key == generation_key,
+                )
+            )
+            if existing_version is not None:
+                return
+            version = ContentVersion(
+                content_item_id=item.id,
+                version_number=current_number + 1,
+                content=render_article_markdown(result.article),
+                structured_content=result.article.model_dump(mode="json"),
+                created_by_agent_id=run.agent_id,
+                source_agent_run_id=run.id,
+                generation_key=generation_key,
+                change_description=(
+                    f"Article revision: {task.input_data.get('revision_comment', '')}"
+                ),
+            )
+            session.add(version)
+            await session.flush()
+            item.current_version_id = version.id
+            for position, section in enumerate(result.article.sections, start=1):
+                for source_position, source_id in enumerate(
+                    section.knowledge_pack_item_ids, start=1
+                ):
+                    session.add(
+                        ContentVersionSource(
+                            content_version_id=version.id,
+                            knowledge_pack_item_id=source_id,
+                            section_key=section.key,
+                            position=(position * 1000) + source_position,
+                        )
+                    )
+            await ApprovalService(session).create_content_approval(
+                item.id,
+                version.version_number,
+                {
+                    "content_item_id": str(item.id),
+                    "content_version_id": str(version.id),
+                    "version_number": version.version_number,
+                    "title": result.article.title,
+                    "content_hash": hashlib.sha256(version.content.encode()).hexdigest(),
+                },
+                run.agent_id,
+            )
+            await TaskService(session).complete_task(
+                task.id,
+                {
+                    "content_item_id": str(item.id),
+                    "content_version_id": str(version.id),
+                    "content_type": "ARTICLE",
+                },
+                commit=False,
+            )
+            await ActivityLogService(session).record(
+                "CONTENT_REVISION_COMPLETED",
+                operation_key=f"revision-completed:{run.id}",
+                campaign_id=task.campaign_id,
+                task_id=task.id,
+                agent_id=run.agent_id,
+                content_item_id=item.id,
+            )
+            return
         item = ContentItem(
             campaign_id=task.campaign_id,
             source_task_id=task.id,
@@ -336,6 +436,14 @@ class WriterResultProcessor:
             },
             run.agent_id,
         )
+        await ActivityLogService(session).record(
+            "ARTICLE_CREATED",
+            operation_key=f"article-created:{run.id}",
+            campaign_id=task.campaign_id,
+            task_id=task.id,
+            agent_id=run.agent_id,
+            content_item_id=item.id,
+        )
         await TaskService(session).complete_task(
             task.id,
             {
@@ -354,7 +462,7 @@ class SocialPostResultProcessor:
         existing = await session.scalar(
             select(ContentVersion).where(
                 ContentVersion.source_agent_run_id == run.id,
-                ContentVersion.generation_key == "pack",
+                ContentVersion.generation_key.like("pack%"),
             )
         )
         if existing:
@@ -431,6 +539,170 @@ class SocialPostResultProcessor:
                         "Пост ссылается на неизвестный раздел статьи.",
                         422,
                     )
+        if task.task_type is TaskType.CONTENT_REVISION:
+            if task.input_data.get("revision_target_type") != ContentType.SOCIAL_POST_PACK.value:
+                raise AppError(
+                    "INVALID_REVISION_TARGET", "Эта задача не является доработкой пакета.", 409
+                )
+            pack_id = UUID(str(task.input_data["content_item_id"]))
+            pack_item = (
+                await session.execute(
+                    select(ContentItem).where(ContentItem.id == pack_id).with_for_update()
+                )
+            ).scalar_one_or_none()
+            if pack_item is None or pack_item.content_type is not ContentType.SOCIAL_POST_PACK:
+                raise AppError("INVALID_REVISION_TARGET", "Пакет публикаций не найден.", 409)
+            assert pack_item is not None
+            previous = await session.scalar(
+                select(ContentVersion).where(ContentVersion.id == pack_item.current_version_id)
+            )
+            if previous is None:
+                raise AppError("INVALID_REVISION_TARGET", "Версия пакета не найдена.", 409)
+            generation_key = f"pack:revision:{task.id}"
+            existing_version = await session.scalar(
+                select(ContentVersion).where(
+                    ContentVersion.source_agent_run_id == run.id,
+                    ContentVersion.generation_key == generation_key,
+                )
+            )
+            if existing_version is not None:
+                return
+            pack_version = ContentVersion(
+                content_item_id=pack_item.id,
+                version_number=previous.version_number + 1,
+                content="\n\n".join(
+                    [f"# {result.pack.strategy_summary}"]
+                    + [f"## {p.title}\n\n{p.text_markdown}\n\n{p.cta}" for p in result.pack.posts]
+                ),
+                structured_content=result.pack.model_dump(mode="json"),
+                created_by_agent_id=run.agent_id,
+                source_agent_run_id=run.id,
+                generation_key=generation_key,
+                change_description=(
+                    f"Social post pack revision: {task.input_data.get('revision_comment', '')}"
+                ),
+            )
+            session.add(pack_version)
+            await session.flush()
+            children = list(
+                (
+                    await session.scalars(
+                        select(ContentItem)
+                        .where(ContentItem.parent_content_item_id == pack_item.id)
+                        .with_for_update()
+                    )
+                ).all()
+            )
+            by_key: dict[str, ContentItem] = {}
+            for child in children:
+                current = await session.scalar(
+                    select(ContentVersion).where(ContentVersion.id == child.current_version_id)
+                )
+                if current:
+                    by_key[str(current.structured_content.get("key"))] = child
+            incoming_keys = {post.key for post in result.pack.posts}
+            for old_key, child in by_key.items():
+                if old_key not in incoming_keys:
+                    # Preserve historical child content, but remove it from the
+                    # active pack without hard-deleting its audit trail.
+                    child.status = ContentStatus.ARCHIVED
+                    child.archived_at = datetime.now(UTC)
+            revision_approval_posts: list[dict[str, object]] = []
+            for post in result.pack.posts:
+                existing_child = by_key.get(post.key)
+                if existing_child is None:
+                    child = ContentItem(
+                        campaign_id=task.campaign_id,
+                        source_task_id=task.id,
+                        parent_content_item_id=pack_item.id,
+                        channel=ContentChannel(post.channel),
+                        content_type=ContentType.SOCIAL_POST,
+                        title=post.title,
+                        status=ContentStatus.WAITING_APPROVAL,
+                        author_agent_id=run.agent_id,
+                        metadata_={},
+                    )
+                    session.add(child)
+                    await session.flush()
+                    number = 1
+                else:
+                    child = existing_child
+                    number = (
+                        int(
+                            await session.scalar(
+                                select(ContentVersion.version_number).where(
+                                    ContentVersion.id == child.current_version_id
+                                )
+                            )
+                            or 0
+                        )
+                        + 1
+                    )
+                    child.status = ContentStatus.WAITING_APPROVAL
+                    child.channel = ContentChannel(post.channel)
+                    child.title = post.title
+                version = ContentVersion(
+                    content_item_id=child.id,
+                    version_number=number,
+                    content=post.text_markdown,
+                    structured_content=post.model_dump(mode="json"),
+                    created_by_agent_id=run.agent_id,
+                    source_agent_run_id=run.id,
+                    generation_key=f"post:revision:{task.id}:{post.key}",
+                    change_description=(
+                        f"Social post revision: {task.input_data.get('revision_comment', '')}"
+                    ),
+                )
+                session.add(version)
+                await session.flush()
+                child.current_version_id = version.id
+                revision_approval_posts.append(
+                    {
+                        "content_item_id": str(child.id),
+                        "content_version_id": str(version.id),
+                        "channel": post.channel,
+                        "title": post.title,
+                        "content_hash": hashlib.sha256(version.content.encode()).hexdigest(),
+                    }
+                )
+                for source in post.sources:
+                    session.add(
+                        ContentDerivation(
+                            derived_content_version_id=version.id,
+                            source_content_version_id=source.content_version_id,
+                            source_section_key=source.section_key,
+                        )
+                    )
+            pack_item.current_version_id = pack_version.id
+            await ApprovalService(session).create_content_approval(
+                pack_item.id,
+                pack_version.version_number,
+                {
+                    "content_item_id": str(pack_item.id),
+                    "content_version_id": str(pack_version.id),
+                    "version_number": pack_version.version_number,
+                    "posts": revision_approval_posts,
+                },
+                run.agent_id,
+            )
+            await TaskService(session).complete_task(
+                task.id,
+                {
+                    "content_item_id": str(pack_item.id),
+                    "content_type": "SOCIAL_POST_PACK",
+                    "post_count": len(result.pack.posts),
+                },
+                commit=False,
+            )
+            await ActivityLogService(session).record(
+                "CONTENT_REVISION_COMPLETED",
+                operation_key=f"revision-completed:{run.id}",
+                campaign_id=task.campaign_id,
+                task_id=task.id,
+                agent_id=run.agent_id,
+                content_item_id=pack_item.id,
+            )
+            return
         article_title = "Статья"
         if calls:
             article_title = str((calls[0].result or {}).get("title") or article_title)
@@ -522,6 +794,14 @@ class SocialPostResultProcessor:
             },
             run.agent_id,
         )
+        await ActivityLogService(session).record(
+            "SOCIAL_POST_PACK_CREATED",
+            operation_key=f"pack-created:{run.id}",
+            campaign_id=task.campaign_id,
+            task_id=task.id,
+            agent_id=run.agent_id,
+            content_item_id=pack_item.id,
+        )
         await TaskService(session).complete_task(
             task.id,
             {
@@ -531,6 +811,18 @@ class SocialPostResultProcessor:
             },
             commit=False,
         )
+
+
+class ContentRevisionResultProcessor:
+    async def process(
+        self, session: AsyncSession, run: AgentRun, task: Task, output: dict[str, object]
+    ) -> None:
+        if task.input_data.get("revision_target_type") == ContentType.ARTICLE.value:
+            await WriterResultProcessor().process(session, run, task, output)
+        elif task.input_data.get("revision_target_type") == ContentType.SOCIAL_POST_PACK.value:
+            await SocialPostResultProcessor().process(session, run, task, output)
+        else:
+            raise AppError("INVALID_REVISION_TARGET", "Недопустимый объект доработки.", 409)
 
 
 def _optional_int(value: Any) -> int | None:
@@ -547,6 +839,8 @@ class TaskResultProcessorRegistry:
             return WriterResultProcessor()
         if task_type is TaskType.CREATE_SOCIAL_POSTS:
             return SocialPostResultProcessor()
+        if task_type is TaskType.CONTENT_REVISION:
+            return ContentRevisionResultProcessor()
         return DefaultTaskResultProcessor()
 
 

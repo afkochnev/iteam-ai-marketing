@@ -36,6 +36,16 @@ class ContentVersionResponse(ContentVersionSummary):
     sources: list[ContentSourceResponse]
 
 
+class ContentApprovalHistory(BaseModel):
+    id: UUID
+    subject_version: int
+    status: str
+    comment: str | None
+    reviewed_by_user_id: UUID | None
+    created_at: datetime
+    resolved_at: datetime | None
+
+
 class ContentListItem(BaseModel):
     id: UUID
     campaign_id: UUID
@@ -54,3 +64,4 @@ class ContentResponse(ContentListItem):
     author_agent_id: UUID
     current_version: ContentVersionResponse | None
     versions: list[ContentVersionSummary]
+    approval_history: list[ContentApprovalHistory] = []

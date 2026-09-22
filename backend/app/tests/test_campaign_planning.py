@@ -228,7 +228,7 @@ async def test_inactive_agents_and_cancellation(
         "app.workers.agent_worker.execute_agent_run.delay",
         lambda _run_id: SimpleNamespace(id="job"),
     )
-    user, campaign = await setup_campaign(db_session)
+    _user, campaign = await setup_campaign(db_session)
     director = (
         await db_session.execute(select(Agent).where(Agent.slug == "marketing_director"))
     ).scalar_one()

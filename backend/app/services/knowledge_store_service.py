@@ -6,7 +6,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.errors import AppError
 from app.integrations.openai_knowledge import OpenAIKnowledgeProvider
-from app.models.knowledge import KnowledgeStore, KnowledgeStoreProvider, KnowledgeStoreStatus
+from app.models.knowledge import (
+    KnowledgeStore,
+    KnowledgeStoreProvider,
+    KnowledgeStoreStatus,
+)
 from app.repositories.knowledge import KnowledgeRepository
 
 logger = logging.getLogger(__name__)

@@ -6,10 +6,22 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import CurrentUser, SessionDependency
+from app.models.agent import AgentStatus
 from app.models.approval import Approval, ApprovalObjectType, ApprovalStatus
-from app.models.content import ContentItem, ContentStatus, ContentType
+from app.models.content import (
+    ContentDerivation,
+    ContentItem,
+    ContentStatus,
+    ContentType,
+    ContentVersionSource,
+)
+from app.models.knowledge_pack import KnowledgePackItem
+from app.models.task import Task, TaskStatus, TaskType
 from app.models.user import User
+from app.repositories.agents import AgentRepository
+from app.schemas.approval import RequiredApprovalComment
 from app.schemas.content import (
+    ContentApprovalHistory,
     ContentApprovalRequest,
     ContentListItem,
     ContentRejectionRequest,
@@ -18,7 +30,11 @@ from app.schemas.content import (
     ContentVersionResponse,
     ContentVersionSummary,
 )
+from app.schemas.task import TaskCreate
+from app.services.activity_log_service import ActivityLogService
 from app.services.content_service import ContentService
+from app.services.task_dispatcher_service import TaskDispatcherService
+from app.services.task_service import TaskService
 
 router = APIRouter(prefix="/content", tags=["content"])
 
@@ -44,7 +60,7 @@ def _summary(version: Any) -> ContentVersionSummary:
     )
 
 
-def _response(item: Any) -> ContentResponse:
+def _response(item: Any, approvals: list[Approval] | None = None) -> ContentResponse:
     versions = sorted(item.versions, key=lambda value: value.version_number)
     current = next((version for version in versions if version.id == item.current_version_id), None)
     current_response = (
@@ -72,6 +88,18 @@ def _response(item: Any) -> ContentResponse:
         author_agent_id=item.author_agent_id,
         current_version=current_response,
         versions=[_summary(version) for version in versions],
+        approval_history=[
+            ContentApprovalHistory(
+                id=approval.id,
+                subject_version=approval.subject_version,
+                status=approval.status.value,
+                comment=approval.comment,
+                reviewed_by_user_id=approval.reviewed_by_user_id,
+                created_at=approval.created_at,
+                resolved_at=approval.resolved_at,
+            )
+            for approval in sorted(approvals or [], key=lambda value: value.created_at)
+        ],
     )
 
 
@@ -115,7 +143,20 @@ async def get_content(
     _user: CurrentUser,
     session: SessionDependency,
 ) -> ContentResponse:
-    return _response(await ContentService(session).get(content_id))
+    item = await ContentService(session).get(content_id)
+    approvals = list(
+        (
+            await session.scalars(
+                select(Approval)
+                .where(
+                    Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
+                    Approval.object_id == content_id,
+                )
+                .order_by(Approval.created_at)
+            )
+        ).all()
+    )
+    return _response(item, approvals)
 
 
 @router.get("/{content_id}/versions", response_model=list[ContentVersionSummary])
@@ -155,6 +196,30 @@ async def _resolve_content(
         )
     ).scalar_one_or_none()
     if approval is None:
+        requested = (
+            await session.execute(
+                select(Approval)
+                .where(
+                    Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
+                    Approval.object_id == content_id,
+                    Approval.status == ApprovalStatus.REVISION_REQUESTED,
+                )
+                .order_by(Approval.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if requested is not None:
+            existing = await session.scalar(
+                select(Task).where(
+                    Task.task_type == TaskType.CONTENT_REVISION,
+                    Task.input_data["approval_id"].as_string() == str(requested.id),
+                    Task.status.in_(
+                        [TaskStatus.READY, TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED]
+                    ),
+                )
+            )
+            if existing is not None:
+                return _response(await ContentService(session).get(content_id))
         from app.core.errors import AppError
 
         if item.status is (
@@ -207,6 +272,7 @@ async def _resolve_content(
                 await session.scalars(
                     select(ContentItem)
                     .where(ContentItem.parent_content_item_id == item.id)
+                    .where(ContentItem.status != ContentStatus.ARCHIVED)
                     .with_for_update()
                 )
             ).all()
@@ -219,12 +285,22 @@ async def _resolve_content(
                 await session.scalars(
                     select(ContentItem)
                     .where(ContentItem.parent_content_item_id == item.id)
+                    .where(ContentItem.status != ContentStatus.ARCHIVED)
                     .with_for_update()
                 )
             ).all()
         )
         for child in children:
             child.status = ContentStatus.REJECTED
+    await session.commit()
+    await ActivityLogService(session).record(
+        "CONTENT_APPROVED" if status is ApprovalStatus.APPROVED else "CONTENT_REJECTED",
+        operation_key=f"content-resolution:{approval.id}:{status.value}",
+        campaign_id=item.campaign_id,
+        user_id=user.id,
+        content_item_id=item.id,
+        approval_id=approval.id,
+    )
     await session.commit()
     return _response(await ContentService(session).get(content_id))
 
@@ -255,3 +331,153 @@ async def reject_content(
     return await _resolve_content(
         content_id, user, session, ApprovalStatus.REJECTED, payload.comment
     )
+
+
+@router.post("/{content_id}/request-revision", response_model=ContentResponse, status_code=202)
+async def request_revision(
+    content_id: UUID,
+    payload: RequiredApprovalComment,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> ContentResponse:
+    item = (
+        await session.execute(
+            select(ContentItem).where(ContentItem.id == content_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if item is None:
+        from app.core.errors import AppError
+
+        raise AppError("CONTENT_NOT_FOUND", "Материал не найден.", 404)
+    if item.content_type not in {ContentType.ARTICLE, ContentType.SOCIAL_POST_PACK}:
+        from app.core.errors import AppError
+
+        raise AppError(
+            "CONTENT_REVISION_NOT_SUPPORTED", "Этот тип контента нельзя дорабатывать.", 409
+        )
+    approval = (
+        await session.execute(
+            select(Approval)
+            .where(
+                Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
+                Approval.object_id == content_id,
+                Approval.status == ApprovalStatus.PENDING,
+            )
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+    if approval is None:
+        from app.core.errors import AppError
+
+        raise AppError("CONTENT_APPROVAL_NOT_FOUND", "Ожидающее согласование не найдено.", 404)
+    if str(item.current_version_id) != str(approval.subject_snapshot.get("content_version_id")):
+        from app.core.errors import AppError
+
+        raise AppError("CONTENT_APPROVAL_STALE", "Согласование относится к устаревшей версии.", 409)
+    if item.content_type is ContentType.SOCIAL_POST_PACK:
+        post_snapshots = approval.subject_snapshot.get("posts", [])
+        if post_snapshots:
+            child_ids = [UUID(str(post["content_item_id"])) for post in post_snapshots]
+            children = {
+                child.id: child
+                for child in (
+                    await session.scalars(
+                        select(ContentItem).where(ContentItem.id.in_(child_ids)).with_for_update()
+                    )
+                ).all()
+            }
+            if any(
+                child_id not in children
+                or str(children[child_id].current_version_id) != str(post.get("content_version_id"))
+                for child_id, post in zip(child_ids, post_snapshots, strict=False)
+            ):
+                raise AppError(
+                    "CONTENT_APPROVAL_STALE", "Согласование содержит устаревшую версию поста.", 409
+                )
+    existing = await session.scalar(
+        select(Task).where(
+            Task.task_type == TaskType.CONTENT_REVISION,
+            Task.input_data["approval_id"].as_string() == str(approval.id),
+            Task.status.in_([TaskStatus.READY, TaskStatus.IN_PROGRESS]),
+        )
+    )
+    if existing:
+        return _response(await ContentService(session).get(content_id))
+    slug = "writer" if item.content_type is ContentType.ARTICLE else "smm_manager"
+    agent = await AgentRepository(session).get_by_slug(slug)
+    from app.core.errors import AppError
+
+    if agent is None or agent.status is not AgentStatus.ACTIVE:
+        raise AppError("REQUIRED_AGENT_INACTIVE", "Исполнитель доработки недоступен.", 409)
+    immutable_context: dict[str, object] = {}
+    if item.content_type is ContentType.ARTICLE:
+        pack_ids = list(
+            (
+                await session.scalars(
+                    select(KnowledgePackItem.knowledge_pack_id)
+                    .join(
+                        ContentVersionSource,
+                        ContentVersionSource.knowledge_pack_item_id == KnowledgePackItem.id,
+                    )
+                    .where(ContentVersionSource.content_version_id == item.current_version_id)
+                )
+            ).all()
+        )
+        immutable_context["knowledge_pack_ids"] = [str(value) for value in dict.fromkeys(pack_ids)]
+    else:
+        article_version_ids = list(
+            (
+                await session.scalars(
+                    select(ContentDerivation.source_content_version_id).where(
+                        ContentDerivation.derived_content_version_id.in_(
+                            select(ContentItem.current_version_id).where(
+                                ContentItem.parent_content_item_id == item.id
+                            )
+                        )
+                    )
+                )
+            ).all()
+        )
+        immutable_context["article_version_ids"] = [
+            str(value) for value in dict.fromkeys(article_version_ids)
+        ]
+    approval.status = ApprovalStatus.REVISION_REQUESTED
+    approval.reviewed_by_user_id = user.id
+    approval.comment = payload.comment
+    from datetime import UTC, datetime
+
+    approval.resolved_at = datetime.now(UTC)
+    task = await TaskService(session).create_task(
+        TaskCreate(
+            campaign_id=item.campaign_id,
+            task_type=TaskType.CONTENT_REVISION,
+            title=f"Доработать: {item.title}",
+            description="Подготовить новую версию контента по комментарию пользователя.",
+            assigned_agent_id=agent.id,
+            input_data={
+                "content_item_id": str(item.id),
+                "base_content_version_id": str(item.current_version_id),
+                "approval_id": str(approval.id),
+                "revision_comment": payload.comment,
+                "requested_by_user_id": str(user.id),
+                "original_task_id": str(item.source_task_id),
+                "revision_target_type": item.content_type.value,
+                "immutable_source_context": immutable_context,
+            },
+        ),
+        commit=False,
+    )
+    await session.commit()
+    await ActivityLogService(session).record(
+        "CONTENT_REVISION_REQUESTED",
+        operation_key=f"revision-request:{approval.id}",
+        campaign_id=item.campaign_id,
+        task_id=task.id,
+        user_id=user.id,
+        content_item_id=item.id,
+        approval_id=approval.id,
+        metadata={"revision_comment": payload.comment},
+    )
+    await session.commit()
+    await TaskDispatcherService(session).dispatch_ready_tasks()
+    return _response(await ContentService(session).get(content_id))

@@ -5,15 +5,15 @@ import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
-import { approvalsApi, campaignsApi, contentApi, tasksApi, type Approval, type Campaign, type ContentListItem, type TaskListItem } from "@/lib/api";
+import { activitiesApi, approvalsApi, campaignsApi, contentApi, tasksApi, type Activity, type Approval, type Campaign, type ContentListItem, type TaskListItem } from "@/lib/api";
 import { CAMPAIGN_STATUS_LABELS, formatDate, formatDateTime } from "@/lib/campaigns";
 import { TASK_STATUS_LABELS } from "@/lib/tasks";
 
 export default function CampaignDetailsPage() {
   const { id } = useParams<{ id: string }>(); const router = useRouter(); const { user, loading: authLoading } = useAuth();
   const [campaign, setCampaign] = useState<Campaign | null>(null); const [error, setError] = useState("");
-  const [tasks, setTasks] = useState<TaskListItem[]>([]); const [approvals, setApprovals] = useState<Approval[]>([]); const [contents, setContents] = useState<ContentListItem[]>([]); const [action, setAction] = useState<"revision" | "reject" | null>(null); const [comment, setComment] = useState("");
-  const load = useCallback(() => Promise.all([campaignsApi.get(id), tasksApi.list({ campaign_id: id }), approvalsApi.list({ object_type: "CAMPAIGN_STRATEGY", object_id: id }), contentApi.list({ campaign_id: id })]).then(([campaignValue, taskRows, approvalRows, contentRows]) => { setCampaign(campaignValue); setTasks(taskRows); setApprovals(approvalRows); setContents(contentRows); }).catch((reason: Error) => setError(reason.message)), [id]);
+  const [tasks, setTasks] = useState<TaskListItem[]>([]); const [approvals, setApprovals] = useState<Approval[]>([]); const [contents, setContents] = useState<ContentListItem[]>([]); const [activities, setActivities] = useState<Activity[]>([]); const [action, setAction] = useState<"revision" | "reject" | null>(null); const [comment, setComment] = useState("");
+  const load = useCallback(() => Promise.all([campaignsApi.get(id), tasksApi.list({ campaign_id: id }), approvalsApi.list({ object_type: "CAMPAIGN_STRATEGY", object_id: id }), contentApi.list({ campaign_id: id }), activitiesApi.list(id).catch(() => [])]).then(([campaignValue, taskRows, approvalRows, contentRows, activityRows]) => { setCampaign(campaignValue); setTasks(taskRows); setApprovals(approvalRows); setContents(contentRows); setActivities(activityRows); }).catch((reason: Error) => setError(reason.message)), [id]);
   useEffect(() => { if (!authLoading && !user) { router.replace("/login"); return; } if (user) load(); }, [authLoading, user, router, load]);
   useEffect(() => { if (campaign?.status !== "PLANNING") return; const timer = window.setInterval(load, 3000); return () => window.clearInterval(timer); }, [campaign?.status, load]);
   async function archive() { if (!window.confirm("Архивировать кампанию? После архивации редактирование будет недоступно.")) return; try { setCampaign(await campaignsApi.archive(id)); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось архивировать кампанию."); } }
@@ -37,7 +37,9 @@ export default function CampaignDetailsPage() {
     <div className="page-header"><h2>Задачи</h2>{!archived && <Link className="button-link" href={`/tasks/new?campaign_id=${id}`}>Создать задачу</Link>}</div>
     <div className="summary-grid"><div><strong>{tasks.length}</strong><span>Всего</span></div><div><strong>{tasks.filter((item) => item.status === "READY").length}</strong><span>Ready</span></div><div><strong>{tasks.filter((item) => item.status === "BLOCKED").length}</strong><span>Blocked</span></div><div><strong>{tasks.filter((item) => item.status === "IN_PROGRESS").length}</strong><span>In Progress</span></div><div><strong>{tasks.filter((item) => item.status === "COMPLETED").length}</strong><span>Completed</span></div></div>
     {tasks.length ? <ul>{tasks.map((task) => <li key={task.id}><Link href={`/tasks/${task.id}`}>{task.title}</Link> — {TASK_STATUS_LABELS[task.status]}</li>)}</ul> : <p>У кампании пока нет задач.</p>}
+    <h3>Ход workflow</h3><ol>{(["KNOWLEDGE_RESEARCH", "WRITE_ARTICLE", "CREATE_SOCIAL_POSTS"] as const).map((type) => { const task = tasks.find((item) => item.task_type === type); return <li key={type}>{type}: {task ? TASK_STATUS_LABELS[task.status] : "—"}</li>; })}</ol>
     <div className="page-header"><h2>Контент</h2><span>Ожидают согласования: {contents.filter((item) => item.status === "WAITING_APPROVAL").length}</span></div>
     {contents.length ? <ul>{contents.map((item) => <li key={item.id}><Link href={`/content/${item.id}`}>{item.title}</Link> — {item.content_type} · {item.status}{item.content_type === "SOCIAL_POST_PACK" && <span> · постов: {contents.filter((child) => child.parent_content_item_id === item.id).length}</span>}</li>)}</ul> : <p>Контент ещё не создан.</p>}
+    <h3>Активность</h3>{activities.length ? <ul>{activities.map((event) => <li key={event.id}>{new Date(event.created_at).toLocaleString("ru-RU")} — {event.event_type}</li>)}</ul> : <p>Событий пока нет.</p>}
   </section></main>;
 }

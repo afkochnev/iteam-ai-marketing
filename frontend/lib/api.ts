@@ -36,8 +36,10 @@ export type ContentStatus = "DRAFT" | "WAITING_REVIEW" | "WAITING_APPROVAL" | "A
 export interface ContentSource { knowledge_pack_item_id: string; source_title: string; filename: string | null; excerpt: string; relevance_score: number | null; section_key: string; }
 export interface ContentVersionSummary { id: string; version_number: number; change_description: string | null; created_at: string; }
 export interface ContentVersion extends ContentVersionSummary { content: string; structured_content: Record<string, unknown>; sources: ContentSource[]; }
+export interface ContentApprovalHistory { id: string; subject_version: number; status: string; comment: string | null; reviewed_by_user_id: string | null; created_at: string; resolved_at: string | null; }
 export interface ContentListItem { id: string; campaign_id: string; content_type: ContentType; title: string; status: ContentStatus; current_version_number: number | null; created_at: string; updated_at: string; parent_content_item_id?: string | null; channel?: "TELEGRAM" | "VK" | null; }
-export interface Content extends ContentListItem { source_task_id: string; author_agent_id: string; parent_content_item_id?: string | null; channel?: "TELEGRAM" | "VK" | null; current_version: ContentVersion | null; versions: ContentVersionSummary[]; }
+export interface Content extends ContentListItem { source_task_id: string; author_agent_id: string; parent_content_item_id?: string | null; channel?: "TELEGRAM" | "VK" | null; current_version: ContentVersion | null; versions: ContentVersionSummary[]; approval_history?: ContentApprovalHistory[]; }
+export interface Activity { id: string; event_type: string; campaign_id: string | null; task_id: string | null; content_item_id: string | null; approval_id: string | null; metadata: Record<string, unknown>; created_at: string; }
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
@@ -133,4 +135,6 @@ export const contentApi = {
   versions: (id: string) => request<ContentVersionSummary[]>(`/content/${id}/versions`),
   approve: (id: string, comment?: string) => request<Content>(`/content/${id}/approve`, { method: "POST", body: JSON.stringify({ comment: comment || null }) }),
   reject: (id: string, comment: string) => request<Content>(`/content/${id}/reject`, { method: "POST", body: JSON.stringify({ comment }) }),
+  requestRevision: (id: string, comment: string) => request<Content>(`/content/${id}/request-revision`, { method: "POST", body: JSON.stringify({ comment }) }),
 };
+export const activitiesApi = { list: (campaignId?: string) => request<Activity[]>(`/activities${campaignId ? `?campaign_id=${campaignId}` : ""}`) };

@@ -6,14 +6,14 @@ import EditCampaignPage from "../app/campaigns/[id]/edit/page";
 import NewCampaignPage from "../app/campaigns/new/page";
 import CampaignsPage from "../app/campaigns/page";
 
-const { replace, push, list, get, create, update, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList, contentList } = vi.hoisted(() => ({
-  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(), contentList: vi.fn(),
+const { replace, push, list, get, create, update, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList, contentList, activityList } = vi.hoisted(() => ({
+  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(), contentList: vi.fn(), activityList: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace, push }), useParams: () => ({ id: "campaign-1" }) }));
 vi.mock("@/components/auth-provider", () => ({ useAuth: () => ({ user: { role: "ADMIN" }, loading: false }) }));
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
-  return { ...actual, campaignsApi: { list, get, create, update, archive, generateStrategy, approveStrategy, requestStrategyRevision: requestRevision, rejectStrategy }, approvalsApi: { list: approvalList, get: vi.fn() }, tasksApi: { ...actual.tasksApi, list: taskList }, contentApi: { ...actual.contentApi, list: contentList } };
+  return { ...actual, campaignsApi: { list, get, create, update, archive, generateStrategy, approveStrategy, requestStrategyRevision: requestRevision, rejectStrategy }, approvalsApi: { list: approvalList, get: vi.fn() }, tasksApi: { ...actual.tasksApi, list: taskList }, contentApi: { ...actual.contentApi, list: contentList }, activitiesApi: { list: activityList } };
 });
 
 const campaign = {
@@ -26,7 +26,7 @@ const campaign = {
 };
 
 describe("Campaigns UI", () => {
-  beforeEach(() => { vi.clearAllMocks(); list.mockResolvedValue([campaign]); get.mockResolvedValue(campaign); taskList.mockResolvedValue([]); approvalList.mockResolvedValue([]); contentList.mockResolvedValue([]); vi.spyOn(window, "confirm").mockReturnValue(true); });
+  beforeEach(() => { vi.clearAllMocks(); list.mockResolvedValue([campaign]); get.mockResolvedValue(campaign); taskList.mockResolvedValue([]); approvalList.mockResolvedValue([]); contentList.mockResolvedValue([]); activityList.mockResolvedValue([]); vi.spyOn(window, "confirm").mockReturnValue(true); });
 
   it("renders campaign list and empty state", async () => {
     const first = render(<CampaignsPage />);
@@ -125,5 +125,39 @@ describe("Campaigns UI", () => {
     expect(await screen.findByText("Ожидают согласования: 3")).toBeInTheDocument();
     expect(screen.getByText("Пакет")).toBeInTheDocument();
     expect(screen.getByText(/постов: 1/)).toBeInTheDocument();
+  });
+
+  it("renders backend workflow statuses and activity timeline", async () => {
+    taskList.mockResolvedValue([
+      { id: "knowledge", task_type: "KNOWLEDGE_RESEARCH", title: "Knowledge", status: "COMPLETED" },
+      { id: "article", task_type: "WRITE_ARTICLE", title: "Article", status: "COMPLETED" },
+      { id: "social", task_type: "CREATE_SOCIAL_POSTS", title: "Social", status: "READY" },
+    ]);
+    activityList.mockResolvedValue([
+      { id: "event-1", event_type: "TASK_AUTO_DISPATCHED", created_at: "2026-09-22T10:00:00Z" },
+      { id: "event-2", event_type: "ARTICLE_CREATED", created_at: "2026-09-22T10:01:00Z" },
+      { id: "event-3", event_type: "SOCIAL_POST_PACK_CREATED", created_at: "2026-09-22T10:02:00Z" },
+      { id: "event-4", event_type: "CONTENT_REVISION_REQUESTED", created_at: "2026-09-22T10:03:00Z" },
+    ]);
+    render(<CampaignDetailsPage />);
+    expect(await screen.findByText("KNOWLEDGE_RESEARCH: Завершена")).toBeInTheDocument();
+    expect(screen.getByText("WRITE_ARTICLE: Завершена")).toBeInTheDocument();
+    expect(screen.getByText("CREATE_SOCIAL_POSTS: Готова")).toBeInTheDocument();
+    expect(screen.getByText(/TASK_AUTO_DISPATCHED/)).toBeInTheDocument();
+    expect(screen.getByText(/ARTICLE_CREATED/)).toBeInTheDocument();
+    expect(screen.getByText(/SOCIAL_POST_PACK_CREATED/)).toBeInTheDocument();
+    expect(screen.getByText(/CONTENT_REVISION_REQUESTED/)).toBeInTheDocument();
+  });
+
+  it("renders failed and blocked workflow statuses from backend", async () => {
+    taskList.mockResolvedValue([
+      { id: "knowledge", task_type: "KNOWLEDGE_RESEARCH", title: "Knowledge", status: "FAILED" },
+      { id: "article", task_type: "WRITE_ARTICLE", title: "Article", status: "BLOCKED" },
+      { id: "social", task_type: "CREATE_SOCIAL_POSTS", title: "Social", status: "BLOCKED" },
+    ]);
+    render(<CampaignDetailsPage />);
+    expect(await screen.findByText("KNOWLEDGE_RESEARCH: Ошибка")).toBeInTheDocument();
+    expect(screen.getByText("WRITE_ARTICLE: Заблокирована")).toBeInTheDocument();
+    expect(screen.getByText("CREATE_SOCIAL_POSTS: Заблокирована")).toBeInTheDocument();
   });
 });

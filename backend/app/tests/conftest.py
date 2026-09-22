@@ -11,7 +11,12 @@ from app.models.agent import Agent
 from app.models.agent_run import AgentRun, ToolCall
 from app.models.approval import Approval
 from app.models.campaign import Campaign
-from app.models.content import ContentDerivation, ContentItem, ContentVersion, ContentVersionSource
+from app.models.content import (
+    ContentDerivation,
+    ContentItem,
+    ContentVersion,
+    ContentVersionSource,
+)
 from app.models.knowledge import KnowledgeItem, KnowledgeSource, KnowledgeStore
 from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem
 from app.models.task import Task, TaskDependency

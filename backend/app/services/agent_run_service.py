@@ -21,11 +21,27 @@ from app.core.errors import AppError
 from app.models.agent import Agent, AgentStatus
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.campaign import CampaignStatus
-from app.models.knowledge import KnowledgeStore, KnowledgeStoreProvider, KnowledgeStoreStatus
-from app.models.knowledge_pack import KnowledgePack, KnowledgePackStatus
+from app.models.content import (
+    ContentDerivation,
+    ContentItem,
+    ContentType,
+    ContentVersion,
+    ContentVersionSource,
+)
+from app.models.knowledge import (
+    KnowledgeStore,
+    KnowledgeStoreProvider,
+    KnowledgeStoreStatus,
+)
+from app.models.knowledge_pack import (
+    KnowledgePack,
+    KnowledgePackItem,
+    KnowledgePackStatus,
+)
 from app.models.task import Task, TaskStatus, TaskType
 from app.repositories.agent_runs import AgentRunRepository
 from app.repositories.tasks import TaskRepository
+from app.services.activity_log_service import ActivityLogService
 from app.services.agent_runner_service import AgentRuntimeError, RuntimeResult
 from app.services.task_result_processors import result_processor_registry
 from app.services.task_service import TaskService
@@ -61,6 +77,7 @@ class AgentRunService:
             TaskType.KNOWLEDGE_RESEARCH,
             TaskType.WRITE_ARTICLE,
             TaskType.CREATE_SOCIAL_POSTS,
+            TaskType.CONTENT_REVISION,
         }:
             raise AppError(
                 "TASK_TYPE_NOT_EXECUTABLE", "Этот тип задачи пока нельзя выполнять через AI.", 409
@@ -207,6 +224,90 @@ class AgentRunService:
                 raise AppError(
                     "SOURCE_ARTICLE_NOT_AVAILABLE", "Готовая версия статьи не найдена.", 409
                 )
+        if task.task_type is TaskType.CONTENT_REVISION:
+            target_type = task.input_data.get("revision_target_type")
+            if target_type == ContentType.ARTICLE.value:
+                if agent.slug != "writer":
+                    raise AppError(
+                        "INVALID_AGENT_FOR_TASK_TYPE", "Доработку статьи выполняет Writer.", 409
+                    )
+            elif target_type == ContentType.SOCIAL_POST_PACK.value:
+                if agent.slug != "smm_manager":
+                    raise AppError(
+                        "INVALID_AGENT_FOR_TASK_TYPE",
+                        "Доработку публикаций выполняет SMM Manager.",
+                        409,
+                    )
+            else:
+                raise AppError("INVALID_REVISION_TARGET", "Недопустимый объект доработки.", 409)
+            enabled_tools = {item.tool_name for item in agent.tools if item.is_enabled}
+            required_tool = (
+                "read_knowledge_pack"
+                if target_type == ContentType.ARTICLE.value
+                else "read_content_version"
+            )
+            if required_tool not in enabled_tools or tool_registry.missing([required_tool]):
+                raise AppError(
+                    "REQUIRED_AGENT_TOOL_UNAVAILABLE",
+                    "Необходимый инструмент недоступен агенту.",
+                    409,
+                )
+            base_version = await self.session.get(
+                ContentVersion, UUID(str(task.input_data.get("base_content_version_id")))
+            )
+            if base_version is None:
+                raise AppError(
+                    "SOURCE_CONTENT_NOT_AVAILABLE", "Исходная версия контента не найдена.", 409
+                )
+            if target_type == ContentType.ARTICLE.value:
+                pack_ids = list(
+                    (
+                        await self.session.scalars(
+                            select(KnowledgePackItem.knowledge_pack_id)
+                            .join(
+                                ContentVersionSource,
+                                ContentVersionSource.knowledge_pack_item_id == KnowledgePackItem.id,
+                            )
+                            .where(ContentVersionSource.content_version_id == base_version.id)
+                        )
+                    ).all()
+                )
+                allowed_pack_ids = list(dict.fromkeys(pack_ids))
+                if not allowed_pack_ids:
+                    raise AppError(
+                        "KNOWLEDGE_PACK_NOT_AVAILABLE", "Источники исходной статьи не найдены.", 409
+                    )
+            else:
+                context = task.input_data.get("immutable_source_context") or {}
+                configured_ids = context.get("article_version_ids", [])
+                if configured_ids:
+                    allowed_content_version_ids = [UUID(str(item)) for item in configured_ids]
+                else:
+                    # Pack versions do not carry derivations themselves; derive the
+                    # immutable article allow-list from the current child versions.
+                    child_version_ids = list(
+                        (
+                            await self.session.scalars(
+                                select(ContentItem.current_version_id).where(
+                                    ContentItem.parent_content_item_id
+                                    == base_version.content_item_id,
+                                    ContentItem.current_version_id.is_not(None),
+                                )
+                            )
+                        ).all()
+                    )
+                    if child_version_ids:
+                        allowed_content_version_ids = list(
+                            (
+                                await self.session.scalars(
+                                    select(ContentDerivation.source_content_version_id).where(
+                                        ContentDerivation.derived_content_version_id.in_(
+                                            child_version_ids
+                                        )
+                                    )
+                                )
+                            ).all()
+                        )
         model = agent.model or settings.openai_default_model
         if not model:
             raise AppError("AGENT_MODEL_NOT_CONFIGURED", "Модель агента не настроена.", 409)
@@ -237,6 +338,7 @@ class AgentRunService:
                         "allowed_content_version_ids": [
                             str(item) for item in allowed_content_version_ids
                         ],
+                        "revision_target_type": task.input_data.get("revision_target_type"),
                     },
                     "model": model,
                     "prompt_snapshot": agent.system_prompt,
@@ -292,9 +394,14 @@ class AgentRunService:
         run = await self.repository.get_by_id(run_id, lock=True)
         if run is None or run.status is not AgentRunStatus.QUEUED:
             return None
-        task = await self.session.get(
-            Task, run.task_id, options=[selectinload(Task.assigned_agent).selectinload(Agent.tools)]
-        )
+        task = (
+            await self.session.execute(
+                select(Task)
+                .options(selectinload(Task.assigned_agent).selectinload(Agent.tools))
+                .where(Task.id == run.task_id)
+                .execution_options(populate_existing=True)
+            )
+        ).scalar_one_or_none()
         if task is None or task.status is not TaskStatus.READY:
             return None
         now = datetime.now(UTC)
@@ -307,12 +414,21 @@ class AgentRunService:
         agent = task.assigned_agent
         assert agent is not None
         enabled = [item.tool_name for item in agent.tools if item.is_enabled]
+        output_task_type = (
+            TaskType.WRITE_ARTICLE
+            if task.task_type is TaskType.CONTENT_REVISION
+            and task.input_data.get("revision_target_type") == ContentType.ARTICLE.value
+            else TaskType.CREATE_SOCIAL_POSTS
+            if task.task_type is TaskType.CONTENT_REVISION
+            and task.input_data.get("revision_target_type") == ContentType.SOCIAL_POST_PACK.value
+            else task.task_type
+        )
         snapshot = AgentSnapshot(
             agent.name,
             run.prompt_snapshot,
             run.model,
             enabled,
-            output_type_registry.get(task.task_type),
+            output_type_registry.get(output_task_type),
         )
         await self.session.commit()
         return (
@@ -326,6 +442,11 @@ class AgentRunService:
                 task.task_type,
                 tuple(UUID(item) for item in run.input_data.get("allowed_knowledge_pack_ids", [])),
                 tuple(UUID(item) for item in run.input_data.get("allowed_content_version_ids", [])),
+                TaskType.WRITE_ARTICLE
+                if run.input_data.get("revision_target_type") == ContentType.ARTICLE.value
+                else TaskType.CREATE_SOCIAL_POSTS
+                if run.input_data.get("revision_target_type") == ContentType.SOCIAL_POST_PACK.value
+                else None,
             ),
             trace_id,
         )
@@ -360,6 +481,7 @@ class AgentRunService:
             )
             await self.session.commit()
         except AppError as exc:
+            logger.warning("Agent result rejected", extra={"run_id": str(run_id), "code": exc.code})
             await self.session.rollback()
             await self.finish_failure(run_id, AgentRuntimeError(exc.code, exc.message))
 
@@ -381,6 +503,14 @@ class AgentRunService:
                 task.status = TaskStatus.FAILED
                 task.error_message = str(error)
                 task.completed_at = now
+                await ActivityLogService(self.session).record(
+                    "AGENT_RUN_FAILED",
+                    operation_key=f"agent-failed:{run.id}",
+                    campaign_id=task.campaign_id,
+                    task_id=task.id,
+                    agent_id=run.agent_id,
+                    metadata={"error_code": error.code},
+                )
         await self.session.commit()
 
 
@@ -426,6 +556,14 @@ Brief статьи: {task.input_data.get("brief", "Не указан")}
 Одобренная стратегия: {campaign.strategy or "Не сформирована"}
 Доступные версии статьи: {[str(item) for item in (allowed_content_version_ids or [])]}
 Используй read_content_version для каждой версии. Не выдумывай факты и источники.
+"""
+    if task.task_type is TaskType.CONTENT_REVISION:
+        revision_context = f"""
+Это контролируемая доработка существующего контента.
+Целевой тип: {task.input_data.get("revision_target_type")}
+Базовая версия: {task.input_data.get("base_content_version_id")}
+Комментарий пользователя: {task.input_data.get("revision_comment")}
+Используй только разрешённые исторические источники и создай новую версию.
 """
     return f"""Выполни следующую задачу.
 

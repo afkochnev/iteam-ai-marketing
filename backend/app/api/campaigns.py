@@ -16,6 +16,7 @@ from app.schemas.campaign import (
 )
 from app.services.campaign_planning_service import CampaignPlanningService
 from app.services.campaign_service import CampaignService
+from app.services.task_dispatcher_service import TaskDispatcherService
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
 
@@ -98,6 +99,7 @@ async def approve_strategy(
     campaign, approval, tasks = await CampaignPlanningService(session).approve(
         campaign_id, current_user, payload.comment
     )
+    await TaskDispatcherService(session).dispatch_ready_tasks()
     current = await CampaignService(session).get_campaign(campaign.id)
     return StrategyApprovalResponse(
         campaign=CampaignResponse.model_validate(current),
