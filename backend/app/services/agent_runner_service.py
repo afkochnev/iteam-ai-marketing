@@ -10,6 +10,7 @@ from app.agents.factory import AgentRuntimeContext, AgentSnapshot, create_runtim
 from app.agents.output_registry import output_type_registry
 from app.agents.tool_registry import tool_registry
 from app.core.config import settings
+from app.models.task import TaskType
 
 
 @dataclass(frozen=True)
@@ -85,8 +86,13 @@ class AgentRunnerService:
         try:
             output_data = output_type_registry.normalize(result.final_output, context.task_type)
         except ValidationError as exc:
+            error_code = {
+                TaskType.CAMPAIGN_PLANNING: "INVALID_CAMPAIGN_PLAN",
+                TaskType.KNOWLEDGE_RESEARCH: "INVALID_KNOWLEDGE_RESEARCH_RESULT",
+                TaskType.WRITE_ARTICLE: "INVALID_ARTICLE_RESULT",
+            }.get(context.task_type, "INVALID_AGENT_OUTPUT")
             raise AgentRuntimeError(
-                "INVALID_CAMPAIGN_PLAN", "Структура стратегии не прошла проверку."
+                error_code, "Структура результата агента не прошла проверку."
             ) from exc
         return RuntimeResult(
             output_data=output_data,

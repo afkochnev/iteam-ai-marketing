@@ -15,6 +15,7 @@ class AgentRuntimeContext:
     campaign_id: UUID
     agent_run_id: UUID
     task_type: TaskType = TaskType.MANUAL
+    allowed_knowledge_pack_ids: tuple[UUID, ...] = ()
 
 
 @dataclass(frozen=True)

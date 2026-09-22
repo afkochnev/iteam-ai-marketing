@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 from typing import Any, Protocol
+from uuid import UUID
 
 from pydantic import ValidationError
 from sqlalchemy import select
@@ -10,9 +11,10 @@ from app.models.agent_run import AgentRun, ToolCall, ToolCallStatus
 from app.models.campaign import Campaign, CampaignStatus
 from app.models.knowledge import KnowledgeItem, KnowledgeItemStatus
 from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem, KnowledgePackStatus
+from app.models.content import ContentItem, ContentStatus, ContentType, ContentVersion, ContentVersionSource
 from app.models.task import Task, TaskStatus, TaskType
 from app.repositories.knowledge_packs import KnowledgePackRepository
-from app.schemas.agent_outputs import CampaignPlan, KnowledgeResearchResult
+from app.schemas.agent_outputs import ArticleWritingResult, CampaignPlan, KnowledgeResearchResult
 from app.schemas.knowledge import KnowledgeSearchResult
 from app.services.approval_service import ApprovalService
 from app.services.knowledge_search_service import build_result_key
@@ -184,6 +186,72 @@ class KnowledgeResearchResultProcessor:
             await session.flush()
 
 
+def render_article_markdown(article: object) -> str:
+    draft = ArticleWritingResult.model_validate({"sufficient": True, "article": article}).article
+    assert draft is not None
+    parts = [f"# {draft.title}"]
+    if draft.subtitle:
+        parts.append(f"## {draft.subtitle}")
+    parts.append(draft.lead)
+    for section in draft.sections:
+        parts.extend([f"## {section.heading}", section.body_markdown])
+    parts.extend(["## Заключение", draft.conclusion, draft.cta])
+    return "\n\n".join(parts)
+
+
+class WriterResultProcessor:
+    async def process(self, session: AsyncSession, run: AgentRun, task: Task, output: dict[str, object]) -> None:
+        existing = await session.scalar(select(ContentVersion).where(ContentVersion.source_agent_run_id == run.id))
+        if existing:
+            return
+        try:
+            result = ArticleWritingResult.model_validate(output)
+        except ValidationError as exc:
+            raise AppError("INVALID_ARTICLE_RESULT", "Структура статьи не прошла проверку.", 422) from exc
+        calls = list((await session.scalars(select(ToolCall).where(ToolCall.agent_run_id == run.id, ToolCall.tool_name == "read_knowledge_pack", ToolCall.status == ToolCallStatus.COMPLETED))).all())
+        if not calls:
+            raise AppError("KNOWLEDGE_PACK_NOT_READ", "Writer не прочитал пакет знаний.", 422)
+        allowed = {UUID(value) for value in task.input_data.get("allowed_knowledge_pack_ids", [])}
+        read_pack_ids: set[UUID] = set()
+        verified: set[UUID] = set()
+        for call in calls:
+            payload = call.result or {}
+            if payload.get("pack_id"):
+                read_pack_ids.add(UUID(str(payload["pack_id"])))
+            for item in payload.get("items", []):
+                if item.get("knowledge_pack_item_id"):
+                    verified.add(UUID(str(item["knowledge_pack_item_id"])))
+        if not allowed.issubset(read_pack_ids):
+            raise AppError("KNOWLEDGE_PACK_NOT_READ", "Writer не прочитал все необходимые пакеты знаний.", 422)
+        if not result.sufficient:
+            task.status = TaskStatus.FAILED
+            task.error_message = "INSUFFICIENT_ARTICLE_EVIDENCE: Недостаточно подтверждённых материалов для статьи."
+            task.output_data = {"gaps": result.gaps, "error_code": "INSUFFICIENT_ARTICLE_EVIDENCE"}
+            task.completed_at = datetime.now(UTC)
+            await session.flush()
+            return
+        assert result.article is not None
+        selected = [source_id for section in result.article.sections for source_id in section.knowledge_pack_item_ids]
+        if not selected:
+            raise AppError("INVALID_ARTICLE_SOURCE", "Статья не содержит подтверждённых источников.", 422)
+        if any(source_id not in verified for source_id in selected):
+            raise AppError("INVALID_ARTICLE_SOURCE", "Статья содержит неподтверждённый источник.", 422)
+        rows = {item.id: item for item in (await session.scalars(select(KnowledgePackItem).where(KnowledgePackItem.id.in_(selected)))).all()}
+        if any(source_id not in rows for source_id in selected):
+            raise AppError("INVALID_ARTICLE_SOURCE", "Источник статьи не найден.", 422)
+        item = ContentItem(campaign_id=task.campaign_id, source_task_id=task.id, content_type=ContentType.ARTICLE, title=result.article.title, status=ContentStatus.DRAFT, author_agent_id=run.agent_id, metadata_={})
+        session.add(item)
+        await session.flush()
+        version = ContentVersion(content_item_id=item.id, version_number=1, content=render_article_markdown(result.article), structured_content=result.article.model_dump(mode="json"), created_by_agent_id=run.agent_id, source_agent_run_id=run.id, change_description="Initial article draft generated by Writer")
+        session.add(version)
+        await session.flush()
+        item.current_version_id = version.id
+        for position, section in enumerate(result.article.sections, start=1):
+            for source_position, source_id in enumerate(section.knowledge_pack_item_ids, start=1):
+                session.add(ContentVersionSource(content_version_id=version.id, knowledge_pack_item_id=source_id, section_key=section.key, position=(position * 1000) + source_position))
+        await TaskService(session).complete_task(task.id, {"content_item_id": str(item.id), "content_version_id": str(version.id), "content_type": "ARTICLE"}, commit=False)
+
+
 def _optional_int(value: Any) -> int | None:
     return int(value) if value is not None else None
 
@@ -194,6 +262,8 @@ class TaskResultProcessorRegistry:
             return CampaignPlanningResultProcessor()
         if task_type is TaskType.KNOWLEDGE_RESEARCH:
             return KnowledgeResearchResultProcessor()
+        if task_type is TaskType.WRITE_ARTICLE:
+            return WriterResultProcessor()
         return DefaultTaskResultProcessor()
 
 

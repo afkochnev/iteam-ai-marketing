@@ -291,3 +291,8 @@ docker run --rm --user root --network iteam-ai-marketing_default \
 - `frontend` ждёт нездоровый `backend`: проверьте `docker compose logs backend`.
 - порты 3000/8000 заняты: освободите их или измените port mapping в Compose.
 - после изменения dependency lock-файла пересоберите images с `docker compose build --no-cache`.
+## Writer Workflow
+
+Writer выполняет только задачи `WRITE_ARTICLE`, назначенные активному агенту `writer`. Он не ищет документы во всей базе знаний: application layer вычисляет READY `KnowledgePack` из upstream research tasks и предоставляет Writer инструмент `read_knowledge_pack` только для этих пакетов. Каждый вызов аудируется, а все `knowledge_pack_item_ids` из `ArticleWritingResult` проверяются по фактическим результатам tool calls.
+
+При достаточных материалах Writer создаёт `ContentItem` типа `ARTICLE`, первую `ContentVersion` и нормализованные `ContentVersionSource`, после чего завершает задачу и разблокирует downstream social task. При `sufficient=false` AgentRun остаётся завершённым, но бизнес-задача получает `INSUFFICIENT_ARTICLE_EVIDENCE`; статья не создаётся. Markdown рендерится детерминированно и показывается frontend без исполнения raw HTML.

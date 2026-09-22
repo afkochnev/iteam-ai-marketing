@@ -77,7 +77,7 @@ async def test_queued_snapshot_duplicate_and_protected_type(
     _, _, _, unsupported = await runtime_fixture(db_session, task_type=TaskType.WRITE_ARTICLE)
     with pytest.raises(AppError) as error:
         await service.create_queued_run(unsupported.id)
-    assert error.value.code == "TASK_TYPE_NOT_EXECUTABLE"
+    assert error.value.code == "INVALID_AGENT_FOR_TASK_TYPE"
 
 
 async def test_success_unblocks_dependency(

@@ -4,6 +4,7 @@ from app.models.approval import Approval, ApprovalObjectType, ApprovalStatus
 from app.models.campaign import Campaign, CampaignStatus
 from app.models.knowledge import KnowledgeItem, KnowledgeSource, KnowledgeStore
 from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem
+from app.models.content import ContentItem, ContentVersion, ContentVersionSource, ContentType, ContentStatus
 from app.models.task import Task, TaskDependency, TaskPriority, TaskStatus, TaskType
 from app.models.user import User, UserRole
 
@@ -27,6 +28,11 @@ __all__ = [
     "KnowledgeStore",
     "KnowledgePack",
     "KnowledgePackItem",
+    "ContentItem",
+    "ContentVersion",
+    "ContentVersionSource",
+    "ContentType",
+    "ContentStatus",
     "Task",
     "TaskDependency",
     "TaskPriority",

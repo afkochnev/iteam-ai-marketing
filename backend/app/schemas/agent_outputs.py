@@ -1,4 +1,5 @@
 from enum import StrEnum
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -172,4 +173,61 @@ class KnowledgeResearchResult(BaseModel):
             raise ValueError("Достаточный результат должен содержать источник.")
         if not self.sufficient and not self.gaps:
             raise ValueError("При недостатке знаний необходимо описать пробелы.")
+        return self
+
+
+class ArticleSection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(min_length=1, max_length=100)
+    heading: str = Field(min_length=1, max_length=255)
+    body_markdown: str = Field(min_length=1, max_length=100_000)
+    knowledge_pack_item_ids: list[UUID] = Field(default_factory=list)
+
+    @field_validator("key", "heading", "body_markdown")
+    @classmethod
+    def strip_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Поле не может быть пустым.")
+        return value
+
+    @field_validator("knowledge_pack_item_ids")
+    @classmethod
+    def unique_sources(cls, value: list[UUID]) -> list[UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("Источники раздела не должны повторяться.")
+        return value
+
+
+class ArticleDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str = Field(min_length=1, max_length=200)
+    subtitle: str | None = None
+    lead: str = Field(min_length=1, max_length=50_000)
+    sections: list[ArticleSection] = Field(min_length=3, max_length=12)
+    conclusion: str = Field(min_length=1, max_length=50_000)
+    cta: str = Field(min_length=1, max_length=10_000)
+
+    @model_validator(mode="after")
+    def unique_section_keys(self) -> "ArticleDraft":
+        keys = [section.key for section in self.sections]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Ключи разделов должны быть уникальны.")
+        return self
+
+
+class ArticleWritingResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sufficient: bool
+    article: ArticleDraft | None = None
+    gaps: list[str] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_semantics(self) -> "ArticleWritingResult":
+        if self.sufficient and self.article is None:
+            raise ValueError("Достаточный результат должен содержать статью.")
+        if not self.sufficient and self.article is not None:
+            raise ValueError("Недостаточный результат не должен содержать статью.")
+        if not self.sufficient and not self.gaps:
+            raise ValueError("При недостатке материалов необходимо указать пробелы.")
         return self

@@ -36,12 +36,12 @@ describe("Tasks UI", () => {
     expect(await screen.findByText("test-model")).toBeInTheDocument();
   });
 
-  it("hides AI run for unsupported and blocked tasks", async () => {
+  it("shows Writer AI run and hides it for blocked tasks", async () => {
     const assigned = { id: "agent-1", name: "Writer", slug: "writer" };
     mocks.get.mockResolvedValue({ ...task, task_type: "WRITE_ARTICLE", assigned_agent: assigned });
     const unsupported = render(<TaskDetailsPage />);
     await screen.findByText("Написание статьи");
-    expect(screen.queryByRole("button", { name: "Запустить AI" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Запустить AI" })).toBeInTheDocument();
     unsupported.unmount();
     mocks.get.mockResolvedValue({ ...task, status: "BLOCKED", assigned_agent: assigned });
     render(<TaskDetailsPage />);

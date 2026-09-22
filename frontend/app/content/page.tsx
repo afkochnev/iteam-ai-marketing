@@ -1,0 +1,6 @@
+"use client";
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { ApiError, ContentListItem, contentApi } from "@/lib/api";
+const statuses: Record<string,string> = { DRAFT:"Черновик", WAITING_REVIEW:"Ожидает проверки", WAITING_APPROVAL:"Ожидает согласования", APPROVED:"Согласован", REJECTED:"Отклонён", ARCHIVED:"Архив" };
+export default function ContentPage() { const [items,setItems]=useState<ContentListItem[]>([]); const [error,setError]=useState(""); useEffect(()=>{ contentApi.list().then(setItems).catch((e:ApiError)=>setError(e.message)); },[]); return <main className="page"><div className="page-header"><div><p className="eyebrow">Материалы</p><h1>Контент</h1></div></div>{error&&<p className="error">{error}</p>}{!error&&!items.length?<div className="empty-state"><h2>Контента пока нет</h2><p>Статьи появятся после выполнения Writer.</p></div>:<div className="table-wrap"><table><thead><tr><th>Название</th><th>Тип</th><th>Статус</th><th>Версия</th><th>Дата</th></tr></thead><tbody>{items.map(item=><tr key={item.id}><td><Link href={`/content/${item.id}`}>{item.title}</Link></td><td>{item.content_type}</td><td>{statuses[item.status]??item.status}</td><td>{item.current_version_number??"—"}</td><td>{new Date(item.created_at).toLocaleDateString("ru-RU")}</td></tr>)}</tbody></table></div>}</main>; }
