@@ -1,3 +1,4 @@
+import hashlib
 from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
@@ -9,12 +10,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import AppError
 from app.models.agent_run import AgentRun, ToolCall, ToolCallStatus
 from app.models.campaign import Campaign, CampaignStatus
+from app.models.content import (
+    ContentChannel,
+    ContentDerivation,
+    ContentItem,
+    ContentStatus,
+    ContentType,
+    ContentVersion,
+    ContentVersionSource,
+)
 from app.models.knowledge import KnowledgeItem, KnowledgeItemStatus
 from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem, KnowledgePackStatus
-from app.models.content import ContentItem, ContentStatus, ContentType, ContentVersion, ContentVersionSource
 from app.models.task import Task, TaskStatus, TaskType
 from app.repositories.knowledge_packs import KnowledgePackRepository
-from app.schemas.agent_outputs import ArticleWritingResult, CampaignPlan, KnowledgeResearchResult
+from app.schemas.agent_outputs import (
+    ArticleWritingResult,
+    CampaignPlan,
+    KnowledgeResearchResult,
+    SocialPostPackResult,
+)
 from app.schemas.knowledge import KnowledgeSearchResult
 from app.services.approval_service import ApprovalService
 from app.services.knowledge_search_service import build_result_key
@@ -200,18 +214,36 @@ def render_article_markdown(article: object) -> str:
 
 
 class WriterResultProcessor:
-    async def process(self, session: AsyncSession, run: AgentRun, task: Task, output: dict[str, object]) -> None:
-        existing = await session.scalar(select(ContentVersion).where(ContentVersion.source_agent_run_id == run.id))
+    async def process(
+        self, session: AsyncSession, run: AgentRun, task: Task, output: dict[str, object]
+    ) -> None:
+        existing = await session.scalar(
+            select(ContentVersion).where(ContentVersion.source_agent_run_id == run.id)
+        )
         if existing:
             return
         try:
             result = ArticleWritingResult.model_validate(output)
         except ValidationError as exc:
-            raise AppError("INVALID_ARTICLE_RESULT", "Структура статьи не прошла проверку.", 422) from exc
-        calls = list((await session.scalars(select(ToolCall).where(ToolCall.agent_run_id == run.id, ToolCall.tool_name == "read_knowledge_pack", ToolCall.status == ToolCallStatus.COMPLETED))).all())
+            raise AppError(
+                "INVALID_ARTICLE_RESULT", "Структура статьи не прошла проверку.", 422
+            ) from exc
+        calls = list(
+            (
+                await session.scalars(
+                    select(ToolCall).where(
+                        ToolCall.agent_run_id == run.id,
+                        ToolCall.tool_name == "read_knowledge_pack",
+                        ToolCall.status == ToolCallStatus.COMPLETED,
+                    )
+                )
+            ).all()
+        )
         if not calls:
             raise AppError("KNOWLEDGE_PACK_NOT_READ", "Writer не прочитал пакет знаний.", 422)
-        allowed = {UUID(value) for value in task.input_data.get("allowed_knowledge_pack_ids", [])}
+        allowed = {
+            UUID(str(value)) for value in run.input_data.get("allowed_knowledge_pack_ids", [])
+        }
         read_pack_ids: set[UUID] = set()
         verified: set[UUID] = set()
         for call in calls:
@@ -222,34 +254,283 @@ class WriterResultProcessor:
                 if item.get("knowledge_pack_item_id"):
                     verified.add(UUID(str(item["knowledge_pack_item_id"])))
         if not allowed.issubset(read_pack_ids):
-            raise AppError("KNOWLEDGE_PACK_NOT_READ", "Writer не прочитал все необходимые пакеты знаний.", 422)
+            raise AppError(
+                "KNOWLEDGE_PACK_NOT_READ", "Writer не прочитал все необходимые пакеты знаний.", 422
+            )
         if not result.sufficient:
             task.status = TaskStatus.FAILED
-            task.error_message = "INSUFFICIENT_ARTICLE_EVIDENCE: Недостаточно подтверждённых материалов для статьи."
+            task.error_message = (
+                "INSUFFICIENT_ARTICLE_EVIDENCE: Недостаточно подтверждённых материалов для статьи."
+            )
             task.output_data = {"gaps": result.gaps, "error_code": "INSUFFICIENT_ARTICLE_EVIDENCE"}
             task.completed_at = datetime.now(UTC)
             await session.flush()
             return
         assert result.article is not None
-        selected = [source_id for section in result.article.sections for source_id in section.knowledge_pack_item_ids]
+        selected = [
+            source_id
+            for section in result.article.sections
+            for source_id in section.knowledge_pack_item_ids
+        ]
         if not selected:
-            raise AppError("INVALID_ARTICLE_SOURCE", "Статья не содержит подтверждённых источников.", 422)
+            raise AppError(
+                "INVALID_ARTICLE_SOURCE", "Статья не содержит подтверждённых источников.", 422
+            )
         if any(source_id not in verified for source_id in selected):
-            raise AppError("INVALID_ARTICLE_SOURCE", "Статья содержит неподтверждённый источник.", 422)
-        rows = {item.id: item for item in (await session.scalars(select(KnowledgePackItem).where(KnowledgePackItem.id.in_(selected)))).all()}
+            raise AppError(
+                "INVALID_ARTICLE_SOURCE", "Статья содержит неподтверждённый источник.", 422
+            )
+        rows = {
+            item.id: item
+            for item in (
+                await session.scalars(
+                    select(KnowledgePackItem).where(KnowledgePackItem.id.in_(selected))
+                )
+            ).all()
+        }
         if any(source_id not in rows for source_id in selected):
             raise AppError("INVALID_ARTICLE_SOURCE", "Источник статьи не найден.", 422)
-        item = ContentItem(campaign_id=task.campaign_id, source_task_id=task.id, content_type=ContentType.ARTICLE, title=result.article.title, status=ContentStatus.DRAFT, author_agent_id=run.agent_id, metadata_={})
+        item = ContentItem(
+            campaign_id=task.campaign_id,
+            source_task_id=task.id,
+            content_type=ContentType.ARTICLE,
+            title=result.article.title,
+            status=ContentStatus.WAITING_APPROVAL,
+            author_agent_id=run.agent_id,
+            metadata_={},
+        )
         session.add(item)
         await session.flush()
-        version = ContentVersion(content_item_id=item.id, version_number=1, content=render_article_markdown(result.article), structured_content=result.article.model_dump(mode="json"), created_by_agent_id=run.agent_id, source_agent_run_id=run.id, change_description="Initial article draft generated by Writer")
+        version = ContentVersion(
+            content_item_id=item.id,
+            version_number=1,
+            content=render_article_markdown(result.article),
+            structured_content=result.article.model_dump(mode="json"),
+            created_by_agent_id=run.agent_id,
+            source_agent_run_id=run.id,
+            generation_key="article",
+            change_description="Initial article draft generated by Writer",
+        )
         session.add(version)
         await session.flush()
         item.current_version_id = version.id
         for position, section in enumerate(result.article.sections, start=1):
             for source_position, source_id in enumerate(section.knowledge_pack_item_ids, start=1):
-                session.add(ContentVersionSource(content_version_id=version.id, knowledge_pack_item_id=source_id, section_key=section.key, position=(position * 1000) + source_position))
-        await TaskService(session).complete_task(task.id, {"content_item_id": str(item.id), "content_version_id": str(version.id), "content_type": "ARTICLE"}, commit=False)
+                session.add(
+                    ContentVersionSource(
+                        content_version_id=version.id,
+                        knowledge_pack_item_id=source_id,
+                        section_key=section.key,
+                        position=(position * 1000) + source_position,
+                    )
+                )
+        await ApprovalService(session).create_content_approval(
+            item.id,
+            version.version_number,
+            {
+                "content_item_id": str(item.id),
+                "content_version_id": str(version.id),
+                "version_number": 1,
+                "title": result.article.title,
+                "content_hash": hashlib.sha256(version.content.encode()).hexdigest(),
+            },
+            run.agent_id,
+        )
+        await TaskService(session).complete_task(
+            task.id,
+            {
+                "content_item_id": str(item.id),
+                "content_version_id": str(version.id),
+                "content_type": "ARTICLE",
+            },
+            commit=False,
+        )
+
+
+class SocialPostResultProcessor:
+    async def process(
+        self, session: AsyncSession, run: AgentRun, task: Task, output: dict[str, object]
+    ) -> None:
+        existing = await session.scalar(
+            select(ContentVersion).where(
+                ContentVersion.source_agent_run_id == run.id,
+                ContentVersion.generation_key == "pack",
+            )
+        )
+        if existing:
+            return
+        try:
+            result = SocialPostPackResult.model_validate(output)
+        except ValidationError as exc:
+            raise AppError(
+                "INVALID_SOCIAL_POST_RESULT", "Структура публикаций не прошла проверку.", 422
+            ) from exc
+        calls = list(
+            (
+                await session.scalars(
+                    select(ToolCall).where(
+                        ToolCall.agent_run_id == run.id,
+                        ToolCall.tool_name == "read_content_version",
+                        ToolCall.status == ToolCallStatus.COMPLETED,
+                    )
+                )
+            ).all()
+        )
+        if not calls:
+            raise AppError("CONTENT_VERSION_NOT_READ", "SMM Manager не прочитал статью.", 422)
+        allowed = {
+            UUID(str(value)) for value in run.input_data.get("allowed_content_version_ids", [])
+        }
+        read_ids = {
+            UUID(str((call.result or {}).get("content_version_id")))
+            for call in calls
+            if (call.result or {}).get("content_version_id")
+        }
+        if not allowed.issubset(read_ids):
+            raise AppError(
+                "CONTENT_VERSION_NOT_READ", "SMM Manager не прочитал все версии статьи.", 422
+            )
+        if not result.sufficient:
+            task.status = TaskStatus.FAILED
+            task.error_message = (
+                "INSUFFICIENT_SOCIAL_SOURCE: Недостаточно материала для публикаций."
+            )
+            task.output_data = {"gaps": result.gaps, "error_code": "INSUFFICIENT_SOCIAL_SOURCE"}
+            task.completed_at = datetime.now(UTC)
+            await session.flush()
+            return
+        assert result.pack is not None
+        campaign = await session.get(Campaign, task.campaign_id)
+        strategy = (campaign.strategy if campaign else {}) or {}
+        social = strategy.get("social_strategy", {})
+        expected_count = int(social.get("post_count", len(result.pack.posts)))
+        channels = set(social.get("channels", []))
+        if (
+            len(result.pack.posts) != expected_count
+            or any(post.channel not in channels for post in result.pack.posts)
+            or not channels.issubset({post.channel for post in result.pack.posts})
+        ):
+            raise AppError(
+                "INVALID_SOCIAL_POST_RESULT", "Посты не соответствуют стратегии кампании.", 422
+            )
+        available: dict[UUID, set[str]] = {}
+        for call in calls:
+            payload = call.result or {}
+            version_id = payload.get("content_version_id")
+            if version_id:
+                available[UUID(str(version_id))] = set(payload.get("section_keys", []))
+        for post in result.pack.posts:
+            for source in post.sources:
+                if source.content_version_id not in allowed:
+                    raise AppError(
+                        "INVALID_SOCIAL_SOURCE", "Пост ссылается на недоступную версию статьи.", 422
+                    )
+                if source.section_key not in available.get(source.content_version_id, set()):
+                    raise AppError(
+                        "INVALID_SOCIAL_SOURCE_SECTION",
+                        "Пост ссылается на неизвестный раздел статьи.",
+                        422,
+                    )
+        article_title = "Статья"
+        if calls:
+            article_title = str((calls[0].result or {}).get("title") or article_title)
+        pack_item = ContentItem(
+            campaign_id=task.campaign_id,
+            source_task_id=task.id,
+            content_type=ContentType.SOCIAL_POST_PACK,
+            title=f"Публикации: {article_title}",
+            status=ContentStatus.WAITING_APPROVAL,
+            author_agent_id=run.agent_id,
+            metadata_={},
+        )
+        session.add(pack_item)
+        await session.flush()
+        pack_content = "\n\n".join(
+            [f"# {result.pack.strategy_summary}"]
+            + [
+                f"## {post.title}\n\n{post.text_markdown}\n\n{post.cta}"
+                for post in result.pack.posts
+            ]
+        )
+        pack_version = ContentVersion(
+            content_item_id=pack_item.id,
+            version_number=1,
+            content=pack_content,
+            structured_content=result.pack.model_dump(mode="json"),
+            created_by_agent_id=run.agent_id,
+            source_agent_run_id=run.id,
+            generation_key="pack",
+            change_description="Social post pack generated by SMM Manager",
+        )
+        session.add(pack_version)
+        await session.flush()
+        pack_item.current_version_id = pack_version.id
+        approval_posts: list[dict[str, object]] = []
+        for post in result.pack.posts:
+            channel = ContentChannel(post.channel)
+            child = ContentItem(
+                campaign_id=task.campaign_id,
+                source_task_id=task.id,
+                parent_content_item_id=pack_item.id,
+                channel=channel,
+                content_type=ContentType.SOCIAL_POST,
+                title=post.title,
+                status=ContentStatus.WAITING_APPROVAL,
+                author_agent_id=run.agent_id,
+                metadata_={},
+            )
+            session.add(child)
+            await session.flush()
+            version = ContentVersion(
+                content_item_id=child.id,
+                version_number=1,
+                content=post.text_markdown,
+                structured_content=post.model_dump(mode="json"),
+                created_by_agent_id=run.agent_id,
+                source_agent_run_id=run.id,
+                generation_key=f"post:{post.key}",
+                change_description="Social post generated by SMM Manager",
+            )
+            session.add(version)
+            await session.flush()
+            child.current_version_id = version.id
+            approval_posts.append(
+                {
+                    "content_item_id": str(child.id),
+                    "content_version_id": str(version.id),
+                    "channel": post.channel,
+                    "title": post.title,
+                    "content_hash": hashlib.sha256(version.content.encode()).hexdigest(),
+                }
+            )
+            for source in post.sources:
+                session.add(
+                    ContentDerivation(
+                        derived_content_version_id=version.id,
+                        source_content_version_id=source.content_version_id,
+                        source_section_key=source.section_key,
+                    )
+                )
+        await ApprovalService(session).create_content_approval(
+            pack_item.id,
+            1,
+            {
+                "content_item_id": str(pack_item.id),
+                "content_version_id": str(pack_version.id),
+                "version_number": 1,
+                "posts": approval_posts,
+            },
+            run.agent_id,
+        )
+        await TaskService(session).complete_task(
+            task.id,
+            {
+                "content_item_id": str(pack_item.id),
+                "content_type": "SOCIAL_POST_PACK",
+                "post_count": len(result.pack.posts),
+            },
+            commit=False,
+        )
 
 
 def _optional_int(value: Any) -> int | None:
@@ -264,6 +545,8 @@ class TaskResultProcessorRegistry:
             return KnowledgeResearchResultProcessor()
         if task_type is TaskType.WRITE_ARTICLE:
             return WriterResultProcessor()
+        if task_type is TaskType.CREATE_SOCIAL_POSTS:
+            return SocialPostResultProcessor()
         return DefaultTaskResultProcessor()
 
 

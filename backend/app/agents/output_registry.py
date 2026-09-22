@@ -3,7 +3,12 @@ from typing import Any, cast
 from pydantic import BaseModel
 
 from app.models.task import TaskType
-from app.schemas.agent_outputs import ArticleWritingResult, CampaignPlan, KnowledgeResearchResult
+from app.schemas.agent_outputs import (
+    ArticleWritingResult,
+    CampaignPlan,
+    KnowledgeResearchResult,
+    SocialPostPackResult,
+)
 
 
 class TaskOutputTypeRegistry:
@@ -12,6 +17,7 @@ class TaskOutputTypeRegistry:
             TaskType.CAMPAIGN_PLANNING: CampaignPlan,
             TaskType.KNOWLEDGE_RESEARCH: KnowledgeResearchResult,
             TaskType.WRITE_ARTICLE: ArticleWritingResult,
+            TaskType.CREATE_SOCIAL_POSTS: SocialPostPackResult,
         }
         return mapping.get(task_type)
 

@@ -5,9 +5,9 @@ from app.api.agents import router as agents_router
 from app.api.approvals import router as approvals_router
 from app.api.auth import router as auth_router
 from app.api.campaigns import router as campaigns_router
+from app.api.content import router as content_router
 from app.api.knowledge import router as knowledge_router
 from app.api.knowledge_packs import router as knowledge_packs_router
-from app.api.content import router as content_router
 from app.api.tasks import router as tasks_router
 
 api_router = APIRouter()

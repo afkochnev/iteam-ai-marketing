@@ -29,6 +29,21 @@ class ApprovalService:
             )
         )
 
+    async def create_content_approval(
+        self, content_id: UUID, version: int, snapshot: dict[str, object], agent_id: UUID
+    ) -> Approval:
+        return await self.repository.create(
+            Approval(
+                object_type=ApprovalObjectType.CONTENT_ITEM,
+                object_id=content_id,
+                subject_version=version,
+                status=ApprovalStatus.PENDING,
+                requested_by_agent_id=agent_id,
+                subject_snapshot=snapshot,
+                metadata_={},
+            )
+        )
+
     async def get_pending(self, campaign_id: UUID, *, lock: bool = False) -> Approval:
         approval = await self.repository.current_pending(campaign_id, lock=lock)
         if approval is None:

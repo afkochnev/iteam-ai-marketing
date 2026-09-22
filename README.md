@@ -296,3 +296,11 @@ docker run --rm --user root --network iteam-ai-marketing_default \
 Writer выполняет только задачи `WRITE_ARTICLE`, назначенные активному агенту `writer`. Он не ищет документы во всей базе знаний: application layer вычисляет READY `KnowledgePack` из upstream research tasks и предоставляет Writer инструмент `read_knowledge_pack` только для этих пакетов. Каждый вызов аудируется, а все `knowledge_pack_item_ids` из `ArticleWritingResult` проверяются по фактическим результатам tool calls.
 
 При достаточных материалах Writer создаёт `ContentItem` типа `ARTICLE`, первую `ContentVersion` и нормализованные `ContentVersionSource`, после чего завершает задачу и разблокирует downstream social task. При `sufficient=false` AgentRun остаётся завершённым, но бизнес-задача получает `INSUFFICIENT_ARTICLE_EVIDENCE`; статья не создаётся. Markdown рендерится детерминированно и показывается frontend без исполнения raw HTML.
+
+## SMM Manager Workflow
+
+SMM Manager выполняет `CREATE_SOCIAL_POSTS` только для активного агента `smm_manager`. Application layer передаёт ему разрешённые immutable версии статей, а агент получает полный текст только через `read_content_version`; поиск по Knowledge Base и инструменты публикации ему недоступны.
+
+Результат валидируется как `SocialPostPackResult`: проверяются количество постов, каналы из стратегии кампании, порядок публикации и ссылки на реальные разделы исходной Article Version. Создаются отдельный `SOCIAL_POST_PACK`, индивидуальные `SOCIAL_POST` ContentItems и `ContentDerivation` к статье. Публикация наружу не выполняется.
+
+Article и Social Post Pack имеют независимые `CONTENT_ITEM` approvals. Согласование проверяет immutable version snapshot, поддерживает approve/reject и для Pack атомарно меняет статусы дочерних постов. Approve не означает публикацию.

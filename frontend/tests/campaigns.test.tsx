@@ -6,14 +6,14 @@ import EditCampaignPage from "../app/campaigns/[id]/edit/page";
 import NewCampaignPage from "../app/campaigns/new/page";
 import CampaignsPage from "../app/campaigns/page";
 
-const { replace, push, list, get, create, update, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList } = vi.hoisted(() => ({
-  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(),
+const { replace, push, list, get, create, update, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList, contentList } = vi.hoisted(() => ({
+  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(), contentList: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace, push }), useParams: () => ({ id: "campaign-1" }) }));
 vi.mock("@/components/auth-provider", () => ({ useAuth: () => ({ user: { role: "ADMIN" }, loading: false }) }));
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
-  return { ...actual, campaignsApi: { list, get, create, update, archive, generateStrategy, approveStrategy, requestStrategyRevision: requestRevision, rejectStrategy }, approvalsApi: { list: approvalList, get: vi.fn() }, tasksApi: { ...actual.tasksApi, list: taskList } };
+  return { ...actual, campaignsApi: { list, get, create, update, archive, generateStrategy, approveStrategy, requestStrategyRevision: requestRevision, rejectStrategy }, approvalsApi: { list: approvalList, get: vi.fn() }, tasksApi: { ...actual.tasksApi, list: taskList }, contentApi: { ...actual.contentApi, list: contentList } };
 });
 
 const campaign = {
@@ -26,7 +26,7 @@ const campaign = {
 };
 
 describe("Campaigns UI", () => {
-  beforeEach(() => { vi.clearAllMocks(); list.mockResolvedValue([campaign]); get.mockResolvedValue(campaign); taskList.mockResolvedValue([]); approvalList.mockResolvedValue([]); vi.spyOn(window, "confirm").mockReturnValue(true); });
+  beforeEach(() => { vi.clearAllMocks(); list.mockResolvedValue([campaign]); get.mockResolvedValue(campaign); taskList.mockResolvedValue([]); approvalList.mockResolvedValue([]); contentList.mockResolvedValue([]); vi.spyOn(window, "confirm").mockReturnValue(true); });
 
   it("renders campaign list and empty state", async () => {
     const first = render(<CampaignsPage />);
@@ -113,5 +113,17 @@ describe("Campaigns UI", () => {
     fireEvent.change(screen.getByLabelText("Что необходимо изменить?"), { target: { value: "Усилить фокус" } });
     fireEvent.click(screen.getByRole("button", { name: "Отправить" }));
     await waitFor(() => expect(requestRevision).toHaveBeenCalledWith("campaign-1", "Усилить фокус"));
+  });
+
+  it("shows real campaign content and pending approval count", async () => {
+    contentList.mockResolvedValue([
+      { id: "article-1", campaign_id: campaign.id, content_type: "ARTICLE", title: "Статья", status: "WAITING_APPROVAL", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at },
+      { id: "pack-1", campaign_id: campaign.id, content_type: "SOCIAL_POST_PACK", title: "Пакет", status: "WAITING_APPROVAL", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at },
+      { id: "post-1", campaign_id: campaign.id, content_type: "SOCIAL_POST", title: "Пост", status: "WAITING_APPROVAL", parent_content_item_id: "pack-1", channel: "TELEGRAM", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at },
+    ]);
+    render(<CampaignDetailsPage />);
+    expect(await screen.findByText("Ожидают согласования: 3")).toBeInTheDocument();
+    expect(screen.getByText("Пакет")).toBeInTheDocument();
+    expect(screen.getByText(/постов: 1/)).toBeInTheDocument();
   });
 });

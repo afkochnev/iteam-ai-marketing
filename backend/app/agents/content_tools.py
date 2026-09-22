@@ -7,11 +7,11 @@ from agents import RunContextWrapper, function_tool
 from sqlalchemy import select
 
 from app.agents.factory import AgentRuntimeContext
+from app.agents.tool_registry import tool_registry
 from app.core.database import async_session_factory
 from app.core.errors import AppError
 from app.models.agent_run import ToolCall, ToolCallStatus
 from app.models.knowledge_pack import KnowledgePack, KnowledgePackStatus
-from app.agents.tool_registry import tool_registry
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +22,9 @@ async def read_knowledge_pack(
 ) -> str:
     runtime = ctx.context
     if knowledge_pack_id not in runtime.allowed_knowledge_pack_ids:
-        raise AppError("KNOWLEDGE_PACK_ACCESS_DENIED", "Пакет знаний недоступен этому запуску.", 403)
+        raise AppError(
+            "KNOWLEDGE_PACK_ACCESS_DENIED", "Пакет знаний недоступен этому запуску.", 403
+        )
     arguments = {"knowledge_pack_id": str(knowledge_pack_id)}
     async with async_session_factory() as session:
         call = ToolCall(
@@ -37,8 +39,10 @@ async def read_knowledge_pack(
         try:
             pack = (
                 await session.execute(
-                    select(KnowledgePack)
-                    .where(KnowledgePack.id == knowledge_pack_id, KnowledgePack.status == KnowledgePackStatus.READY)
+                    select(KnowledgePack).where(
+                        KnowledgePack.id == knowledge_pack_id,
+                        KnowledgePack.status == KnowledgePackStatus.READY,
+                    )
                 )
             ).scalar_one_or_none()
             if pack is None:
@@ -67,7 +71,9 @@ async def read_knowledge_pack(
         except Exception as exc:
             logger.exception("read_knowledge_pack failed")
             call.status = ToolCallStatus.FAILED
-            call.error_message = exc.message if isinstance(exc, AppError) else "Ошибка чтения пакета знаний."
+            call.error_message = (
+                exc.message if isinstance(exc, AppError) else "Ошибка чтения пакета знаний."
+            )
             call.completed_at = datetime.now(UTC)
             await session.commit()
             raise

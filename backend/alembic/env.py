@@ -18,6 +18,8 @@ from app.models import (  # noqa: F401
     ContentItem,
     ContentVersion,
     ContentVersionSource,
+    ContentChannel,
+    ContentDerivation,
     KnowledgeSource,
     KnowledgeStore,
     Task,

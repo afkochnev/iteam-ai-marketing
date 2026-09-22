@@ -55,7 +55,13 @@ AGENT_SEEDS = (
         AgentRole.SMM_MANAGER,
         "Адаптирует экспертный контент для социальных сетей без автоматической публикации.",
         2,
-        ("read_campaign", "read_content", "save_content", "create_content_revision"),
+        (
+            "read_campaign",
+            "read_content_version",
+            "read_content",
+            "save_content",
+            "create_content_revision",
+        ),
     ),
 )
 

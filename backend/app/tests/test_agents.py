@@ -74,7 +74,7 @@ async def test_agent_and_tool_model_defaults_and_cascade(db_session: AsyncSessio
 
 
 async def test_seed_is_idempotent_and_preserves_changes(db_session: AsyncSession) -> None:
-    assert await seed_agents() == (4, 14)
+    assert await seed_agents() == (4, 15)
     repository = AgentRepository(db_session)
     writer = await repository.get_by_slug(AgentSlug.WRITER, with_tools=True)
     assert writer is not None

@@ -231,3 +231,55 @@ class ArticleWritingResult(BaseModel):
         if not self.sufficient and not self.gaps:
             raise ValueError("При недостатке материалов необходимо указать пробелы.")
         return self
+
+
+class SocialPostSourceRef(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    content_version_id: UUID
+    section_key: str = Field(min_length=1, max_length=100)
+
+
+class SocialPostDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    key: str = Field(min_length=1, max_length=100)
+    channel: str
+    title: str = Field(min_length=1, max_length=255)
+    text_markdown: str = Field(min_length=1, max_length=20_000)
+    cta: str = Field(min_length=1, max_length=5_000)
+    sources: list[SocialPostSourceRef] = Field(min_length=1)
+    suggested_publish_order: int = Field(ge=1)
+
+
+class SocialPostPackDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    strategy_summary: str = Field(min_length=1, max_length=20_000)
+    posts: list[SocialPostDraft] = Field(min_length=5, max_length=10)
+
+    @model_validator(mode="after")
+    def validate_posts(self) -> "SocialPostPackDraft":
+        keys = [post.key for post in self.posts]
+        orders = [post.suggested_publish_order for post in self.posts]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Ключи постов должны быть уникальны.")
+        if len(orders) != len(set(orders)) or set(orders) != set(range(1, len(self.posts) + 1)):
+            raise ValueError("Порядок публикации должен быть уникальным и последовательным.")
+        if any(post.channel not in {"TELEGRAM", "VK"} for post in self.posts):
+            raise ValueError("Недопустимый канал публикации.")
+        return self
+
+
+class SocialPostPackResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sufficient: bool
+    pack: SocialPostPackDraft | None = None
+    gaps: list[str] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_semantics(self) -> "SocialPostPackResult":
+        if self.sufficient and self.pack is None:
+            raise ValueError("Достаточный результат должен содержать пакет публикаций.")
+        if not self.sufficient and self.pack is not None:
+            raise ValueError("Недостаточный результат не должен содержать пакет публикаций.")
+        if not self.sufficient and not self.gaps:
+            raise ValueError("При недостатке материалов необходимо указать пробелы.")
+        return self

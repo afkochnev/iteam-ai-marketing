@@ -1,0 +1,5 @@
+"use client";
+import Link from "next/link";
+import { useEffect, useState } from "react";
+import { approvalsApi, Approval } from "@/lib/api";
+export default function ApprovalsPage(){const [items,setItems]=useState<Approval[]>([]);const [error,setError]=useState("");useEffect(()=>{approvalsApi.list().then(setItems).catch(e=>setError(e.message));},[]);return <main className="page"><div className="page-header"><div><p className="eyebrow">Human-in-the-loop</p><h1>Согласования</h1></div><Link href="/">На главную</Link></div>{error&&<p className="error">{error}</p>}{!error&&!items.length?<p>Согласований пока нет.</p>:<div className="table-wrap"><table><thead><tr><th>Тип</th><th>Версия</th><th>Статус</th><th>Создано</th></tr></thead><tbody>{items.map(item=><tr key={item.id}><td><Link href={item.object_type === "CONTENT_ITEM" ? `/content/${item.object_id}` : `/campaigns/${item.object_id}`}>{item.object_type}</Link></td><td>{item.subject_version}</td><td>{item.status}</td><td>{new Date(item.created_at).toLocaleString("ru-RU")}</td></tr>)}</tbody></table></div>}</main>}

@@ -36,8 +36,8 @@ export type ContentStatus = "DRAFT" | "WAITING_REVIEW" | "WAITING_APPROVAL" | "A
 export interface ContentSource { knowledge_pack_item_id: string; source_title: string; filename: string | null; excerpt: string; relevance_score: number | null; section_key: string; }
 export interface ContentVersionSummary { id: string; version_number: number; change_description: string | null; created_at: string; }
 export interface ContentVersion extends ContentVersionSummary { content: string; structured_content: Record<string, unknown>; sources: ContentSource[]; }
-export interface ContentListItem { id: string; campaign_id: string; content_type: ContentType; title: string; status: ContentStatus; current_version_number: number | null; created_at: string; updated_at: string; }
-export interface Content extends ContentListItem { source_task_id: string; author_agent_id: string; current_version: ContentVersion | null; versions: ContentVersionSummary[]; }
+export interface ContentListItem { id: string; campaign_id: string; content_type: ContentType; title: string; status: ContentStatus; current_version_number: number | null; created_at: string; updated_at: string; parent_content_item_id?: string | null; channel?: "TELEGRAM" | "VK" | null; }
+export interface Content extends ContentListItem { source_task_id: string; author_agent_id: string; parent_content_item_id?: string | null; channel?: "TELEGRAM" | "VK" | null; current_version: ContentVersion | null; versions: ContentVersionSummary[]; }
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
@@ -131,4 +131,6 @@ export const contentApi = {
   list: (filters: Record<string, string | undefined> = {}) => { const query = new URLSearchParams(Object.entries(filters).filter((entry): entry is [string, string] => Boolean(entry[1]))); return request<ContentListItem[]>(`/content${query.size ? `?${query}` : ""}`); },
   get: (id: string) => request<Content>(`/content/${id}`),
   versions: (id: string) => request<ContentVersionSummary[]>(`/content/${id}/versions`),
+  approve: (id: string, comment?: string) => request<Content>(`/content/${id}/approve`, { method: "POST", body: JSON.stringify({ comment: comment || null }) }),
+  reject: (id: string, comment: string) => request<Content>(`/content/${id}/reject`, { method: "POST", body: JSON.stringify({ comment }) }),
 };

@@ -2,7 +2,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import async_session_factory, engine, get_db_session
@@ -11,7 +11,7 @@ from app.models.agent import Agent
 from app.models.agent_run import AgentRun, ToolCall
 from app.models.approval import Approval
 from app.models.campaign import Campaign
-from app.models.content import ContentItem, ContentVersion, ContentVersionSource
+from app.models.content import ContentDerivation, ContentItem, ContentVersion, ContentVersionSource
 from app.models.knowledge import KnowledgeItem, KnowledgeSource, KnowledgeStore
 from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem
 from app.models.task import Task, TaskDependency
@@ -22,6 +22,8 @@ from app.models.user import User
 async def db_session() -> AsyncIterator[AsyncSession]:
     await engine.dispose()
     async with async_session_factory() as session:
+        await session.execute(update(ContentItem).values(current_version_id=None))
+        await session.execute(delete(ContentDerivation))
         await session.execute(delete(ContentVersionSource))
         await session.execute(delete(ContentVersion))
         await session.execute(delete(ContentItem))
@@ -41,6 +43,8 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.commit()
         yield session
         await session.rollback()
+        await session.execute(update(ContentItem).values(current_version_id=None))
+        await session.execute(delete(ContentDerivation))
         await session.execute(delete(ContentVersionSource))
         await session.execute(delete(ContentVersion))
         await session.execute(delete(ContentItem))

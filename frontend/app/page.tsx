@@ -13,5 +13,5 @@ export default function Home() {
   return <main><section><p className="eyebrow">Dashboard</p><h1>AI Marketing Department</h1><dl>
     <div><dt>Вы вошли как:</dt><dd>{user.full_name ?? user.email}</dd></div>
     <div><dt>Email:</dt><dd>{user.email}</dd></div><div><dt>Роль:</dt><dd>{user.role}</dd></div>
-  </dl><nav><Link href="/campaigns">Кампании</Link> <Link href="/tasks">Задачи</Link> <Link href="/agents">Агенты</Link> <Link href="/knowledge">База знаний</Link> <Link href="/content">Контент</Link></nav><button onClick={handleLogout}>Выйти</button></section></main>;
+  </dl><nav><Link href="/campaigns">Кампании</Link> <Link href="/tasks">Задачи</Link> <Link href="/agents">Агенты</Link> <Link href="/knowledge">База знаний</Link> <Link href="/content">Контент</Link> <Link href="/approvals">Согласования</Link></nav><button onClick={handleLogout}>Выйти</button></section></main>;
 }

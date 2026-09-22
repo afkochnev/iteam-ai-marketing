@@ -46,6 +46,10 @@ class ApprovalRepository:
         if object_id:
             query = query.where(Approval.object_id == object_id)
         result = await self.session.execute(
-            query.order_by(Approval.created_at.desc(), Approval.id.desc())
+            query.order_by(
+                (Approval.status != ApprovalStatus.PENDING),
+                Approval.created_at.desc(),
+                Approval.id.desc(),
+            )
         )
         return list(result.scalars())
