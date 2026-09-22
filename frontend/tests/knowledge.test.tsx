@@ -19,7 +19,7 @@ describe("Knowledge page", () => {
     vi.mocked(useAuth).mockReturnValue({ user: admin, loading: false, login: vi.fn(), logout: vi.fn() });
     vi.mocked(knowledgeApi.getStore).mockResolvedValue({ id: "s1", provider: "OPENAI", name: "iTeam Knowledge Base", external_store_id: "vs_1", status: "ACTIVE", is_active: true, created_at: "2026-09-21T00:00:00Z" });
     vi.mocked(knowledgeApi.listItems).mockResolvedValue([]);
-    vi.mocked(knowledgeApi.search).mockResolvedValue({ query: "ритм", result_count: 1, results: [{ knowledge_item_id: "k1", source_id: "src1", source_title: "Ручные загрузки", filename: "management.md", file_id: "file_1", excerpt: "управленческий ритм", score: 0.91, metadata: {} }] });
+    vi.mocked(knowledgeApi.search).mockResolvedValue({ query: "ритм", result_count: 1, results: [{ result_key: "a".repeat(64), knowledge_item_id: "k1", source_id: "src1", source_title: "Ручные загрузки", filename: "management.md", file_id: "file_1", excerpt: "управленческий ритм", score: 0.91, metadata: {} }] });
   });
 
   it("renders empty state and provenance search result", async () => {

@@ -241,7 +241,34 @@ Knowledge API:
 
 Для live smoke задайте `OPENAI_API_KEY`, инициализируйте store, загрузите небольшой MD/TXT через `/knowledge`, дождитесь `READY`, выполните поиск по уникальному marker и затем архивируйте тестовый KnowledgeItem. Автоматические тесты мокируют Files, Vector Stores и Search и не расходуют API credits.
 
-**Knowledge Base и search tool работоспособны. Workflow агента `KNOWLEDGE_RESEARCH` ещё не реализован.**
+**Knowledge Base и search tool работают независимо от LLM; специализированный workflow описан ниже.**
+
+## Knowledge Keeper Workflow
+
+Knowledge Keeper выполняет `KNOWLEDGE_RESEARCH` через общий Agent Runtime. Запуск разрешён только системному агенту `knowledge_keeper`, если он активен, имеет enabled permission `search_knowledge`, implementation зарегистрирован в Tool Registry и существует active KnowledgeStore. Задача получает Campaign strategy, brief и business context, но не получает содержимое документов напрямую: знания доступны только через tool.
+
+Structured output `KnowledgeResearchResult` содержит query, summary, sufficient flag, gaps и список выбранных `result_key`. Модель не возвращает filename, excerpt, score или локальные UUID источников. Каждый `result_key` детерминированно вычисляется приложением как SHA-256 от локального KnowledgeItem ID, OpenAI file ID и точного excerpt.
+
+Архитектурный инвариант provenance:
+
+```text
+Vector Store Search
+→ search_knowledge ToolCall.result
+→ LLM выбирает только result_key
+→ backend сверяет result_key и READY KnowledgeItem
+→ KnowledgePackItem копирует provenance из ToolCall
+```
+
+`KnowledgeResearchResultProcessor` требует хотя бы один завершённый `search_knowledge` ToolCall, объединяет результаты всех поисковых вызовов текущего AgentRun и отклоняет неизвестные keys. Перед сохранением он повторно проверяет, что каждый KnowledgeItem остаётся `READY`; архивирование между retrieval и persistence приводит к `INVALID_KNOWLEDGE_SELECTION`, а не к молчаливой подмене результата.
+
+При `sufficient=true` атомарно создаются READY KnowledgePack и KnowledgePackItems, Knowledge Task завершается и существующий dependency resolver переводит Writer Task из `BLOCKED` в `READY`. При `sufficient=false` создаётся исторический INSUFFICIENT pack, AgentRun остаётся `COMPLETED`, но business Task становится `FAILED` с `INSUFFICIENT_KNOWLEDGE`; downstream остаётся заблокированным. После добавления материалов обычный retry создаёт новый AgentRun и новый KnowledgePack, не удаляя историю.
+
+Knowledge Pack API (Admin и Manager):
+
+- `GET /api/v1/knowledge-packs?campaign_id=...&task_id=...&status=READY`
+- `GET /api/v1/knowledge-packs/{id}`
+
+Task UI показывает verified summary, gaps и provenance каждого фрагмента: source, filename, relevance score, excerpt и selection reason. Запуск остаётся ручным; автоматический dispatcher цепочки ещё не реализован. Writer и остальные специализированные исполнители по-прежнему заблокированы до следующих итераций.
 
 ## Environment
 

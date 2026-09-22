@@ -17,6 +17,7 @@ from app.core.errors import AppError
 from app.models.agent import Agent, AgentStatus
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.campaign import CampaignStatus
+from app.models.knowledge import KnowledgeStore, KnowledgeStoreProvider, KnowledgeStoreStatus
 from app.models.task import Task, TaskStatus, TaskType
 from app.repositories.agent_runs import AgentRunRepository
 from app.repositories.tasks import TaskRepository
@@ -49,7 +50,11 @@ class AgentRunService:
             raise AppError(
                 "CAMPAIGN_ARCHIVED", "Архивная кампания доступна только для чтения.", 409
             )
-        if task.task_type not in {TaskType.MANUAL, TaskType.CAMPAIGN_PLANNING}:
+        if task.task_type not in {
+            TaskType.MANUAL,
+            TaskType.CAMPAIGN_PLANNING,
+            TaskType.KNOWLEDGE_RESEARCH,
+        }:
             raise AppError(
                 "TASK_TYPE_NOT_EXECUTABLE", "Этот тип задачи пока нельзя выполнять через AI.", 409
             )
@@ -73,6 +78,7 @@ class AgentRunService:
             task.error_message = None
             task.started_at = None
             task.completed_at = None
+            task.output_data = {}
         elif task.status is not TaskStatus.READY:
             raise AppError("TASK_NOT_READY", "Запустить можно только готовую задачу.", 409)
         agent = task.assigned_agent
@@ -86,6 +92,31 @@ class AgentRunService:
                 "Планирование кампании может выполнять только Marketing Director.",
                 409,
             )
+        if task.task_type is TaskType.KNOWLEDGE_RESEARCH:
+            if agent.slug != "knowledge_keeper":
+                raise AppError(
+                    "INVALID_AGENT_FOR_TASK_TYPE",
+                    "Исследование знаний может выполнять только Knowledge Keeper.",
+                    409,
+                )
+            enabled_tools = {item.tool_name for item in agent.tools if item.is_enabled}
+            if "search_knowledge" not in enabled_tools or tool_registry.missing(
+                ["search_knowledge"]
+            ):
+                raise AppError(
+                    "REQUIRED_AGENT_TOOL_UNAVAILABLE",
+                    "Инструмент search_knowledge недоступен агенту.",
+                    409,
+                )
+            store_id = await self.session.scalar(
+                select(KnowledgeStore.id).where(
+                    KnowledgeStore.provider == KnowledgeStoreProvider.OPENAI,
+                    KnowledgeStore.is_active.is_(True),
+                    KnowledgeStore.status == KnowledgeStoreStatus.ACTIVE,
+                )
+            )
+            if store_id is None:
+                raise AppError("KNOWLEDGE_STORE_NOT_CONFIGURED", "База знаний не настроена.", 409)
         model = agent.model or settings.openai_default_model
         if not model:
             raise AppError("AGENT_MODEL_NOT_CONFIGURED", "Модель агента не настроена.", 409)
@@ -261,6 +292,16 @@ def build_task_input(task: Task) -> str:
 Оффер: {campaign.offer or "Не указан"}
 Желаемый результат: {campaign.desired_result or "Не указан"}
 Контекст кампании: {campaign.description or "Не указан"}
+"""
+    if task.task_type is TaskType.KNOWLEDGE_RESEARCH:
+        revision_context = f"""
+Стратегия кампании: {campaign.strategy or "Не сформирована"}
+Версия стратегии: {task.input_data.get("strategy_version", campaign.strategy_version)}
+Оффер: {campaign.offer or "Не указан"}
+Brief исследования: {task.input_data.get("brief", "Не указан")}
+
+Используй search_knowledge для получения всех фактических материалов.
+Не используй источники и result_key, которых не было в результатах инструмента.
 """
     return f"""Выполни следующую задачу.
 

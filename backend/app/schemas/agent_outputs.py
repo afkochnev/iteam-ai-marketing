@@ -126,3 +126,50 @@ class CampaignPlan(BaseModel):
             ):
                 raise ValueError("Социальные публикации должны зависеть от статьи.")
         return self
+
+
+class SelectedKnowledgeResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    result_key: str = Field(min_length=64, max_length=64)
+    selection_reason: str = Field(min_length=1, max_length=5000)
+
+    @field_validator("result_key", "selection_reason")
+    @classmethod
+    def strip_selected_fields(cls, value: str) -> str:
+        return value.strip()
+
+
+class KnowledgeResearchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    research_query: str = Field(min_length=1, max_length=5000)
+    summary: str = Field(min_length=1, max_length=50_000)
+    sufficient: bool
+    selected_results: list[SelectedKnowledgeResult] = Field(default_factory=list, max_length=12)
+    gaps: list[str] = Field(default_factory=list, max_length=50)
+
+    @field_validator("research_query", "summary")
+    @classmethod
+    def strip_required_text(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("Поле не может быть пустым.")
+        return value
+
+    @field_validator("gaps")
+    @classmethod
+    def normalize_gaps(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip() for item in value]
+        if any(not item for item in normalized):
+            raise ValueError("Пробел в знаниях не может быть пустым.")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_research_semantics(self) -> "KnowledgeResearchResult":
+        keys = [item.result_key for item in self.selected_results]
+        if len(keys) != len(set(keys)):
+            raise ValueError("Выбранные результаты не должны повторяться.")
+        if self.sufficient and not self.selected_results:
+            raise ValueError("Достаточный результат должен содержать источник.")
+        if not self.sufficient and not self.gaps:
+            raise ValueError("При недостатке знаний необходимо описать пробелы.")
+        return self

@@ -13,6 +13,8 @@ from app.models import (  # noqa: F401
     Approval,
     Campaign,
     KnowledgeItem,
+    KnowledgePack,
+    KnowledgePackItem,
     KnowledgeSource,
     KnowledgeStore,
     Task,

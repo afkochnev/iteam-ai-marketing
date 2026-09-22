@@ -3,12 +3,16 @@ from typing import Any, cast
 from pydantic import BaseModel
 
 from app.models.task import TaskType
-from app.schemas.agent_outputs import CampaignPlan
+from app.schemas.agent_outputs import CampaignPlan, KnowledgeResearchResult
 
 
 class TaskOutputTypeRegistry:
     def get(self, task_type: TaskType) -> type[BaseModel] | None:
-        return CampaignPlan if task_type is TaskType.CAMPAIGN_PLANNING else None
+        mapping: dict[TaskType, type[BaseModel]] = {
+            TaskType.CAMPAIGN_PLANNING: CampaignPlan,
+            TaskType.KNOWLEDGE_RESEARCH: KnowledgeResearchResult,
+        }
+        return mapping.get(task_type)
 
     def normalize(self, value: Any, task_type: TaskType) -> dict[str, Any]:
         output_type = self.get(task_type)

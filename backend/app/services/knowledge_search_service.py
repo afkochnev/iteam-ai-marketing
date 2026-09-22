@@ -1,3 +1,4 @@
+import hashlib
 import logging
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -9,6 +10,10 @@ from app.schemas.knowledge import KnowledgeSearchResponse, KnowledgeSearchResult
 from app.services.knowledge_store_service import KnowledgeStoreService
 
 logger = logging.getLogger(__name__)
+
+
+def build_result_key(knowledge_item_id: object, file_id: str, excerpt: str) -> str:
+    return hashlib.sha256(f"{knowledge_item_id}\0{file_id}\0{excerpt}".encode()).hexdigest()
 
 
 class KnowledgeSearchService:
@@ -51,6 +56,7 @@ class KnowledgeSearchService:
                 continue
             results.append(
                 KnowledgeSearchResult(
+                    result_key=build_result_key(item.id, result.file_id, result.excerpt),
                     knowledge_item_id=item.id,
                     source_id=item.source_id,
                     source_title=item.source.name,

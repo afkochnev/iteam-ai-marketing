@@ -71,6 +71,7 @@ class KnowledgeSearchRequest(BaseModel):
 
 
 class KnowledgeSearchResult(BaseModel):
+    result_key: str
     knowledge_item_id: UUID
     source_id: UUID
     source_title: str

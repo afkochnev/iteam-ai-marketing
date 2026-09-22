@@ -56,5 +56,6 @@ th, td { padding: .7rem; border-bottom: 1px solid #d8dee9; text-align: left; ver
 .checkbox { display: flex; align-items: center; gap: .5rem; }
 .checkbox input { width: auto; }
 .search-results { display: grid; gap: 1rem; margin-top: 1rem; }
+.knowledge-pack { margin-top: 2rem; padding: 1.5rem; border: 1px solid #b9cbbb; border-radius: 14px; }
 @media (max-width: 700px) { .tool { grid-template-columns: 1fr; } .page-header { align-items: flex-start; flex-direction: column; } }
 @media (max-width: 850px) { .campaign-row { grid-template-columns: 1fr; } .details-grid, .date-grid { grid-template-columns: 1fr; } }

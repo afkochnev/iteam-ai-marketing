@@ -26,7 +26,10 @@ export interface Approval { id: string; object_type: "CAMPAIGN_STRATEGY" | "CONT
 export type KnowledgeItemStatus = "UPLOADING" | "INDEXING" | "READY" | "FAILED" | "ARCHIVED";
 export interface KnowledgeStore { id: string; provider: "OPENAI"; name: string; external_store_id: string; status: "ACTIVE" | "ERROR" | "INACTIVE"; is_active: boolean; created_at: string; }
 export interface KnowledgeItem { id: string; source_id: string; title: string; author: string | null; content_type: string; original_filename: string | null; mime_type: string | null; file_size_bytes: number | null; source_url: string | null; openai_file_id: string | null; vector_store_file_id: string | null; status: KnowledgeItemStatus; metadata: Record<string, unknown>; error_code: string | null; error_message: string | null; created_by: string; created_at: string; updated_at: string; indexed_at: string | null; archived_at: string | null; }
-export interface KnowledgeSearchResult { knowledge_item_id: string; source_id: string; source_title: string; filename: string; file_id: string; excerpt: string; score: number | null; metadata: Record<string, unknown>; }
+export interface KnowledgeSearchResult { result_key: string; knowledge_item_id: string; source_id: string; source_title: string; filename: string; file_id: string; excerpt: string; score: number | null; metadata: Record<string, unknown>; }
+export type KnowledgePackStatus = "READY" | "INSUFFICIENT";
+export interface KnowledgePackItem { knowledge_item_id: string; source_title: string; filename: string | null; file_id: string; excerpt: string; relevance_score: number | null; selection_reason: string | null; position: number; result_key: string; }
+export interface KnowledgePack { id: string; campaign_id: string; task_id: string; agent_run_id: string; created_by_agent_id: string; strategy_version: number | null; status: KnowledgePackStatus; research_query: string; summary: string; gaps: string[]; metadata: Record<string, unknown>; created_at: string; items: KnowledgePackItem[]; }
 export interface KnowledgeSearchResponse { query: string; result_count: number; results: KnowledgeSearchResult[]; }
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
@@ -111,4 +114,9 @@ export const knowledgeApi = {
   retry: (id: string) => request<KnowledgeItem>(`/knowledge/items/${id}/retry`, { method: "POST" }),
   archive: (id: string) => request<KnowledgeItem>(`/knowledge/items/${id}/archive`, { method: "POST" }),
   search: (query: string, max_results = 10) => request<KnowledgeSearchResponse>("/knowledge/search", { method: "POST", body: JSON.stringify({ query, max_results }) }),
+};
+
+export const knowledgePacksApi = {
+  list: (filters: Record<string, string | undefined> = {}) => { const query = new URLSearchParams(Object.entries(filters).filter((entry): entry is [string, string] => Boolean(entry[1]))); return request<KnowledgePack[]>(`/knowledge-packs${query.size ? `?${query}` : ""}`); },
+  get: (id: string) => request<KnowledgePack>(`/knowledge-packs/${id}`),
 };

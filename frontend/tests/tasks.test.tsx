@@ -5,14 +5,14 @@ import TaskDetailsPage from "../app/tasks/[id]/page";
 import NewTaskPage from "../app/tasks/new/page";
 import TasksPage from "../app/tasks/page";
 
-const mocks = vi.hoisted(() => ({ push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), start: vi.fn(), complete: vi.fn(), cancel: vi.fn(), run: vi.fn(), retry: vi.fn(), runList: vi.fn(), addDependency: vi.fn(), removeDependency: vi.fn(), campaignList: vi.fn(), agentList: vi.fn() }));
+const mocks = vi.hoisted(() => ({ push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), start: vi.fn(), complete: vi.fn(), cancel: vi.fn(), run: vi.fn(), retry: vi.fn(), runList: vi.fn(), packList: vi.fn(), addDependency: vi.fn(), removeDependency: vi.fn(), campaignList: vi.fn(), agentList: vi.fn() }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mocks.push, back: vi.fn() }), useParams: () => ({ id: "task-1" }) }));
-vi.mock("@/lib/api", async (importOriginal) => { const actual = await importOriginal<typeof import("@/lib/api")>(); return { ...actual, tasksApi: { list: mocks.list, get: mocks.get, create: mocks.create, update: mocks.update, start: mocks.start, complete: mocks.complete, cancel: mocks.cancel, run: mocks.run, retry: mocks.retry, addDependency: mocks.addDependency, removeDependency: mocks.removeDependency }, agentRunsApi: { list: mocks.runList, get: vi.fn() }, campaignsApi: { ...actual.campaignsApi, list: mocks.campaignList }, agentsApi: { ...actual.agentsApi, list: mocks.agentList } }; });
+vi.mock("@/lib/api", async (importOriginal) => { const actual = await importOriginal<typeof import("@/lib/api")>(); return { ...actual, tasksApi: { list: mocks.list, get: mocks.get, create: mocks.create, update: mocks.update, start: mocks.start, complete: mocks.complete, cancel: mocks.cancel, run: mocks.run, retry: mocks.retry, addDependency: mocks.addDependency, removeDependency: mocks.removeDependency }, agentRunsApi: { list: mocks.runList, get: vi.fn() }, knowledgePacksApi: { list: mocks.packList, get: vi.fn() }, campaignsApi: { ...actual.campaignsApi, list: mocks.campaignList }, agentsApi: { ...actual.agentsApi, list: mocks.agentList } }; });
 
 const task = { id: "task-1", campaign_id: "campaign-1", campaign: { id: "campaign-1", name: "Кампания" }, parent_task_id: null, parent_task: null, task_type: "MANUAL" as const, title: "Первая задача", description: "Описание", assigned_agent_id: null, assigned_agent: null, priority: "NORMAL" as const, status: "READY" as const, input_data: {}, output_data: {}, requires_approval: false, error_message: null, retry_count: 0, deadline: null, started_at: null, completed_at: null, dependencies: [], dependents: [], created_at: "2026-09-21T10:00:00Z", updated_at: "2026-09-21T10:00:00Z" };
 
 describe("Tasks UI", () => {
-  beforeEach(() => { vi.clearAllMocks(); mocks.list.mockResolvedValue([task]); mocks.get.mockResolvedValue(task); mocks.runList.mockResolvedValue([]); mocks.campaignList.mockResolvedValue([{ id: "campaign-1", name: "Кампания" }]); mocks.agentList.mockResolvedValue([]); });
+  beforeEach(() => { vi.clearAllMocks(); mocks.list.mockResolvedValue([task]); mocks.get.mockResolvedValue(task); mocks.runList.mockResolvedValue([]); mocks.packList.mockResolvedValue([]); mocks.campaignList.mockResolvedValue([{ id: "campaign-1", name: "Кампания" }]); mocks.agentList.mockResolvedValue([]); });
 
   it("renders list, filters and empty state", async () => { const view = render(<TasksPage />); expect(await screen.findByText("Первая задача")).toBeInTheDocument(); fireEvent.change(screen.getByLabelText("Статус"), { target: { value: "READY" } }); await waitFor(() => expect(mocks.list).toHaveBeenCalledWith(expect.objectContaining({ status: "READY" }))); view.unmount(); mocks.list.mockResolvedValue([]); render(<TasksPage />); expect(await screen.findByText("Задач пока нет")).toBeInTheDocument(); });
 
@@ -60,6 +60,32 @@ describe("Tasks UI", () => {
     render(<TaskDetailsPage />);
     expect(await screen.findByText(/Безопасная ошибка/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
+    await waitFor(() => expect(mocks.retry).toHaveBeenCalledWith("task-1"));
+  });
+
+  it("runs Knowledge Keeper and renders verified KnowledgePack", async () => {
+    const keeper = { id: "keeper-1", name: "Knowledge Keeper", slug: "knowledge_keeper" };
+    mocks.get.mockResolvedValue({ ...task, task_type: "KNOWLEDGE_RESEARCH", assigned_agent_id: keeper.id, assigned_agent: keeper });
+    mocks.packList.mockResolvedValue([{ id: "pack-1", campaign_id: task.campaign_id, task_id: task.id, agent_run_id: "run-1", created_by_agent_id: keeper.id, strategy_version: 1, status: "READY", research_query: "управленческий ритм", summary: "Материалы найдены", gaps: [], metadata: {}, created_at: task.created_at, items: [{ knowledge_item_id: "knowledge-1", source_title: "Ручные загрузки", filename: "management.md", file_id: "file-1", excerpt: "Проверенный фрагмент", relevance_score: 0.91, selection_reason: "Раскрывает тему", position: 1, result_key: "a".repeat(64) }] }]);
+    mocks.run.mockResolvedValue({});
+    render(<TaskDetailsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Запустить AI" }));
+    await waitFor(() => expect(mocks.run).toHaveBeenCalledWith("task-1"));
+    expect(await screen.findByText("Пакет знаний")).toBeInTheDocument();
+    expect(screen.getByText(/management\.md/)).toBeInTheDocument();
+    expect(screen.getByText(/0.910/)).toBeInTheDocument();
+    expect(screen.getByText("Проверенный фрагмент")).toBeInTheDocument();
+  });
+
+  it("renders insufficient gaps and research retry", async () => {
+    const keeper = { id: "keeper-1", name: "Knowledge Keeper", slug: "knowledge_keeper" };
+    mocks.get.mockResolvedValue({ ...task, task_type: "KNOWLEDGE_RESEARCH", status: "FAILED", error_message: "INSUFFICIENT_KNOWLEDGE", assigned_agent_id: keeper.id, assigned_agent: keeper });
+    mocks.packList.mockResolvedValue([{ id: "pack-1", campaign_id: task.campaign_id, task_id: task.id, agent_run_id: "run-1", created_by_agent_id: keeper.id, strategy_version: 1, status: "INSUFFICIENT", research_query: "масштаб компаний", summary: "Недостаточно данных", gaps: ["Нет материалов о компаниях данного масштаба"], metadata: {}, created_at: task.created_at, items: [] }]);
+    mocks.retry.mockResolvedValue({});
+    render(<TaskDetailsPage />);
+    expect(await screen.findByText("Недостаточно материалов в базе знаний")).toBeInTheDocument();
+    expect(screen.getByText("Нет материалов о компаниях данного масштаба")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Повторить исследование" }));
     await waitFor(() => expect(mocks.retry).toHaveBeenCalledWith("task-1"));
   });
 });
