@@ -24,7 +24,8 @@ async def search_knowledge(
         max_results: Number of results to return, from 1 to 20.
     """
     arguments = {"query": query, "max_results": max_results}
-    async with async_session_factory() as session:
+    factory = ctx.context.session_factory or async_session_factory
+    async with factory() as session:
         audit = ToolCall(
             agent_run_id=ctx.context.agent_run_id,
             tool_name="search_knowledge",
@@ -36,10 +37,10 @@ async def search_knowledge(
         await session.commit()
         audit_id = audit.id
     try:
-        async with async_session_factory() as session:
+        async with factory() as session:
             response = await KnowledgeSearchService(session).search(query, max_results)
         payload = response.model_dump(mode="json")
-        async with async_session_factory() as session:
+        async with factory() as session:
             stored_audit = await session.get(ToolCall, audit_id, with_for_update=True)
             if stored_audit:
                 stored_audit.status = ToolCallStatus.COMPLETED
@@ -51,7 +52,7 @@ async def search_knowledge(
         logger.exception(
             "search_knowledge tool failed", extra={"agent_run_id": str(ctx.context.agent_run_id)}
         )
-        async with async_session_factory() as session:
+        async with factory() as session:
             stored_audit = await session.get(ToolCall, audit_id, with_for_update=True)
             if stored_audit:
                 stored_audit.status = ToolCallStatus.FAILED

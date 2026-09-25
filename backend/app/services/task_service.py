@@ -1,11 +1,14 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
 from app.models.agent import Agent
+from app.models.approval import Approval, ApprovalObjectType, ApprovalStatus
 from app.models.campaign import Campaign, CampaignStatus
+from app.models.content import ContentItem, ContentType, ContentVersion
 from app.models.task import Task, TaskPriority, TaskStatus, TaskType
 from app.repositories.tasks import TaskRepository
 from app.schemas.task import TaskCreate, TaskUpdate
@@ -61,7 +64,9 @@ class TaskService:
         dependencies = [await self.get_task(item) for item in dependency_ids]
         if any(item.campaign_id != payload.campaign_id for item in dependencies):
             raise AppError(
-                "TASK_CROSS_CAMPAIGN_DEPENDENCY", "Задачи из разных кампаний нельзя связывать.", 409
+                "TASK_CROSS_CAMPAIGN_DEPENDENCY",
+                "Задачи из разных кампаний нельзя связывать.",
+                409,
             )
         values = payload.model_dump(exclude={"dependency_ids"})
         values["status"] = (
@@ -74,6 +79,7 @@ class TaskService:
         task = await self.repository.create(values)
         for dependency_id in dependency_ids:
             await self.repository.add_dependency(task.id, dependency_id)
+        await self._resolve_status(task)
         if commit:
             await self.session.commit()
         else:
@@ -83,9 +89,15 @@ class TaskService:
     async def update_task(self, task_id: UUID, payload: TaskUpdate) -> Task:
         task = await self.get_task(task_id)
         self._ensure_campaign_editable(task.campaign)
-        if task.status in {TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
+        if task.status in {
+            TaskStatus.IN_PROGRESS,
+            TaskStatus.COMPLETED,
+            TaskStatus.CANCELLED,
+        }:
             raise AppError(
-                "TASK_NOT_EDITABLE", "Задачу в текущем статусе нельзя редактировать.", 409
+                "TASK_NOT_EDITABLE",
+                "Задачу в текущем статусе нельзя редактировать.",
+                409,
             )
         changes = payload.model_dump(exclude_unset=True)
         agent_id = changes.get("assigned_agent_id")
@@ -99,17 +111,25 @@ class TaskService:
         task = await self.get_task(task_id)
         dependency = await self.get_task(depends_on_task_id)
         self._ensure_campaign_editable(task.campaign)
-        if task.status in {TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
+        if task.status in {
+            TaskStatus.IN_PROGRESS,
+            TaskStatus.COMPLETED,
+            TaskStatus.CANCELLED,
+        }:
             raise AppError("TASK_NOT_EDITABLE", "Зависимости этой задачи нельзя изменять.", 409)
         if task.id == dependency.id:
             raise AppError("TASK_SELF_DEPENDENCY", "Задача не может зависеть от самой себя.", 409)
         if task.campaign_id != dependency.campaign_id:
             raise AppError(
-                "TASK_CROSS_CAMPAIGN_DEPENDENCY", "Задачи из разных кампаний нельзя связывать.", 409
+                "TASK_CROSS_CAMPAIGN_DEPENDENCY",
+                "Задачи из разных кампаний нельзя связывать.",
+                409,
             )
         if dependency.id in await self.repository.dependency_ids(task.id):
             raise AppError(
-                "TASK_DEPENDENCY_ALREADY_EXISTS", "Такая зависимость уже существует.", 409
+                "TASK_DEPENDENCY_ALREADY_EXISTS",
+                "Такая зависимость уже существует.",
+                409,
             )
         if await self._would_create_cycle(task, dependency):
             raise AppError("TASK_DEPENDENCY_CYCLE", "Зависимость создаёт цикл.", 409)
@@ -121,7 +141,11 @@ class TaskService:
     async def remove_dependency(self, task_id: UUID, dependency_id: UUID) -> Task:
         task = await self.get_task(task_id)
         self._ensure_campaign_editable(task.campaign)
-        if task.status in {TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED, TaskStatus.CANCELLED}:
+        if task.status in {
+            TaskStatus.IN_PROGRESS,
+            TaskStatus.COMPLETED,
+            TaskStatus.CANCELLED,
+        }:
             raise AppError("TASK_NOT_EDITABLE", "Зависимости этой задачи нельзя изменять.", 409)
         if not await self.repository.remove_dependency(task.id, dependency_id):
             raise AppError("TASK_DEPENDENCY_NOT_FOUND", "Зависимость не найдена.", 404)
@@ -147,7 +171,9 @@ class TaskService:
         self._ensure_campaign_editable(task.campaign)
         if task.status is not TaskStatus.IN_PROGRESS:
             raise AppError(
-                "INVALID_TASK_TRANSITION", "Завершить можно только задачу в работе.", 409
+                "INVALID_TASK_TRANSITION",
+                "Завершить можно только задачу в работе.",
+                409,
             )
         await self.repository.update(
             task,
@@ -169,9 +195,15 @@ class TaskService:
     async def cancel_task(self, task_id: UUID) -> Task:
         task = await self.get_task(task_id)
         self._ensure_campaign_editable(task.campaign)
-        if task.status not in {TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.IN_PROGRESS}:
+        if task.status not in {
+            TaskStatus.READY,
+            TaskStatus.BLOCKED,
+            TaskStatus.IN_PROGRESS,
+        }:
             raise AppError(
-                "INVALID_TASK_TRANSITION", "Задачу в текущем статусе нельзя отменить.", 409
+                "INVALID_TASK_TRANSITION",
+                "Задачу в текущем статусе нельзя отменить.",
+                409,
             )
         await self.repository.update(task, {"status": TaskStatus.CANCELLED})
         if (
@@ -191,7 +223,73 @@ class TaskService:
             if all(item.status is TaskStatus.COMPLETED for item in dependencies)
             else TaskStatus.BLOCKED
         )
+        if status is TaskStatus.READY and task.task_type is TaskType.CREATE_SOCIAL_POSTS:
+            source_version_id = await self.approved_article_version_for_smm(task)
+            if source_version_id is None:
+                status = TaskStatus.BLOCKED
+            else:
+                task.input_data = {
+                    **task.input_data,
+                    "source_content_version_id": str(source_version_id),
+                }
         await self.repository.update(task, {"status": status})
+
+    async def approved_article_version_for_smm(self, task: Task) -> UUID | None:
+        """Return the exact approved Article Version allowed for this SMM task."""
+
+        if task.task_type is not TaskType.CREATE_SOCIAL_POSTS:
+            return None
+        dependency_ids = await self.repository.dependency_ids(task.id)
+        article_tasks = [
+            item
+            for item in [await self.get_task(item_id) for item_id in dependency_ids]
+            if item.task_type is TaskType.WRITE_ARTICLE
+            and item.status is TaskStatus.COMPLETED
+            and item.campaign_id == task.campaign_id
+        ]
+        if len(article_tasks) != 1:
+            return None
+        article_task = article_tasks[0]
+        raw_version_id = task.input_data.get("source_content_version_id") or (
+            article_task.output_data.get("content_version_id")
+        )
+        if not raw_version_id:
+            return None
+        try:
+            version_id = UUID(str(raw_version_id))
+        except (TypeError, ValueError):
+            return None
+        value = await self.session.scalar(
+            select(ContentVersion.id)
+            .join(ContentItem, ContentItem.id == ContentVersion.content_item_id)
+            .join(
+                Approval,
+                and_(
+                    Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
+                    Approval.object_id == ContentItem.id,
+                    Approval.subject_version == ContentVersion.version_number,
+                    Approval.status == ApprovalStatus.APPROVED,
+                ),
+            )
+            .where(
+                ContentVersion.id == version_id,
+                ContentItem.campaign_id == task.campaign_id,
+                ContentItem.content_type == ContentType.ARTICLE,
+                ContentItem.source_task_id == article_task.id,
+            )
+        )
+        return UUID(str(value)) if value is not None else None
+
+    async def refresh_dependents_for_content(self, content_id: UUID) -> None:
+        item = await self.session.get(ContentItem, content_id)
+        if item is None or item.content_type is not ContentType.ARTICLE:
+            return
+        for dependent in await self.repository.get_dependents(item.source_task_id):
+            if (
+                dependent.task_type is TaskType.CREATE_SOCIAL_POSTS
+                and dependent.status is TaskStatus.BLOCKED
+            ):
+                await self._resolve_status(dependent)
 
     async def _would_create_cycle(self, task: Task, dependency: Task) -> bool:
         graph: dict[UUID, set[UUID]] = {}
@@ -218,5 +316,7 @@ class TaskService:
     def _ensure_campaign_editable(campaign: Campaign) -> None:
         if campaign.status is CampaignStatus.ARCHIVED:
             raise AppError(
-                "CAMPAIGN_ARCHIVED", "Архивная кампания доступна только для чтения.", 409
+                "CAMPAIGN_ARCHIVED",
+                "Архивная кампания доступна только для чтения.",
+                409,
             )

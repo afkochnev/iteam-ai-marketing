@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
@@ -18,6 +18,11 @@ class AgentRuntimeContext:
     allowed_knowledge_pack_ids: tuple[UUID, ...] = ()
     allowed_content_version_ids: tuple[UUID, ...] = ()
     output_task_type: TaskType | None = None
+    # Celery executions provide a loop-local DB factory for their tools.
+    session_factory: Any = None
+    # Invocation-local immutable tool results; avoids re-reading the same source
+    # during a bounded structured-output repair turn.
+    content_version_cache: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

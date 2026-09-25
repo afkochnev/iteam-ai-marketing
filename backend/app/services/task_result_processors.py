@@ -1,4 +1,5 @@
 import hashlib
+import logging
 from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
@@ -39,23 +40,37 @@ from app.services.approval_service import ApprovalService
 from app.services.knowledge_search_service import build_result_key
 from app.services.task_service import TaskService
 
+logger = logging.getLogger(__name__)
+
 
 class TaskResultProcessor(Protocol):
     async def process(
-        self, session: AsyncSession, run: AgentRun, task: Task, output: dict[str, object]
+        self,
+        session: AsyncSession,
+        run: AgentRun,
+        task: Task,
+        output: dict[str, object],
     ) -> None: ...
 
 
 class DefaultTaskResultProcessor:
     async def process(
-        self, session: AsyncSession, run: AgentRun, task: Task, output: dict[str, object]
+        self,
+        session: AsyncSession,
+        run: AgentRun,
+        task: Task,
+        output: dict[str, object],
     ) -> None:
         await TaskService(session).complete_task(task.id, output, commit=False)
 
 
 class CampaignPlanningResultProcessor:
     async def process(
-        self, session: AsyncSession, run: AgentRun, task: Task, output: dict[str, object]
+        self,
+        session: AsyncSession,
+        run: AgentRun,
+        task: Task,
+        output: dict[str, object],
     ) -> None:
         try:
             plan = CampaignPlan.model_validate(output)
@@ -84,9 +99,103 @@ class CampaignPlanningResultProcessor:
         await TaskService(session).complete_task(task.id, snapshot, commit=False)
 
 
+_QUANTITATIVE_TERMS = (
+    "roi",
+    "quantitative",
+    "количествен",
+    "метрик",
+    "до/после",
+    "до и после",
+    "before/after",
+    "before after",
+)
+_COMMON_BRIEF_WORDS = {
+    "какой",
+    "какие",
+    "какую",
+    "компании",
+    "company",
+    "нужен",
+    "нужна",
+    "для",
+    "and",
+    "the",
+    "with",
+    "find",
+    "facts",
+    "найти",
+    "релевантные",
+    "источники",
+}
+
+
+def _words(value: str) -> set[str]:
+    return {
+        word
+        for word in "".join(char.lower() if char.isalnum() else " " for char in value).split()
+        if len(word) >= 4 and word not in _COMMON_BRIEF_WORDS
+    }
+
+
+def _is_knowledge_sufficient(
+    task: Task,
+    research: KnowledgeResearchResult,
+    selected_rows: list[tuple[KnowledgeSearchResult, ToolCall]],
+) -> bool:
+    """Apply the deterministic, deliverable-aware sufficiency policy.
+
+    ``gaps`` are retained as constraints for the writer and do not, by
+    themselves, make a pack unusable.  The application only blocks when the
+    requested brief explicitly requires evidence that is absent, or when the
+    minimum grounded-material invariants are not met.
+    """
+
+    if not research.summary.strip() or not selected_rows:
+        return False
+
+    brief = str(task.input_data.get("brief", ""))
+    evidence = " ".join(
+        [
+            research.research_query,
+            research.summary,
+            *(source.excerpt for source, _call in selected_rows),
+            *(source.source_title for source, _call in selected_rows),
+        ]
+    )
+    # For a non-trivial brief, require at least one lexical anchor in the
+    # verified evidence.  This is intentionally conservative: the search
+    # query and selected excerpts are already produced by the real tool path,
+    # while provenance validation above remains authoritative.
+    brief_words = _words(brief)
+    if brief_words and not brief_words.intersection(_words(evidence)):
+        return False
+
+    lowered = brief.lower()
+    if any(term in lowered for term in _QUANTITATIVE_TERMS):
+        source_evidence = " ".join(
+            [source.excerpt for source, _call in selected_rows]
+            + [source.source_title for source, _call in selected_rows]
+        )
+        evidence_lower = source_evidence.lower()
+        # Quantitative deliverables need actual numeric/measurement evidence,
+        # not merely a qualitative gap or testimonial.
+        has_measurement = any(char.isdigit() for char in evidence_lower) or any(
+            term in evidence_lower
+            for term in ("percent", "%", "процент", "metric", "метрик", "roi")
+        )
+        if not has_measurement:
+            return False
+
+    return True
+
+
 class KnowledgeResearchResultProcessor:
     async def process(
-        self, session: AsyncSession, run: AgentRun, task: Task, output: dict[str, object]
+        self,
+        session: AsyncSession,
+        run: AgentRun,
+        task: Task,
+        output: dict[str, object],
     ) -> None:
         existing = await KnowledgePackRepository(session).get_by_run(run.id)
         if existing:
@@ -155,9 +264,13 @@ class KnowledgeResearchResultProcessor:
                     "Один из выбранных источников больше не доступен.",
                     409,
                 )
-        status = (
-            KnowledgePackStatus.READY if research.sufficient else KnowledgePackStatus.INSUFFICIENT
-        )
+        # The model's ``sufficient`` flag is a proposal, not the business
+        # decision.  A useful pack may still have explicit gaps (for example,
+        # no quantitative case study), while a deliverable which explicitly
+        # asks for that evidence must remain blocked.  Keep this validation
+        # deterministic and local to the application boundary.
+        sufficient = _is_knowledge_sufficient(task, research, selected_rows)
+        status = KnowledgePackStatus.READY if sufficient else KnowledgePackStatus.INSUFFICIENT
         pack = KnowledgePack(
             campaign_id=task.campaign_id,
             task_id=task.id,
@@ -203,7 +316,7 @@ class KnowledgeResearchResultProcessor:
             "knowledge_pack_id": str(pack.id),
             "status": status.value,
         }
-        if research.sufficient:
+        if sufficient:
             await TaskService(session).complete_task(task.id, output_data, commit=False)
         else:
             task.status = TaskStatus.FAILED
@@ -228,7 +341,11 @@ def render_article_markdown(article: object) -> str:
 
 class WriterResultProcessor:
     async def process(
-        self, session: AsyncSession, run: AgentRun, task: Task, output: dict[str, object]
+        self,
+        session: AsyncSession,
+        run: AgentRun,
+        task: Task,
+        output: dict[str, object],
     ) -> None:
         existing = await session.scalar(
             select(ContentVersion).where(ContentVersion.source_agent_run_id == run.id)
@@ -268,14 +385,19 @@ class WriterResultProcessor:
                     verified.add(UUID(str(item["knowledge_pack_item_id"])))
         if not allowed.issubset(read_pack_ids):
             raise AppError(
-                "KNOWLEDGE_PACK_NOT_READ", "Writer не прочитал все необходимые пакеты знаний.", 422
+                "KNOWLEDGE_PACK_NOT_READ",
+                "Writer не прочитал все необходимые пакеты знаний.",
+                422,
             )
         if not result.sufficient:
             task.status = TaskStatus.FAILED
             task.error_message = (
                 "INSUFFICIENT_ARTICLE_EVIDENCE: Недостаточно подтверждённых материалов для статьи."
             )
-            task.output_data = {"gaps": result.gaps, "error_code": "INSUFFICIENT_ARTICLE_EVIDENCE"}
+            task.output_data = {
+                "gaps": result.gaps,
+                "error_code": "INSUFFICIENT_ARTICLE_EVIDENCE",
+            }
             task.completed_at = datetime.now(UTC)
             await session.flush()
             return
@@ -287,11 +409,15 @@ class WriterResultProcessor:
         ]
         if not selected:
             raise AppError(
-                "INVALID_ARTICLE_SOURCE", "Статья не содержит подтверждённых источников.", 422
+                "INVALID_ARTICLE_SOURCE",
+                "Статья не содержит подтверждённых источников.",
+                422,
             )
         if any(source_id not in verified for source_id in selected):
             raise AppError(
-                "INVALID_ARTICLE_SOURCE", "Статья содержит неподтверждённый источник.", 422
+                "INVALID_ARTICLE_SOURCE",
+                "Статья содержит неподтверждённый источник.",
+                422,
             )
         rows = {
             item.id: item
@@ -306,7 +432,9 @@ class WriterResultProcessor:
         if task.task_type is TaskType.CONTENT_REVISION:
             if task.input_data.get("revision_target_type") != ContentType.ARTICLE.value:
                 raise AppError(
-                    "INVALID_REVISION_TARGET", "Эта задача не является доработкой статьи.", 409
+                    "INVALID_REVISION_TARGET",
+                    "Эта задача не является доработкой статьи.",
+                    409,
                 )
             content_id = UUID(str(task.input_data["content_item_id"]))
             item = (
@@ -457,7 +585,11 @@ class WriterResultProcessor:
 
 class SocialPostResultProcessor:
     async def process(
-        self, session: AsyncSession, run: AgentRun, task: Task, output: dict[str, object]
+        self,
+        session: AsyncSession,
+        run: AgentRun,
+        task: Task,
+        output: dict[str, object],
     ) -> None:
         existing = await session.scalar(
             select(ContentVersion).where(
@@ -471,7 +603,9 @@ class SocialPostResultProcessor:
             result = SocialPostPackResult.model_validate(output)
         except ValidationError as exc:
             raise AppError(
-                "INVALID_SOCIAL_POST_RESULT", "Структура публикаций не прошла проверку.", 422
+                "INVALID_SOCIAL_POST_RESULT",
+                "Структура публикаций не прошла проверку.",
+                422,
             ) from exc
         calls = list(
             (
@@ -496,14 +630,19 @@ class SocialPostResultProcessor:
         }
         if not allowed.issubset(read_ids):
             raise AppError(
-                "CONTENT_VERSION_NOT_READ", "SMM Manager не прочитал все версии статьи.", 422
+                "CONTENT_VERSION_NOT_READ",
+                "SMM Manager не прочитал все версии статьи.",
+                422,
             )
         if not result.sufficient:
             task.status = TaskStatus.FAILED
             task.error_message = (
                 "INSUFFICIENT_SOCIAL_SOURCE: Недостаточно материала для публикаций."
             )
-            task.output_data = {"gaps": result.gaps, "error_code": "INSUFFICIENT_SOCIAL_SOURCE"}
+            task.output_data = {
+                "gaps": result.gaps,
+                "error_code": "INSUFFICIENT_SOCIAL_SOURCE",
+            }
             task.completed_at = datetime.now(UTC)
             await session.flush()
             return
@@ -518,8 +657,25 @@ class SocialPostResultProcessor:
             or any(post.channel not in channels for post in result.pack.posts)
             or not channels.issubset({post.channel for post in result.pack.posts})
         ):
+            logger.warning(
+                "SMM result rejected by campaign strategy",
+                extra={
+                    "event": "smm_strategy_validation_failed",
+                    "agent_run_id": str(run.id),
+                    "task_id": str(task.id),
+                    "validation_code": "INVALID_SOCIAL_POST_RESULT",
+                    "strategy_version": task.input_data.get("strategy_version"),
+                    "source_content_version_id": task.input_data.get("source_content_version_id"),
+                    "expected_post_count": expected_count,
+                    "actual_post_count": len(result.pack.posts),
+                    "allowed_channels": sorted(channels),
+                    "actual_channels": sorted({post.channel for post in result.pack.posts}),
+                },
+            )
             raise AppError(
-                "INVALID_SOCIAL_POST_RESULT", "Посты не соответствуют стратегии кампании.", 422
+                "INVALID_SOCIAL_POST_RESULT",
+                "Посты не соответствуют стратегии кампании.",
+                422,
             )
         available: dict[UUID, set[str]] = {}
         for call in calls:
@@ -531,7 +687,9 @@ class SocialPostResultProcessor:
             for source in post.sources:
                 if source.content_version_id not in allowed:
                     raise AppError(
-                        "INVALID_SOCIAL_SOURCE", "Пост ссылается на недоступную версию статьи.", 422
+                        "INVALID_SOCIAL_SOURCE",
+                        "Пост ссылается на недоступную версию статьи.",
+                        422,
                     )
                 if source.section_key not in available.get(source.content_version_id, set()):
                     raise AppError(
@@ -542,7 +700,9 @@ class SocialPostResultProcessor:
         if task.task_type is TaskType.CONTENT_REVISION:
             if task.input_data.get("revision_target_type") != ContentType.SOCIAL_POST_PACK.value:
                 raise AppError(
-                    "INVALID_REVISION_TARGET", "Эта задача не является доработкой пакета.", 409
+                    "INVALID_REVISION_TARGET",
+                    "Эта задача не является доработкой пакета.",
+                    409,
                 )
             pack_id = UUID(str(task.input_data["content_item_id"]))
             pack_item = (
@@ -815,7 +975,11 @@ class SocialPostResultProcessor:
 
 class ContentRevisionResultProcessor:
     async def process(
-        self, session: AsyncSession, run: AgentRun, task: Task, output: dict[str, object]
+        self,
+        session: AsyncSession,
+        run: AgentRun,
+        task: Task,
+        output: dict[str, object],
     ) -> None:
         if task.input_data.get("revision_target_type") == ContentType.ARTICLE.value:
             await WriterResultProcessor().process(session, run, task, output)

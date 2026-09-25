@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import func, select
@@ -29,14 +29,17 @@ from app.models.knowledge import (
     KnowledgeStoreProvider,
     KnowledgeStoreStatus,
 )
-from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem, KnowledgePackStatus
+from app.models.knowledge_pack import (
+    KnowledgePack,
+    KnowledgePackItem,
+    KnowledgePackStatus,
+)
 from app.models.task import Task, TaskStatus, TaskType
 from app.models.user import User
 from app.schemas.content import ContentApprovalRequest
 from app.schemas.task import TaskCreate
 from app.services.agent_run_service import AgentRunService
 from app.services.agent_runner_service import AgentRuntimeError, RuntimeResult
-from app.services.approval_service import ApprovalService
 from app.services.campaign_planning_service import CampaignPlanningService
 from app.services.knowledge_search_service import build_result_key
 from app.services.task_dispatcher_service import TaskDispatcherService
@@ -161,7 +164,8 @@ async def test_dispatcher_runs_knowledge_writer_and_smm_without_manual_runs(
             if not knowledge_failed_once:
                 knowledge_failed_once = True
                 await service.finish_failure(
-                    run.id, AgentRuntimeError("AGENT_TIMEOUT", "temporary provider timeout")
+                    run.id,
+                    AgentRuntimeError("AGENT_TIMEOUT", "temporary provider timeout"),
                 )
                 return run
             key = build_result_key(item.id, "file-management", "Материал об управляемости.")
@@ -276,6 +280,27 @@ async def test_dispatcher_runs_knowledge_writer_and_smm_without_manual_runs(
                     None,
                 ),
             )
+            # SMM is intentionally gated by the human Article approval.  The
+            # production approval endpoint performs the same dependent-task
+            # refresh; this test drives the state transition at the service
+            # boundary so the automatic dispatcher can continue the chain.
+            completed_article_task = await service.session.get(Task, run.task_id)
+            assert completed_article_task is not None
+            article_id = UUID(str(completed_article_task.output_data["content_item_id"]))
+            article = await service.session.get(ContentItem, article_id)
+            assert article is not None
+            approval = await service.session.scalar(
+                select(Approval).where(
+                    Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
+                    Approval.object_id == article.id,
+                    Approval.status == ApprovalStatus.PENDING,
+                )
+            )
+            assert approval is not None
+            approval.status = ApprovalStatus.APPROVED
+            article.status = ContentStatus.APPROVED
+            await TaskService(service.session).refresh_dependents_for_content(article.id)
+            await service.session.commit()
         else:
             article_task = (
                 await service.session.scalars(
@@ -302,7 +327,8 @@ async def test_dispatcher_runs_knowledge_writer_and_smm_without_manual_runs(
             )
             await service.session.commit()
             await service.finish_success(
-                run.id, RuntimeResult(_social_output(str(article_version_id)), 1, 10, 10, 20, None)
+                run.id,
+                RuntimeResult(_social_output(str(article_version_id)), 1, 10, 10, 20, None),
             )
         return run
 
@@ -327,7 +353,11 @@ async def test_dispatcher_runs_knowledge_writer_and_smm_without_manual_runs(
         task.status is TaskStatus.COMPLETED
         for task in tasks
         if task.task_type
-        in {TaskType.KNOWLEDGE_RESEARCH, TaskType.WRITE_ARTICLE, TaskType.CREATE_SOCIAL_POSTS}
+        in {
+            TaskType.KNOWLEDGE_RESEARCH,
+            TaskType.WRITE_ARTICLE,
+            TaskType.CREATE_SOCIAL_POSTS,
+        }
     )
     assert knowledge_failed_once
     assert settings.agent_retry_backoff_seconds in retry_countdowns
@@ -402,7 +432,7 @@ async def test_dispatcher_runs_knowledge_writer_and_smm_without_manual_runs(
                 Approval.status == ApprovalStatus.PENDING,
             )
         )
-        == 2
+        == 1
     )
     events = set(
         (
@@ -449,7 +479,8 @@ async def test_pack_revision_lifecycle_and_atomic_failures(
     )
     await db_session.commit()
     await service.finish_success(
-        first.id, RuntimeResult(_social_output(str(article_version.id)), 1, 1, 1, 2, None)
+        first.id,
+        RuntimeResult(_social_output(str(article_version.id)), 1, 1, 1, 2, None),
     )
     pack = await db_session.scalar(
         select(ContentItem).where(ContentItem.content_type == ContentType.SOCIAL_POST_PACK)
@@ -539,7 +570,10 @@ async def test_pack_revision_lifecycle_and_atomic_failures(
         if mode == "insufficient":
             assert failed_task.output_data.get("error_code") == expected_error
         else:
-            assert failed_run.error_code in {expected_error, "INVALID_SOCIAL_SOURCE_SECTION"}
+            assert failed_run.error_code in {
+                expected_error,
+                "INVALID_SOCIAL_SOURCE_SECTION",
+            }
         await db_session.refresh(pack)
         assert pack.current_version_id == old_pack_version_id
         current_children = list(
@@ -734,12 +768,14 @@ async def test_article_revision_success_and_idempotent_processing(
         )
     )
     article.status = ContentStatus.WAITING_APPROVAL
-    await ApprovalService(db_session).create_content_approval(
-        article.id,
-        1,
-        {"content_item_id": str(article.id), "content_version_id": str(article_version.id)},
-        writer.id,
+    existing_article_approval = await db_session.scalar(
+        select(Approval).where(
+            Approval.object_id == article.id,
+            Approval.subject_version == article_version.version_number,
+        )
     )
+    assert existing_article_approval is not None
+    existing_article_approval.status = ApprovalStatus.PENDING
     await db_session.commit()
     approval = await db_session.scalar(
         select(Approval).where(

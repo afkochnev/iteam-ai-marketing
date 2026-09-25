@@ -55,6 +55,8 @@ async def system_status(_admin: AdminUser, session: SessionDependency) -> dict[s
         select(ActivityLog.created_at).order_by(ActivityLog.created_at.desc()).limit(1)
     )
     return {
+        "version": settings.app_version,
+        "environment": settings.app_env,
         "tasks": task_counts,
         "agent_runs": run_counts,
         "stuck_tasks": int(stuck or 0),
@@ -95,6 +97,9 @@ async def readiness() -> dict[str, str]:
     }
     if not database_ok or not redis_ok:
         raise AppError(
-            "READINESS_CHECK_FAILED", "Сервис ещё не готов принимать запросы.", 503, payload
+            "READINESS_CHECK_FAILED",
+            "Сервис ещё не готов принимать запросы.",
+            503,
+            payload,
         )
     return payload

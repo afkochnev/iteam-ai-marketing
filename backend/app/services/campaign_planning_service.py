@@ -140,6 +140,13 @@ class CampaignPlanningService:
                         "strategy_version": campaign.strategy_version,
                         "plan_task_key": planned.key,
                         "brief": planned.brief,
+                        "campaign_strategy_snapshot": {
+                            "objective": campaign.strategy.get("campaign_summary"),
+                            "audience": campaign.strategy.get("target_audience"),
+                            "positioning": campaign.strategy.get("positioning"),
+                            "key_message": campaign.strategy.get("key_message"),
+                            "social_strategy": campaign.strategy.get("social_strategy"),
+                        },
                         "campaign_strategy_reference": {
                             "campaign_id": str(campaign.id),
                             "strategy_version": campaign.strategy_version,

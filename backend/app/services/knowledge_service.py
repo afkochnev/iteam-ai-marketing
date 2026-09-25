@@ -14,6 +14,21 @@ from app.services.knowledge_store_service import KnowledgeStoreService
 
 logger = logging.getLogger(__name__)
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt", ".md"}
+SUPPORTED_MIME_TYPES = {
+    ".pdf": {"application/pdf"},
+    ".docx": {"application/vnd.openxmlformats-officedocument.wordprocessingml.document"},
+    ".txt": {"text/plain", "application/octet-stream"},
+    ".md": {"text/markdown", "text/plain", "application/octet-stream"},
+}
+RETRYABLE_INDEX_ERROR_CODES = frozenset(
+    {
+        "KNOWLEDGE_INDEX_STALE",
+        "KNOWLEDGE_INDEX_TIMEOUT",
+        "KNOWLEDGE_INDEX_FAILED",
+        "KNOWLEDGE_INDEX_ENQUEUE_FAILED",
+        "OPENAI_FILE_UPLOAD_FAILED",
+    }
+)
 
 
 def safe_provider_message(_exc: Exception) -> str:
@@ -52,6 +67,12 @@ class KnowledgeService:
         extension = Path(clean_name).suffix.lower()
         if not clean_name or clean_name in {".", ".."} or extension not in SUPPORTED_EXTENSIONS:
             raise AppError("UNSUPPORTED_KNOWLEDGE_FILE", "Поддерживаются PDF, DOCX, TXT и MD.", 422)
+        if mime_type and mime_type.lower() not in SUPPORTED_MIME_TYPES[extension]:
+            raise AppError(
+                "UNSUPPORTED_KNOWLEDGE_MIME",
+                "Тип файла не соответствует расширению.",
+                422,
+            )
         if not content:
             raise AppError("EMPTY_KNOWLEDGE_FILE", "Файл не может быть пустым.", 422)
         if len(content) > settings.max_upload_size_mb * 1024 * 1024:
@@ -67,6 +88,7 @@ class KnowledgeService:
             original_filename=clean_name[:255],
             mime_type=mime_type,
             file_size_bytes=len(content),
+            source_content=content,
             status=KnowledgeItemStatus.UPLOADING,
             metadata_={},
             created_by=created_by,
@@ -80,7 +102,8 @@ class KnowledgeService:
             await self.session.commit()
         except Exception as exc:
             logger.exception(
-                "Knowledge file upload failed", extra={"knowledge_item_id": str(item.id)}
+                "Knowledge file upload failed",
+                extra={"knowledge_item_id": str(item.id)},
             )
             item.status = KnowledgeItemStatus.FAILED
             item.error_code = "OPENAI_FILE_UPLOAD_FAILED"
@@ -104,16 +127,27 @@ class KnowledgeService:
         return item
 
     async def retry(self, item_id: UUID) -> KnowledgeItem:
-        item = await self.get_item(item_id)
-        if item.status is not KnowledgeItemStatus.FAILED or not item.openai_file_id:
+        item = await self.repository.get_item(item_id, lock=True)
+        if (
+            item is None
+            or item.status is not KnowledgeItemStatus.FAILED
+            or item.error_code not in RETRYABLE_INDEX_ERROR_CODES
+        ):
             raise AppError(
-                "KNOWLEDGE_ITEM_NOT_RETRYABLE", "Документ нельзя повторно индексировать.", 409
+                "KNOWLEDGE_ITEM_NOT_RETRYABLE",
+                "Документ нельзя повторно индексировать.",
+                409,
             )
         item.status = KnowledgeItemStatus.INDEXING
         item.error_code = None
         item.error_message = None
         await self.session.commit()
-        return await self.enqueue_indexing(item)
+        item = await self.get_item(item.id)
+        await self.enqueue_indexing(item)
+        # Server-managed timestamps (notably updated_at) may be expired after
+        # the state transition commit. Reload the complete ORM row before the
+        # async endpoint hands it to Pydantic's from_attributes serializer.
+        return await self.get_item(item.id)
 
     async def archive(self, item_id: UUID) -> KnowledgeItem:
         item = await self.get_item(item_id)

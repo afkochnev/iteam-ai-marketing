@@ -9,22 +9,19 @@ from app.main import app
 
 def test_health() -> None:
     response = TestClient(app).get("/health")
-
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    assert response.json() == {"status": "ok", "version": "0.1.0"}
     assert response.headers.get("x-request-id")
 
 
 def test_request_id_is_preserved_when_safe() -> None:
     response = TestClient(app).get("/health", headers={"X-Request-ID": "diagnostic-123"})
-
     assert response.status_code == 200
     assert response.headers["x-request-id"] == "diagnostic-123"
 
 
 def test_request_id_rejects_unsafe_value() -> None:
     response = TestClient(app).get("/health", headers={"X-Request-ID": "x" * 101})
-
     assert response.status_code == 200
     assert response.headers["x-request-id"] != "x" * 101
 
@@ -39,7 +36,6 @@ def test_redaction_removes_secrets_from_nested_context() -> None:
             "REDIS_URL": "redis://:pw@redis:6379/0",
         }
     )
-
     rendered = str(value)
     assert "secret-token" not in rendered
     assert "sk-secret" not in rendered
@@ -48,7 +44,9 @@ def test_redaction_removes_secrets_from_nested_context() -> None:
 
 
 @pytest.mark.asyncio
-async def test_readiness_dependency_failures_are_not_ready(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_readiness_dependency_failures_are_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def unavailable() -> bool:
         return False
 

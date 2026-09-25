@@ -49,6 +49,33 @@ describe("Tasks UI", () => {
     expect(screen.queryByRole("button", { name: "Запустить AI" })).not.toBeInTheDocument();
   });
 
+  it("runs campaign planning explicitly for Marketing Director only", async () => {
+    const director = { id: "director-1", name: "Marketing Director", slug: "marketing_director" };
+    mocks.get.mockResolvedValue({ ...task, task_type: "CAMPAIGN_PLANNING", assigned_agent: director });
+    mocks.run.mockResolvedValue({});
+    render(<TaskDetailsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Запустить AI" }));
+    await waitFor(() => expect(mocks.run).toHaveBeenCalledTimes(1));
+    expect(mocks.run).toHaveBeenCalledWith("task-1");
+    expect(await screen.findByText("AI-запуск поставлен в очередь.")).toBeInTheDocument();
+  });
+
+  it("hides campaign planning run for wrong agent and completed task", async () => {
+    mocks.get.mockResolvedValue({
+      ...task,
+      task_type: "CAMPAIGN_PLANNING",
+      assigned_agent: { id: "writer-1", name: "Writer", slug: "writer" },
+    });
+    const wrongAgent = render(<TaskDetailsPage />);
+    await screen.findByText("Планирование кампании");
+    expect(screen.queryByRole("button", { name: "Запустить AI" })).not.toBeInTheDocument();
+    wrongAgent.unmount();
+    mocks.get.mockResolvedValue({ ...task, task_type: "CAMPAIGN_PLANNING", status: "COMPLETED", assigned_agent: { id: "director-1", name: "Marketing Director", slug: "marketing_director" } });
+    render(<TaskDetailsPage />);
+    expect(await screen.findAllByText("Завершена")).not.toHaveLength(0);
+    expect(screen.queryByRole("button", { name: "Запустить AI" })).not.toBeInTheDocument();
+  });
+
   it("shows completed output and failed retry state", async () => {
     mocks.get.mockResolvedValue({ ...task, status: "COMPLETED", output_data: { text: "Готовый ответ" } });
     const completed = render(<TaskDetailsPage />);

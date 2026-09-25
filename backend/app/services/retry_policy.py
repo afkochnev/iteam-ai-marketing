@@ -7,6 +7,7 @@ from app.core.config import settings
 TRANSIENT_CODES = frozenset(
     {
         "AGENT_PROVIDER_ERROR",
+        "AGENT_PROVIDER_TIMEOUT",
         "AGENT_TIMEOUT",
         "AGENT_RUNTIME_ERROR",
         "QUEUE_ENQUEUE_FAILED",

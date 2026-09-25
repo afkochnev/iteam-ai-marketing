@@ -37,6 +37,14 @@ def test_social_pack_schema_and_registry() -> None:
     assert output_type_registry.get(TaskType.CREATE_SOCIAL_POSTS) is SocialPostPackResult
 
 
+def test_social_pack_schema_accepts_global_order_for_nine_posts() -> None:
+    posts = [_post(index, "TELEGRAM" if index % 2 else "VK") for index in range(1, 10)]
+    result = SocialPostPackResult.model_validate(
+        {"sufficient": True, "pack": {"strategy_summary": "x", "posts": posts}}
+    )
+    assert [post.suggested_publish_order for post in result.pack.posts] == list(range(1, 10))
+
+
 @pytest.mark.parametrize(
     "payload",
     [

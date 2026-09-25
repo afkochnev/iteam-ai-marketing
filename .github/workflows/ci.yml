@@ -23,6 +23,7 @@ jobs:
           --health-retries 10
     env:
       DATABASE_URL: postgresql+asyncpg://iteam:iteam@localhost:5432/iteam_test
+      TEST_DATABASE_URL: postgresql+asyncpg://iteam:iteam@localhost:5432/iteam_test
       JWT_SECRET: test-only-secret
       ADMIN_EMAIL: admin@example.com
       ADMIN_PASSWORD: test-password

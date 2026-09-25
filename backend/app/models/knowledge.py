@@ -12,6 +12,7 @@ from sqlalchemy import (
     Enum,
     ForeignKey,
     Index,
+    LargeBinary,
     String,
     Text,
     text,
@@ -112,6 +113,7 @@ class KnowledgeItem(UUIDTimestampMixin, Base):
     mime_type: Mapped[str | None] = mapped_column(String(255))
     file_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     source_url: Mapped[str | None] = mapped_column(Text)
+    source_content: Mapped[bytes | None] = mapped_column(LargeBinary)
     openai_file_id: Mapped[str | None] = mapped_column(String(255))
     vector_store_file_id: Mapped[str | None] = mapped_column(String(255))
     status: Mapped[KnowledgeItemStatus] = mapped_column(

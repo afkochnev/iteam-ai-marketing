@@ -3,7 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Query, status
 
-from app.api.dependencies import CurrentUser, SessionDependency
+from app.api.dependencies import AdminUser, CurrentUser, SessionDependency
 from app.models.task import TaskPriority, TaskStatus, TaskType
 from app.schemas.agent_run import AgentRunSummary
 from app.schemas.task import (
@@ -107,6 +107,29 @@ async def retry_task(
 ) -> AgentRunSummary:
     service = AgentRunService(session)
     run = await service.enqueue(await service.create_queued_run(task_id, retry=True))
+    return AgentRunSummary.model_validate(
+        {
+            "id": run.id,
+            "task_id": run.task_id,
+            "agent_id": run.agent_id,
+            "campaign_id": run.campaign_id,
+            "status": run.status,
+            "model": run.model,
+            "created_at": run.created_at,
+        }
+    )
+
+
+@router.post(
+    "/{task_id}/recover-smm",
+    response_model=AgentRunSummary,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def recover_smm_task(
+    task_id: UUID, _admin: AdminUser, session: SessionDependency
+) -> AgentRunSummary:
+    service = AgentRunService(session)
+    run = await service.recover_exhausted_smm_task(task_id)
     return AgentRunSummary.model_validate(
         {
             "id": run.id,

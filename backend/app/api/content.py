@@ -292,6 +292,10 @@ async def _resolve_content(
         )
         for child in children:
             child.status = ContentStatus.REJECTED
+    if item.content_type is ContentType.ARTICLE and status is ApprovalStatus.APPROVED:
+        from app.services.task_service import TaskService
+
+        await TaskService(session).refresh_dependents_for_content(item.id)
     await session.commit()
     await ActivityLogService(session).record(
         "CONTENT_APPROVED" if status is ApprovalStatus.APPROVED else "CONTENT_REJECTED",

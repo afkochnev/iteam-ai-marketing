@@ -11,6 +11,7 @@ from app.models.task import Task, TaskStatus, TaskType
 from app.services.activity_log_service import ActivityLogService
 from app.services.agent_run_service import AgentRunService
 from app.services.retry_policy import classify_error
+from app.services.task_service import TaskService
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,19 @@ class TaskDispatcherService:
         dispatched: list[UUID] = []
         for task_id in task_ids:
             try:
+                task = await self.session.get(Task, task_id, with_for_update=True)
+                if task is not None and task.task_type is TaskType.CREATE_SOCIAL_POSTS:
+                    approved_version_id = await TaskService(
+                        self.session
+                    ).approved_article_version_for_smm(task)
+                    if approved_version_id is None:
+                        task.status = TaskStatus.BLOCKED
+                        await self.session.commit()
+                        continue
+                    task.input_data = {
+                        **task.input_data,
+                        "source_content_version_id": str(approved_version_id),
+                    }
                 run_service = AgentRunService(self.session)
                 run = await run_service.create_queued_run(task_id)
                 retry_task = await self.session.get(Task, task_id)

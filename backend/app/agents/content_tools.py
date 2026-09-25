@@ -1,6 +1,7 @@
 import json
 import logging
 from datetime import UTC, datetime
+from time import monotonic
 from uuid import UUID
 
 from agents import RunContextWrapper, function_tool
@@ -23,10 +24,14 @@ async def read_knowledge_pack(
     runtime = ctx.context
     if knowledge_pack_id not in runtime.allowed_knowledge_pack_ids:
         raise AppError(
-            "KNOWLEDGE_PACK_ACCESS_DENIED", "Пакет знаний недоступен этому запуску.", 403
+            "KNOWLEDGE_PACK_ACCESS_DENIED",
+            "Пакет знаний недоступен этому запуску.",
+            403,
         )
     arguments = {"knowledge_pack_id": str(knowledge_pack_id)}
-    async with async_session_factory() as session:
+    factory = runtime.session_factory or async_session_factory
+    started = monotonic()
+    async with factory() as session:
         call = ToolCall(
             agent_run_id=runtime.agent_run_id,
             tool_name="read_knowledge_pack",
@@ -51,6 +56,7 @@ async def read_knowledge_pack(
                 "pack_id": str(pack.id),
                 "research_query": pack.research_query,
                 "summary": pack.summary,
+                "gaps": list(pack.gaps or []),
                 "items": [
                     {
                         "knowledge_pack_item_id": str(item.id),
@@ -67,9 +73,29 @@ async def read_knowledge_pack(
             call.status = ToolCallStatus.COMPLETED
             call.completed_at = datetime.now(UTC)
             await session.commit()
+            logger.info(
+                "Agent tool completed",
+                extra={
+                    "event": "agent_tool_completed",
+                    "tool_name": "read_knowledge_pack",
+                    "agent_run_id": str(runtime.agent_run_id),
+                    "task_id": str(runtime.task_id),
+                    "elapsed_ms": round((monotonic() - started) * 1000, 2),
+                },
+            )
             return json.dumps(result, ensure_ascii=False)
         except Exception as exc:
-            logger.exception("read_knowledge_pack failed")
+            logger.exception(
+                "Agent tool failed",
+                extra={
+                    "event": "agent_tool_failed",
+                    "tool_name": "read_knowledge_pack",
+                    "agent_run_id": str(runtime.agent_run_id),
+                    "task_id": str(runtime.task_id),
+                    "exception_type": type(exc).__name__,
+                    "elapsed_ms": round((monotonic() - started) * 1000, 2),
+                },
+            )
             call.status = ToolCallStatus.FAILED
             call.error_message = (
                 exc.message if isinstance(exc, AppError) else "Ошибка чтения пакета знаний."

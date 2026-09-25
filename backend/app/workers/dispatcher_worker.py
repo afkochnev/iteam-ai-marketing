@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
+from app.core.error_monitoring import report_exception
 from app.services.task_dispatcher_service import TaskDispatcherService
 from app.workers.celery_app import celery_app
 
@@ -21,5 +22,8 @@ async def _dispatch() -> None:
         session_factory = async_sessionmaker(loop_engine, expire_on_commit=False)
         async with session_factory() as session:
             await TaskDispatcherService(session).dispatch_ready_tasks()
+    except Exception as error:
+        report_exception(error, event="dispatcher_failed")
+        raise
     finally:
         await loop_engine.dispose()

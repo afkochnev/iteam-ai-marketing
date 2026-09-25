@@ -1,5 +1,12 @@
 # iTeam AI Marketing Department
 
+MVP цепочка: Campaign → Strategy Approval → Knowledge → Article → Social Post
+Pack, human approvals, revisions, automatic dispatch and resilience controls.
+
+Production references: [deployment](docs/deployment.md), [security](docs/security.md),
+[backup/restore](docs/backup-and-restore.md), [release checklist](docs/release-checklist.md)
+и [architecture](docs/architecture.md).
+
 Основа web-приложения для управляемого AI-отдела маркетинга iTeam. Репозиторий развивается последовательно по master specification. Текущий scope: **Итерация 6 — Marketing Director и согласование стратегии**.
 
 ## Архитектура
@@ -228,6 +235,7 @@ READY/FAILED → ARCHIVED
 ```
 
 Поддерживаются `.pdf`, `.docx`, `.txt` и `.md`, размер ограничивает `KNOWLEDGE_MAX_UPLOAD_MB`. HTTP endpoint не ждёт индексацию: worker получает только KnowledgeItem ID, attach выполняется идемпотентно, provider auto chunking остаётся включённым. Таймаут и polling задаются `KNOWLEDGE_INDEX_TIMEOUT_SECONDS` и `KNOWLEDGE_INDEX_POLL_INTERVAL_SECONDS`. Archive удаляет attachment из active Vector Store и исключает документ из retrieval, не удаляя локальный audit record или OpenAI File.
+Каждый attach/status вызов также ограничен общим timeout. Потерянный worker обнаруживается задачей `recover_stuck_tasks`: stale `INDEXING` переводится в `FAILED` с кодом `KNOWLEDGE_INDEX_STALE`, после чего Admin может безопасно выполнить retry без создания нового KnowledgeItem.
 
 Knowledge API:
 
@@ -282,9 +290,16 @@ Backend integration tests должны выполняться только пр�
 docker compose exec postgres createdb -U iteam iteam_test
 docker run --rm --user root --network iteam-ai-marketing_default \
   -e DATABASE_URL=postgresql+asyncpg://iteam:iteam@postgres:5432/iteam_test \
+  -e TEST_DATABASE_URL=postgresql+asyncpg://iteam:iteam@postgres:5432/iteam_test \
   -v "$PWD/backend:/workspace" -w /workspace iteam-ai-marketing-backend \
   sh -c 'pip install -r requirements-dev.lock && alembic upgrade head && pytest'
 ```
+
+The pytest fixture resolves its engine from `TEST_DATABASE_URL` and refuses
+runtime or reserved databases such as `iteam` and `postgres` before cleanup
+SQL can run. If the variable is omitted, it derives the safe `iteam_test`
+database from `DATABASE_URL`; destructive test fixtures never use the runtime
+database.
 
 ## Типовые ошибки
 
@@ -328,7 +343,12 @@ insufficiency не повторяются автоматически. После
 остаётся FAILED и доступна для явного административного retry.
 
 `AGENT_RUN_TIMEOUT_SECONDS`, `AGENT_MAX_TURNS` и
-`TASK_STUCK_AFTER_SECONDS` ограничивают выполнение. Периодический recovery job
+`TASK_STUCK_AFTER_SECONDS` ограничивают выполнение. Для SMM используется более
+строгий `SMM_AGENT_MAX_TURNS`; каждый Responses-запрос дополнительно ограничен
+`AGENT_PROVIDER_REQUEST_TIMEOUT_SECONDS`, а финальная генерация Social Post Pack —
+`SMM_FINAL_PROVIDER_TIMEOUT_SECONDS` (оба значения дополнительно ограничены
+остатком общего deadline). `AGENT_PROVIDER_MAX_RETRIES` задаёт явный лимит
+повторов SDK (для production рекомендуется `0`). Периодический recovery job
 находит stale RUNNING AgentRuns с блокировкой PostgreSQL, завершает их как
 `AGENT_STUCK` и сохраняет Activity Log. Поздний результат FAILED, CANCELLED или
 stale run не меняет бизнес-данные.
@@ -340,3 +360,16 @@ PostgreSQL и Redis. Администратору доступен `/api/v1/syst
 
 В production middleware ограничивает login, AI actions и загрузку материалов
 по настраиваемым минутным лимитам и возвращает единый `429 RATE_LIMITED`.
+
+## Production readiness
+
+При `APP_ENV=production` startup fail-fast проверяет секреты, database/Redis,
+OpenAI model/key, secure cookie и explicit `ALLOWED_HOSTS`. CORS разрешает
+только `CORS_ALLOWED_ORIGINS`; backend выставляет security headers и HSTS.
+`X-Request-ID` возвращается на success и error, а monitoring hook по умолчанию
+пишет безопасный structured log без секретов.
+
+Production migration выполняется отдельным one-shot `alembic upgrade head` до
+запуска backend/worker/Beat. Для проверки перед release используйте
+`scripts/release_check.sh`, после запуска — `scripts/smoke.sh`. Backup/restore,
+TLS/reverse-proxy assumptions и rollback policy описаны в `docs/`.

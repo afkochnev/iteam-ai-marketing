@@ -39,15 +39,24 @@ from app.services.task_result_processors import KnowledgeResearchResultProcessor
 from app.services.task_service import TaskService
 
 
-def research_output(*, key: str | None = None, sufficient: bool = True) -> dict[str, object]:
+def research_output(
+    *,
+    key: str | None = None,
+    sufficient: bool = True,
+    gaps: list[str] | None = None,
+    research_query: str = "управленческий ритм",
+    summary: str = "Найдены проверенные материалы.",
+) -> dict[str, object]:
     return {
-        "research_query": "управленческий ритм",
-        "summary": "Найдены проверенные материалы.",
+        "research_query": research_query,
+        "summary": summary,
         "sufficient": sufficient,
         "selected_results": (
             [{"result_key": key, "selection_reason": "Прямо раскрывает тему."}] if key else []
         ),
-        "gaps": [] if sufficient else ["Нет данных о компаниях нужного масштаба."],
+        "gaps": gaps
+        if gaps is not None
+        else ([] if sufficient else ["Нет данных о компаниях нужного масштаба."]),
     }
 
 
@@ -171,14 +180,20 @@ async def knowledge_fixture(
 
 
 async def add_search_call(
-    session: AsyncSession, run_id: object, item: KnowledgeItem, result_key: str
+    session: AsyncSession,
+    run_id: object,
+    item: KnowledgeItem,
+    result_key: str,
+    *,
+    query: str = "ритм",
+    excerpt: str = "Проверенный фрагмент об управленческом ритме.",
 ) -> ToolCall:
     call = ToolCall(
         agent_run_id=run_id,
         tool_name="search_knowledge",
-        arguments={"query": "ритм", "max_results": 10},
+        arguments={"query": query, "max_results": 10},
         result={
-            "query": "ритм",
+            "query": query,
             "result_count": 1,
             "results": [
                 {
@@ -188,7 +203,7 @@ async def add_search_call(
                     "source_title": "Ручные загрузки",
                     "filename": "management.md",
                     "file_id": "file_management",
-                    "excerpt": "Проверенный фрагмент об управленческом ритме.",
+                    "excerpt": excerpt,
                     "score": 0.91,
                     "metadata": {},
                 }
@@ -246,6 +261,124 @@ async def test_success_builds_verified_pack_and_unblocks_article(
     assert pack.items[0].selection_reason == "Прямо раскрывает тему."
     assert (await TaskService(db_session).get_task(task.id)).status is TaskStatus.COMPLETED
     assert (await TaskService(db_session).get_task(article.id)).status is TaskStatus.READY
+
+
+async def test_sufficient_with_gaps_is_deliverable_aware_and_unblocks_writer(
+    db_session: AsyncSession,
+) -> None:
+    _agent, task, article, item, _key = await knowledge_fixture(db_session)
+    task.input_data = {
+        **task.input_data,
+        "brief": "Стратегическая или форсайт-сессия: какой формат нужен компании",
+    }
+    excerpt = (
+        "Методология стратегической и форсайт-сессии, подготовка, формат, результаты "
+        "и внедрение через проекты и governance; есть качественные отзывы клиентов."
+    )
+    key = build_result_key(item.id, "file_management", excerpt)
+    service = AgentRunService(db_session)
+    run = await service.create_queued_run(task.id)
+    assert await service.claim(run.id)
+    await add_search_call(
+        db_session,
+        run.id,
+        item,
+        key,
+        query="стратегическая форсайт сессия формат",
+        excerpt=excerpt,
+    )
+    await db_session.commit()
+    gaps = ["Нет количественного before/after кейса.", "Нет формальной матрицы выбора."]
+    await service.finish_success(
+        run.id,
+        RuntimeResult(
+            research_output(
+                key=key,
+                gaps=gaps,
+                research_query="стратегическая форсайт сессия формат",
+                summary="Методология, подготовка и результаты форматов подтверждены источником.",
+            ),
+            1,
+            10,
+            5,
+            15,
+            None,
+        ),
+    )
+    pack = await KnowledgePackRepository(db_session).get_by_run(run.id)
+    assert pack is not None and pack.status is KnowledgePackStatus.READY
+    assert pack.gaps == gaps
+    assert (await TaskService(db_session).get_task(task.id)).status is TaskStatus.COMPLETED
+    assert (await TaskService(db_session).get_task(article.id)).status is TaskStatus.READY
+
+
+async def test_tangential_sources_remain_insufficient(
+    db_session: AsyncSession,
+) -> None:
+    _agent, task, article, item, key = await knowledge_fixture(db_session)
+    task.input_data = {
+        **task.input_data,
+        "brief": "Стратегическая форсайт-сессия для компании",
+    }
+    service = AgentRunService(db_session)
+    run = await service.create_queued_run(task.id)
+    assert await service.claim(run.id)
+    await add_search_call(db_session, run.id, item, key)
+    await db_session.commit()
+    await service.finish_success(
+        run.id,
+        RuntimeResult(research_output(key=key), 1, 10, 5, 15, None),
+    )
+    pack = await KnowledgePackRepository(db_session).get_by_run(run.id)
+    assert pack is not None and pack.status is KnowledgePackStatus.INSUFFICIENT
+    stored_task = await TaskService(db_session).get_task(task.id)
+    assert stored_task.status is TaskStatus.FAILED
+    assert stored_task.output_data["error_code"] == "INSUFFICIENT_KNOWLEDGE"
+    assert (await TaskService(db_session).get_task(article.id)).status is TaskStatus.BLOCKED
+
+
+async def test_quantitative_brief_requires_quantitative_grounding(
+    db_session: AsyncSession,
+) -> None:
+    _agent, task, article, item, _key = await knowledge_fixture(db_session)
+    task.input_data = {
+        **task.input_data,
+        "brief": "Prove quantitative ROI with before/after client metrics",
+    }
+    excerpt = "Методология стратегической сессии и качественные отзывы клиентов."
+    key = build_result_key(item.id, "file_management", excerpt)
+    service = AgentRunService(db_session)
+    run = await service.create_queued_run(task.id)
+    assert await service.claim(run.id)
+    await add_search_call(
+        db_session,
+        run.id,
+        item,
+        key,
+        query="strategic session methodology",
+        excerpt=excerpt,
+    )
+    await db_session.commit()
+    await service.finish_success(
+        run.id,
+        RuntimeResult(
+            research_output(
+                key=key,
+                research_query="strategic session methodology",
+                summary="Методология подтверждена, но quantitative ROI не найден.",
+                gaps=["Нет quantitative ROI и before/after metrics."],
+            ),
+            1,
+            10,
+            5,
+            15,
+            None,
+        ),
+    )
+    pack = await KnowledgePackRepository(db_session).get_by_run(run.id)
+    assert pack is not None and pack.status is KnowledgePackStatus.INSUFFICIENT
+    assert (await TaskService(db_session).get_task(task.id)).status is TaskStatus.FAILED
+    assert (await TaskService(db_session).get_task(article.id)).status is TaskStatus.BLOCKED
 
 
 async def test_insufficient_pack_fails_business_task_and_keeps_downstream_blocked(
