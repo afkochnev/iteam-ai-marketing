@@ -11,6 +11,7 @@ celery_app = Celery(
         "app.workers.knowledge_worker",
         "app.workers.dispatcher_worker",
         "app.workers.recovery_worker",
+        "app.workers.telegram_worker",
     ],
 )
 celery_app.conf.update(task_track_started=True, timezone="UTC", enable_utc=True)
@@ -21,6 +22,10 @@ celery_app.conf.beat_schedule = {
     },
     "recover-stuck-tasks": {
         "task": "recover_stuck_tasks",
+        "schedule": settings.task_dispatch_interval_seconds,
+    },
+    "dispatch-due-publications": {
+        "task": "dispatch_due_publications",
         "schedule": settings.task_dispatch_interval_seconds,
     },
 }

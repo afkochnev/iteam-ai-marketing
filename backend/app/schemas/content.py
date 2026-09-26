@@ -57,6 +57,7 @@ class ContentListItem(BaseModel):
     updated_at: datetime
     parent_content_item_id: UUID | None = None
     channel: str | None = None
+    approved_version_id: UUID | None = None
 
 
 class ContentResponse(ContentListItem):

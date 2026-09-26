@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     app_version: str = "0.1.0"
     build_sha: str | None = None
+    telegram_publishing_enabled: bool = False
+    telegram_bot_token: str | None = None
+    telegram_target_chat_id: str | None = None
+    telegram_request_timeout_seconds: int = 30
+    publication_max_retries: int = 3
 
     @property
     def allowed_host_list(self) -> list[str]:
@@ -76,6 +81,11 @@ class Settings(BaseSettings):
             "FRONTEND_URL": self.frontend_url,
         }
         errors.extend(name for name, value in required.items() if not value)
+        if self.telegram_publishing_enabled:
+            if not self.telegram_bot_token:
+                errors.append("TELEGRAM_BOT_TOKEN")
+            if not self.telegram_target_chat_id:
+                errors.append("TELEGRAM_TARGET_CHAT_ID")
         if not self.cookie_secure:
             errors.append("COOKIE_SECURE")
         if not self.allowed_hosts or self.allowed_hosts == "localhost,127.0.0.1":

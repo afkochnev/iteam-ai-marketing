@@ -73,6 +73,18 @@ def _response(item: Any, approvals: list[Approval] | None = None) -> ContentResp
             sources=[_source(source) for source in current.sources],
         )
     )
+    approved_version_id = None
+    for approval in reversed(approvals or []):
+        if approval.status is ApprovalStatus.APPROVED:
+            raw_version_id = approval.subject_snapshot.get("content_version_id")
+            if item.parent_content_item_id is not None:
+                for post in approval.subject_snapshot.get("posts", []):
+                    if str(post.get("content_item_id")) == str(item.id):
+                        raw_version_id = post.get("content_version_id")
+                        break
+            if raw_version_id:
+                approved_version_id = UUID(str(raw_version_id))
+                break
     return ContentResponse(
         id=item.id,
         campaign_id=item.campaign_id,
@@ -84,6 +96,7 @@ def _response(item: Any, approvals: list[Approval] | None = None) -> ContentResp
         updated_at=item.updated_at,
         parent_content_item_id=item.parent_content_item_id,
         channel=item.channel,
+        approved_version_id=approved_version_id,
         source_task_id=item.source_task_id,
         author_agent_id=item.author_agent_id,
         current_version=current_response,
@@ -132,6 +145,7 @@ async def list_content(
             updated_at=item.updated_at,
             parent_content_item_id=item.parent_content_item_id,
             channel=item.channel,
+            approved_version_id=None,
         )
         for item in items
     ]
@@ -156,6 +170,18 @@ async def get_content(
             )
         ).all()
     )
+    if not approvals and item.parent_content_item_id is not None:
+        parent_approval = await session.scalar(
+            select(Approval)
+            .where(
+                Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
+                Approval.object_id == item.parent_content_item_id,
+                Approval.status == ApprovalStatus.APPROVED,
+            )
+            .order_by(Approval.resolved_at.desc().nullslast())
+        )
+        if parent_approval is not None:
+            approvals.append(parent_approval)
     return _response(item, approvals)
 
 

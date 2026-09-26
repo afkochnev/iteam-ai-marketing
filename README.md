@@ -320,6 +320,19 @@ SMM Manager выполняет `CREATE_SOCIAL_POSTS` только для акт�
 
 Article и Social Post Pack имеют независимые `CONTENT_ITEM` approvals. Согласование проверяет immutable version snapshot, поддерживает approve/reject и для Pack атомарно меняет статусы дочерних постов. Approve не означает публикацию.
 
+## Telegram Publishing (Iteration 15)
+
+Telegram-публикация выполняется только для отдельной `Publication`, которую
+пользователь явно согласовал и поставил в очередь. `POST /publications/{id}/publish-now`
+только переводит запись в `PUBLISHING` и ставит Celery-задачу; HTTP API не вызывает
+Telegram синхронно. Планировщик подбирает только просроченные `SCHEDULED` записи.
+
+Для включения провайдера задайте на backend/worker `TELEGRAM_PUBLISHING_ENABLED=true`,
+`TELEGRAM_BOT_TOKEN` и `TELEGRAM_TARGET_CHAT_ID`. Токен не хранится в PostgreSQL,
+ActivityLog или API-ответах. Ошибки сети с неоднозначной доставкой переводят запись в
+`TELEGRAM_RECONCILIATION_REQUIRED`; автоматический повтор в этом состоянии не выполняется,
+чтобы не дублировать сообщение.
+
 ## Automatic Task Dispatch and Revisions
 
 Celery Beat запускает application `TaskDispatcherService`. Он выбирает READY AI

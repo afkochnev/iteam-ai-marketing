@@ -14,6 +14,7 @@ from app.models.content import (
 )
 from app.models.knowledge import KnowledgeItem, KnowledgeSource, KnowledgeStore
 from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem
+from app.models.publication import Publication, PublicationStatus
 from app.models.task import Task, TaskDependency, TaskPriority, TaskStatus, TaskType
 from app.models.user import User, UserRole
 
@@ -43,6 +44,8 @@ __all__ = [
     "KnowledgePackItem",
     "KnowledgeSource",
     "KnowledgeStore",
+    "Publication",
+    "PublicationStatus",
     "Task",
     "TaskDependency",
     "TaskPriority",

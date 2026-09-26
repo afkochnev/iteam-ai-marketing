@@ -1,10 +1,13 @@
 import asyncio
+from datetime import UTC, datetime, timedelta
 
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 from app.core.error_monitoring import report_exception
+from app.services.publication_service import PublicationService
 from app.services.task_recovery_service import TaskRecoveryService
 from app.workers.celery_app import celery_app
 from app.workers.knowledge_worker import recover_stale_indexing
@@ -22,6 +25,13 @@ async def _recover() -> None:
         async with factory() as session:
             await TaskRecoveryService(session).recover_stuck()
             await recover_stale_indexing(session)
+            try:
+                await PublicationService(session).recover_stuck_publishing(
+                    cutoff=datetime.now(UTC) - timedelta(seconds=settings.task_stuck_after_seconds)
+                )
+            except ProgrammingError as error:
+                if "publications" not in str(error).lower():
+                    raise
     except Exception as error:
         report_exception(error, event="stuck_run_recovery")
         raise

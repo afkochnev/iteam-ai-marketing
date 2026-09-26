@@ -38,7 +38,10 @@ export interface ContentVersionSummary { id: string; version_number: number; cha
 export interface ContentVersion extends ContentVersionSummary { content: string; structured_content: Record<string, unknown>; sources: ContentSource[]; }
 export interface ContentApprovalHistory { id: string; subject_version: number; status: string; comment: string | null; reviewed_by_user_id: string | null; created_at: string; resolved_at: string | null; }
 export interface ContentListItem { id: string; campaign_id: string; content_type: ContentType; title: string; status: ContentStatus; current_version_number: number | null; created_at: string; updated_at: string; parent_content_item_id?: string | null; channel?: "TELEGRAM" | "VK" | null; }
-export interface Content extends ContentListItem { source_task_id: string; author_agent_id: string; parent_content_item_id?: string | null; channel?: "TELEGRAM" | "VK" | null; current_version: ContentVersion | null; versions: ContentVersionSummary[]; approval_history?: ContentApprovalHistory[]; }
+export interface Content extends ContentListItem { source_task_id: string; author_agent_id: string; parent_content_item_id?: string | null; channel?: "TELEGRAM" | "VK" | null; approved_version_id?: string | null; current_version: ContentVersion | null; versions: ContentVersionSummary[]; approval_history?: ContentApprovalHistory[]; }
+export type PublicationStatus = "DRAFT" | "WAITING_APPROVAL" | "APPROVED" | "SCHEDULED" | "PUBLISHING" | "PUBLISHED" | "FAILED" | "CANCELLED";
+export interface PublicationProvenance { content_version_id: string; source_content_version_id: string; section_key: string; }
+export interface Publication { id: string; campaign_id: string; content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK"; status: PublicationStatus; scheduled_at: string | null; approved_for_publish_at: string | null; approved_for_publish_by: string | null; external_id: string | null; external_url: string | null; published_at: string | null; failure_code: string | null; failure_message: string | null; retry_count: number; created_at: string; updated_at: string; provenance: PublicationProvenance[]; }
 export interface Activity { id: string; event_type: string; campaign_id: string | null; task_id: string | null; content_item_id: string | null; approval_id: string | null; metadata: Record<string, unknown>; created_at: string; }
 export interface SystemStatus { tasks: Record<string, number>; agent_runs: Record<string, number>; stuck_tasks: number; pending_approvals: number; last_activity_at: string | null; }
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
@@ -137,6 +140,15 @@ export const contentApi = {
   approve: (id: string, comment?: string) => request<Content>(`/content/${id}/approve`, { method: "POST", body: JSON.stringify({ comment: comment || null }) }),
   reject: (id: string, comment: string) => request<Content>(`/content/${id}/reject`, { method: "POST", body: JSON.stringify({ comment }) }),
   requestRevision: (id: string, comment: string) => request<Content>(`/content/${id}/request-revision`, { method: "POST", body: JSON.stringify({ comment }) }),
+};
+export const publicationsApi = {
+  listCampaign: (campaignId: string) => request<Publication[]>(`/publications/campaign/${campaignId}`),
+  create: (payload: { content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK" }) => request<Publication>("/publications", { method: "POST", body: JSON.stringify(payload) }),
+  approve: (id: string) => request<Publication>(`/publications/${id}/approve`, { method: "POST" }),
+  schedule: (id: string, scheduled_at: string) => request<Publication>(`/publications/${id}/schedule`, { method: "POST", body: JSON.stringify({ scheduled_at }) }),
+  cancel: (id: string) => request<Publication>(`/publications/${id}/cancel`, { method: "POST" }),
+  publishNow: (id: string) => request<Publication>(`/publications/${id}/publish-now`, { method: "POST" }),
+  retry: (id: string) => request<Publication>(`/publications/${id}/retry`, { method: "POST" }),
 };
 export const activitiesApi = { list: (campaignId?: string) => request<Activity[]>(`/activities${campaignId ? `?campaign_id=${campaignId}` : ""}`) };
 export const systemApi = { status: () => request<SystemStatus>("/system/status") };
