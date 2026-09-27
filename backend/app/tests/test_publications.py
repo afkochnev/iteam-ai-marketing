@@ -651,6 +651,135 @@ async def test_scheduled_vk_dispatch_routes_only_due_publication(
 
 
 @pytest.mark.integration
+async def test_due_vk_provider_disabled_stays_scheduled_without_enqueue(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+    from app.workers import dispatcher_worker
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", False)
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.channel = ContentChannel.VK
+    await db_session.commit()
+    service = PublicationService(db_session)
+    publication = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(publication.id, user)
+    await service.schedule(publication.id, datetime.now(UTC) + timedelta(minutes=5), user)
+    row = await db_session.get(Publication, publication.id)
+    assert row is not None
+    row.scheduled_at = datetime.now(UTC) - timedelta(minutes=1)
+    await db_session.commit()
+    calls: list[str] = []
+    monkeypatch.setattr(dispatcher_worker.publish_vk_publication, "delay", calls.append)
+
+    await dispatcher_worker._dispatch_publications()
+
+    assert calls == []
+    await db_session.refresh(row)
+    assert row.status is PublicationStatus.SCHEDULED
+    assert row.failure_code is None
+
+
+@pytest.mark.integration
+async def test_publication_dispatch_two_workers_claim_due_once(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    from app.core.database import async_session_factory
+    from app.workers import dispatcher_worker
+
+    user, _campaign, post, version = await _approved_post(db_session)
+    service = PublicationService(db_session)
+    publication = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(publication.id, user)
+    await service.schedule(publication.id, datetime.now(UTC) + timedelta(minutes=5), user)
+    row = await db_session.get(Publication, publication.id)
+    assert row is not None
+    row.scheduled_at = datetime.now(UTC) - timedelta(minutes=1)
+    await db_session.commit()
+    calls: list[str] = []
+    monkeypatch.setattr(dispatcher_worker.publish_telegram_publication, "delay", calls.append)
+
+    await asyncio.gather(
+        dispatcher_worker._dispatch_publications(), dispatcher_worker._dispatch_publications()
+    )
+
+    assert calls == [str(publication.id)]
+    async with async_session_factory() as verify:
+        claimed = await verify.get(Publication, publication.id)
+        assert claimed is not None and claimed.status is PublicationStatus.PUBLISHING
+
+
+@pytest.mark.integration
+async def test_publication_dispatch_does_not_enqueue_after_reschedule_or_cancel(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.workers import dispatcher_worker
+
+    user, _campaign, post, version = await _approved_post(db_session)
+    service = PublicationService(db_session)
+    calls: list[str] = []
+    monkeypatch.setattr(dispatcher_worker.publish_telegram_publication, "delay", calls.append)
+
+    rescheduled = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(rescheduled.id, user)
+    await service.schedule(rescheduled.id, datetime.now(UTC) + timedelta(minutes=1), user)
+    await service.schedule(rescheduled.id, datetime.now(UTC) + timedelta(days=1), user)
+    await dispatcher_worker._dispatch_publications()
+    await service.cancel(rescheduled.id, user)
+
+    cancelled = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(cancelled.id, user)
+    await service.schedule(cancelled.id, datetime.now(UTC) + timedelta(minutes=1), user)
+    await service.cancel(cancelled.id, user)
+    await dispatcher_worker._dispatch_publications()
+
+    assert calls == []
+
+
+@pytest.mark.integration
+async def test_publication_dispatch_claim_rejects_late_schedule_or_cancel(
+    db_session: AsyncSession,
+) -> None:
+    user, _campaign, post, version = await _approved_post(db_session)
+    service = PublicationService(db_session)
+    publication = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(publication.id, user)
+    await service.claim_for_publish(publication.id, user)
+
+    with pytest.raises(AppError):
+        await service.schedule(publication.id, datetime.now(UTC) + timedelta(days=1), user)
+    with pytest.raises(AppError):
+        await service.cancel(publication.id, user)
+
+
+@pytest.mark.integration
 async def test_publication_keeps_bound_approved_version_when_newer_version_is_current(
     db_session: AsyncSession,
 ) -> None:
