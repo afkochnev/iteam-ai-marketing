@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import CurrentUser, SessionDependency
+from app.core.errors import AppError as ContentAppError
 from app.models.agent import AgentStatus
 from app.models.approval import Approval, ApprovalObjectType, ApprovalStatus
 from app.models.content import (
@@ -13,6 +14,7 @@ from app.models.content import (
     ContentItem,
     ContentStatus,
     ContentType,
+    ContentVersion,
     ContentVersionSource,
 )
 from app.models.knowledge_pack import KnowledgePackItem
@@ -33,6 +35,10 @@ from app.schemas.content import (
 from app.schemas.task import TaskCreate
 from app.services.activity_log_service import ActivityLogService
 from app.services.content_service import ContentService
+from app.services.social_content_quality import (
+    social_text_quality_errors,
+    social_text_quality_message,
+)
 from app.services.task_dispatcher_service import TaskDispatcherService
 from app.services.task_service import TaskService
 
@@ -283,6 +289,30 @@ async def _resolve_content(
                 raise AppError(
                     "CONTENT_APPROVAL_STALE", "Согласование содержит устаревшую версию поста.", 409
                 )
+            if status is ApprovalStatus.APPROVED:
+                child_version = await session.scalar(
+                    select(ContentVersion).where(ContentVersion.id == child.current_version_id)
+                )
+                quality_errors = social_text_quality_errors(
+                    child_version.content if child_version else ""
+                )
+                if quality_errors:
+                    raise ContentAppError(
+                        "SOCIAL_POST_QUALITY_INVALID",
+                        social_text_quality_message(quality_errors),
+                        422,
+                    )
+    if item.content_type is ContentType.SOCIAL_POST:
+        version = await session.scalar(
+            select(ContentVersion).where(ContentVersion.id == item.current_version_id)
+        )
+        quality_errors = social_text_quality_errors(version.content if version else "")
+        if quality_errors:
+            raise ContentAppError(
+                "SOCIAL_POST_QUALITY_INVALID",
+                social_text_quality_message(quality_errors),
+                422,
+            )
     approval.status = status
     approval.reviewed_by_user_id = user.id
     approval.comment = comment

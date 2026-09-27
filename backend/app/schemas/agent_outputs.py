@@ -4,6 +4,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.models.task import TaskPriority, TaskType
+from app.services.social_content_quality import social_text_quality_errors
 
 
 class SocialChannel(StrEnum):
@@ -245,9 +246,18 @@ class SocialPostDraft(BaseModel):
     channel: str
     title: str = Field(min_length=1, max_length=255)
     text_markdown: str = Field(min_length=1, max_length=20_000)
-    cta: str = Field(min_length=1, max_length=5_000)
+    cta: str = Field(default="", max_length=5_000)
     sources: list[SocialPostSourceRef] = Field(min_length=1)
     suggested_publish_order: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_plain_text_contract(self) -> "SocialPostDraft":
+        errors = social_text_quality_errors(self.text_markdown)
+        if self.cta:
+            errors.extend(social_text_quality_errors(self.cta))
+        if errors:
+            raise ValueError("Недопустимое форматирование Social Post: " + ", ".join(errors))
+        return self
 
 
 class SocialPostPackDraft(BaseModel):

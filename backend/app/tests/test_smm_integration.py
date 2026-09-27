@@ -716,6 +716,47 @@ async def test_pack_approval_is_safe_for_concurrent_requests(
 
 
 @pytest.mark.asyncio
+async def test_social_post_quality_blocks_forbidden_format_at_approval(
+    db_session: AsyncSession,
+) -> None:
+    task, _campaign, article_version = await smm_fixture(db_session)
+    service = AgentRunService(db_session)
+    run = await service.create_queued_run(task.id)
+    assert await service.claim(run.id)
+    await add_read_audit(db_session, run.id, article_version)
+    await db_session.commit()
+    await service.finish_success(
+        run.id,
+        RuntimeResult(social_result(str(article_version.id)), 1, 10, 5, 15, None),
+    )
+    pack = await db_session.scalar(
+        select(ContentItem).where(
+            ContentItem.source_task_id == task.id,
+            ContentItem.content_type == ContentType.SOCIAL_POST_PACK,
+        )
+    )
+    user = await db_session.scalar(select(User))
+    assert pack is not None and user is not None
+    child = await db_session.scalar(
+        select(ContentItem).where(ContentItem.parent_content_item_id == pack.id)
+    )
+    assert child is not None and child.current_version_id is not None
+    version = await db_session.get(ContentVersion, child.current_version_id)
+    assert version is not None
+    original = version.content
+    version.content = "**Неподходящий текст**"
+    await db_session.commit()
+
+    with pytest.raises(AppError) as error:
+        await approve_content(
+            pack.id, ContentApprovalRequest(comment="Согласовано"), user, db_session
+        )
+    assert error.value.code == "SOCIAL_POST_QUALITY_INVALID"
+    assert version.content == "**Неподходящий текст**"
+    assert version.content != original
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("target", ["pack", "child"])
 async def test_pack_approval_rejects_stale_pack_or_child_version(
     db_session: AsyncSession, target: str

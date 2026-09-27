@@ -590,6 +590,11 @@ def test_smm_repair_contains_deterministic_pack_shape_diagnostics() -> None:
     assert "duplicate_publish_orders=[1, 2, 3]" in guidance
     assert "missing_publish_orders=[4, 5, 6, 7, 8, 9]" in guidance
     assert "глобальный для всего пакета" in guidance
+    assert "plain text" in guidance
+    assert "внутренних меток" in guidance
+    assert "опытный консультант iTeam" in guidance
+    assert "Часто вижу" in guidance
+    assert "чередуй наблюдение" in guidance
 
 
 async def test_smm_repair_reuses_cached_article_without_exposing_tool(
@@ -622,6 +627,8 @@ async def test_smm_repair_reuses_cached_article_without_exposing_tool(
     invalid["pack"]["posts"] = list(valid["pack"]["posts"])
     invalid["pack"]["posts"][1] = dict(invalid["pack"]["posts"][1])
     invalid["pack"]["posts"][1]["suggested_publish_order"] = 1
+    invalid["pack"]["posts"][0] = dict(invalid["pack"]["posts"][0])
+    invalid["pack"]["posts"][0]["text_markdown"] = "**служебный черновик**"
     calls = 0
 
     def resolve(names: list[str]) -> list[object]:
@@ -666,3 +673,4 @@ async def test_smm_repair_reuses_cached_article_without_exposing_tool(
     assert calls == 2
     assert resolved == [["read_content_version"], []]
     assert "Article" in inputs[1]
+    assert "**" not in result.output_data["pack"]["posts"][0]["text_markdown"]

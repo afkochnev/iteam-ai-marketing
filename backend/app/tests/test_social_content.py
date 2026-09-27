@@ -88,6 +88,26 @@ def test_social_pack_rejects_invalid_channel_and_empty_sources() -> None:
         SocialPostPackResult.model_validate(
             {"sufficient": True, "pack": {"strategy_summary": "x", "posts": posts}}
         )
+
+
+@pytest.mark.parametrize("bad_text", ["**важно**", "# Заголовок\nТекст", "```json\n{}\n```"])
+def test_social_pack_rejects_publishable_format_artifacts(bad_text: str) -> None:
+    posts = [_post(i) for i in range(1, 6)]
+    posts[0]["text_markdown"] = bad_text
+    with pytest.raises(ValidationError, match="Недопустимое форматирование"):
+        SocialPostPackResult.model_validate(
+            {"sufficient": True, "pack": {"strategy_summary": "x", "posts": posts}}
+        )
+
+
+def test_social_pack_allows_optional_cta_but_keeps_plain_text_contract() -> None:
+    posts = [_post(i) for i in range(1, 6)]
+    posts[0]["cta"] = ""
+    result = SocialPostPackResult.model_validate(
+        {"sufficient": True, "pack": {"strategy_summary": "x", "posts": posts}}
+    )
+    assert result.pack is not None
+    assert result.pack.posts[0].cta == ""
     posts = [_post(i) for i in range(1, 6)]
     posts[0]["sources"] = []
     with pytest.raises(ValidationError):
