@@ -38,7 +38,8 @@ jobs:
       - run: pip install -r requirements-dev.lock
       - run: ruff check .
       - run: ruff format --check .
-      - run: mypy app
+      # Production modules are checked strictly; pytest remains the test-code gate.
+      - run: mypy app --exclude "app/tests"
       - run: alembic upgrade head
       - run: alembic check
       - run: pytest

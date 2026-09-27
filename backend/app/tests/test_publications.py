@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
 
 import httpx
@@ -266,6 +266,56 @@ async def test_publication_requires_timezone_and_future_schedule(db_session: Asy
     with pytest.raises(AppError) as past:
         await service.schedule(publication.id, datetime.now(UTC) - timedelta(minutes=1), user)
     assert past.value.code == "PUBLICATION_TIME_IN_PAST"
+
+
+@pytest.mark.integration
+async def test_schedule_persists_offset_aware_time_and_calendar_read_model(
+    db_session: AsyncSession,
+) -> None:
+    user, campaign, post, version = await _approved_post(db_session)
+    service = PublicationService(db_session)
+    publication = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(publication.id, user)
+    scheduled = datetime.now(UTC) + timedelta(days=1, hours=2)
+    offset_time = scheduled.astimezone(timezone(timedelta(hours=3)))
+    scheduled_result = await service.schedule(publication.id, offset_time, user)
+    assert scheduled_result.scheduled_at is not None
+    assert scheduled_result.scheduled_at.astimezone(UTC) == scheduled.astimezone(UTC)
+
+    calendar = await service.calendar(
+        campaign.id,
+        datetime.now(UTC) - timedelta(hours=1),
+        datetime.now(UTC) + timedelta(days=2),
+    )
+    assert [item.publication_id for item in calendar] == [publication.id]
+    assert calendar[0].title == post.title
+    assert calendar[0].scheduled_at is not None
+
+
+@pytest.mark.integration
+async def test_calendar_rejects_naive_invalid_and_oversized_ranges(
+    db_session: AsyncSession,
+) -> None:
+    _user, campaign, _post, _version = await _approved_post(db_session)
+    service = PublicationService(db_session)
+    with pytest.raises(AppError, match="Диапазон") as naive:
+        await service.calendar(campaign.id, datetime.now(), datetime.now(UTC) + timedelta(days=1))
+    assert naive.value.code == "PUBLICATION_TIMEZONE_REQUIRED"
+    with pytest.raises(AppError) as invalid:
+        await service.calendar(
+            campaign.id, datetime.now(UTC), datetime.now(UTC) - timedelta(minutes=1)
+        )
+    assert invalid.value.code == "PUBLICATION_INVALID_RANGE"
+    with pytest.raises(AppError) as oversized:
+        await service.calendar(
+            campaign.id, datetime.now(UTC), datetime.now(UTC) + timedelta(days=91)
+        )
+    assert oversized.value.code == "PUBLICATION_RANGE_TOO_LARGE"
 
 
 @dataclass
@@ -836,3 +886,37 @@ async def test_publication_api_returns_bound_provenance(client, db_session: Asyn
         },
     )
     assert cross_campaign.status_code == 422
+
+
+@pytest.mark.integration
+async def test_publication_calendar_api_scopes_and_validates_range(
+    client, db_session: AsyncSession
+) -> None:
+    user, campaign, post, version = await _approved_post(db_session)
+
+    async def current_user():
+        return user
+
+    app.dependency_overrides[get_current_user] = current_user
+    service = PublicationService(db_session)
+    publication = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(publication.id, user)
+    await service.schedule(publication.id, datetime.now(UTC) + timedelta(days=1), user)
+    start = datetime.now(UTC) - timedelta(hours=1)
+    end = datetime.now(UTC) + timedelta(days=2)
+    response = await client.get(
+        f"/api/v1/publications/campaign/{campaign.id}/calendar",
+        params={"from": start.isoformat(), "to": end.isoformat()},
+    )
+    assert response.status_code == 200
+    assert response.json()[0]["publication_id"] == str(publication.id)
+    invalid = await client.get(
+        f"/api/v1/publications/campaign/{campaign.id}/calendar",
+        params={"from": end.isoformat(), "to": start.isoformat()},
+    )
+    assert invalid.status_code == 422

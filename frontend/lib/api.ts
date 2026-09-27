@@ -42,6 +42,7 @@ export interface Content extends ContentListItem { source_task_id: string; autho
 export type PublicationStatus = "DRAFT" | "WAITING_APPROVAL" | "APPROVED" | "SCHEDULED" | "PUBLISHING" | "PUBLISHED" | "FAILED" | "CANCELLED";
 export interface PublicationProvenance { content_version_id: string; source_content_version_id: string; section_key: string; }
 export interface Publication { id: string; campaign_id: string; content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK"; provider_enabled?: boolean; status: PublicationStatus; scheduled_at: string | null; approved_for_publish_at: string | null; approved_for_publish_by: string | null; external_id: string | null; external_url: string | null; published_at: string | null; failure_code: string | null; failure_message: string | null; retry_count: number; created_at: string; updated_at: string; provenance: PublicationProvenance[]; }
+export interface PublicationCalendarItem { publication_id: string; content_item_id: string; content_version_id: string; title: string; channel: "TELEGRAM" | "VK"; status: PublicationStatus; scheduled_at: string | null; published_at: string | null; external_url: string | null; provider_enabled: boolean; failure_code: string | null; }
 export interface Activity { id: string; event_type: string; campaign_id: string | null; task_id: string | null; content_item_id: string | null; approval_id: string | null; metadata: Record<string, unknown>; created_at: string; }
 export interface SystemStatus { tasks: Record<string, number>; agent_runs: Record<string, number>; stuck_tasks: number; pending_approvals: number; last_activity_at: string | null; }
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
@@ -143,6 +144,7 @@ export const contentApi = {
 };
 export const publicationsApi = {
   listCampaign: (campaignId: string) => request<Publication[]>(`/publications/campaign/${campaignId}`),
+  calendar: (campaignId: string, from: string, to: string) => request<PublicationCalendarItem[]>(`/publications/campaign/${campaignId}/calendar?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
   create: (payload: { content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK" }) => request<Publication>("/publications", { method: "POST", body: JSON.stringify(payload) }),
   approve: (id: string) => request<Publication>(`/publications/${id}/approve`, { method: "POST" }),
   schedule: (id: string, scheduled_at: string) => request<Publication>(`/publications/${id}/schedule`, { method: "POST", body: JSON.stringify({ scheduled_at }) }),

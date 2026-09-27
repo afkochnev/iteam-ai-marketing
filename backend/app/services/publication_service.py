@@ -1,7 +1,7 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -28,8 +28,18 @@ from app.models.publication import (
     PublicationStatus,
 )
 from app.models.user import User
-from app.schemas.publication import PublicationCreate, PublicationProvenance, PublicationResponse
+from app.schemas.publication import (
+    PublicationCalendarItem,
+    PublicationCreate,
+    PublicationProvenance,
+    PublicationResponse,
+)
 from app.services.activity_log_service import ActivityLogService
+
+
+def utc_now() -> datetime:
+    """Authoritative application clock; patched by deterministic tests."""
+    return datetime.now(UTC)
 
 
 class PublicationService:
@@ -226,6 +236,82 @@ class PublicationService:
         )
         return [await self._response(publication) for publication in publications]
 
+    async def calendar(
+        self, campaign_id: UUID, from_at: datetime, to_at: datetime
+    ) -> list[PublicationCalendarItem]:
+        """Return operational publication rows intersecting a bounded date range."""
+        self._validate_calendar_range(from_at, to_at)
+        start = from_at.astimezone(UTC)
+        end = to_at.astimezone(UTC)
+        scheduled_in_range = and_(
+            Publication.scheduled_at.is_not(None),
+            Publication.scheduled_at >= start,
+            Publication.scheduled_at <= end,
+        )
+        published_in_range = and_(
+            Publication.status == PublicationStatus.PUBLISHED,
+            Publication.published_at.is_not(None),
+            Publication.published_at >= start,
+            Publication.published_at <= end,
+        )
+        rows = list(
+            (
+                await self.session.execute(
+                    select(Publication, ContentItem.title)
+                    .join(ContentItem, ContentItem.id == Publication.content_item_id)
+                    .where(
+                        Publication.campaign_id == campaign_id,
+                        or_(scheduled_in_range, published_in_range),
+                    )
+                    .order_by(
+                        Publication.scheduled_at.asc().nulls_last(),
+                        Publication.published_at.asc().nulls_last(),
+                    )
+                )
+            ).all()
+        )
+        return [
+            PublicationCalendarItem(
+                publication_id=publication.id,
+                content_item_id=publication.content_item_id,
+                content_version_id=publication.content_version_id,
+                title=title,
+                channel=publication.channel,
+                status=publication.status,
+                scheduled_at=publication.scheduled_at,
+                published_at=publication.published_at,
+                external_url=publication.external_url,
+                provider_enabled=(
+                    settings.telegram_publishing_enabled
+                    if publication.channel.value == "TELEGRAM"
+                    else settings.vk_publishing_enabled
+                ),
+                failure_code=publication.failure_code,
+            )
+            for publication, title in rows
+        ]
+
+    @staticmethod
+    def _validate_calendar_range(from_at: datetime, to_at: datetime) -> None:
+        if from_at.tzinfo is None or from_at.utcoffset() is None:
+            raise AppError(
+                "PUBLICATION_TIMEZONE_REQUIRED", "Диапазон должен содержать timezone.", 422
+            )
+        if to_at.tzinfo is None or to_at.utcoffset() is None:
+            raise AppError(
+                "PUBLICATION_TIMEZONE_REQUIRED", "Диапазон должен содержать timezone.", 422
+            )
+        if to_at <= from_at:
+            raise AppError(
+                "PUBLICATION_INVALID_RANGE", "Конец диапазона должен быть позже начала.", 422
+            )
+        if to_at - from_at > timedelta(days=90):
+            raise AppError(
+                "PUBLICATION_RANGE_TOO_LARGE",
+                "Диапазон календаря не может превышать 90 дней.",
+                422,
+            )
+
     async def _locked(self, publication_id: UUID) -> Publication:
         publication = await self.session.scalar(
             select(Publication).where(Publication.id == publication_id).with_for_update()
@@ -265,7 +351,8 @@ class PublicationService:
             raise AppError(
                 "PUBLICATION_TIMEZONE_REQUIRED", "Время публикации должно содержать timezone.", 422
             )
-        if scheduled_at <= datetime.now(UTC):
+        now = utc_now()
+        if scheduled_at <= now:
             raise AppError(
                 "PUBLICATION_TIME_IN_PAST", "Нельзя назначить публикацию в прошлом.", 422
             )
@@ -276,13 +363,17 @@ class PublicationService:
                 "Публикацию нельзя назначить в текущем состоянии.",
                 409,
             )
+        await self._ensure_content_version_approved(
+            publication.content_item_id, publication.content_version_id, publication.channel
+        )
+        previous_scheduled_at = publication.scheduled_at
         event = (
             "PUBLICATION_RESCHEDULED"
             if publication.status is PublicationStatus.SCHEDULED
             else "PUBLICATION_SCHEDULED"
         )
         publication.status = PublicationStatus.SCHEDULED
-        publication.scheduled_at = scheduled_at
+        publication.scheduled_at = scheduled_at.astimezone(UTC)
         await self.session.flush()
         await ActivityLogService(self.session).record(
             event,
@@ -292,7 +383,12 @@ class PublicationService:
             content_item_id=publication.content_item_id,
             metadata={
                 "publication_id": str(publication.id),
-                "scheduled_at": scheduled_at.isoformat(),
+                **(
+                    {"previous_scheduled_at": previous_scheduled_at.isoformat()}
+                    if previous_scheduled_at is not None
+                    else {}
+                ),
+                "scheduled_at": publication.scheduled_at.isoformat(),
             },
         )
         await self.session.commit()
@@ -324,7 +420,7 @@ class PublicationService:
     ) -> PublicationResponse:
         """Atomically claim an approved/due publication before Celery execution."""
         publication = await self._locked(publication_id)
-        now = datetime.now(UTC)
+        now = utc_now()
         eligible = publication.status is PublicationStatus.APPROVED or (
             publication.status is PublicationStatus.SCHEDULED
             and publication.scheduled_at is not None

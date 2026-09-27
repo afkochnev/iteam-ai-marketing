@@ -6,14 +6,14 @@ import EditCampaignPage from "../app/campaigns/[id]/edit/page";
 import NewCampaignPage from "../app/campaigns/new/page";
 import CampaignsPage from "../app/campaigns/page";
 
-const { replace, push, list, get, create, update, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList, contentList, contentGet, activityList, publicationList, publicationCreate, publicationApprove, publicationSchedule, publicationCancel, publicationPublishNow, publicationRetry } = vi.hoisted(() => ({
-  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(), contentList: vi.fn(), contentGet: vi.fn(), activityList: vi.fn(), publicationList: vi.fn(), publicationCreate: vi.fn(), publicationApprove: vi.fn(), publicationSchedule: vi.fn(), publicationCancel: vi.fn(), publicationPublishNow: vi.fn(), publicationRetry: vi.fn(),
+const { replace, push, list, get, create, update, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList, contentList, contentGet, activityList, publicationList, publicationCalendar, publicationCreate, publicationApprove, publicationSchedule, publicationCancel, publicationPublishNow, publicationRetry } = vi.hoisted(() => ({
+  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(), contentList: vi.fn(), contentGet: vi.fn(), activityList: vi.fn(), publicationList: vi.fn(), publicationCalendar: vi.fn(), publicationCreate: vi.fn(), publicationApprove: vi.fn(), publicationSchedule: vi.fn(), publicationCancel: vi.fn(), publicationPublishNow: vi.fn(), publicationRetry: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace, push }), useParams: () => ({ id: "campaign-1" }) }));
 vi.mock("@/components/auth-provider", () => ({ useAuth: () => ({ user: { role: "ADMIN" }, loading: false }) }));
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
-  return { ...actual, campaignsApi: { list, get, create, update, archive, generateStrategy, approveStrategy, requestStrategyRevision: requestRevision, rejectStrategy }, approvalsApi: { list: approvalList, get: vi.fn() }, tasksApi: { ...actual.tasksApi, list: taskList }, contentApi: { ...actual.contentApi, list: contentList, get: contentGet }, activitiesApi: { list: activityList }, publicationsApi: { listCampaign: publicationList, approve: publicationApprove, create: publicationCreate, schedule: publicationSchedule, cancel: publicationCancel, publishNow: publicationPublishNow, retry: publicationRetry } };
+  return { ...actual, campaignsApi: { list, get, create, update, archive, generateStrategy, approveStrategy, requestStrategyRevision: requestRevision, rejectStrategy }, approvalsApi: { list: approvalList, get: vi.fn() }, tasksApi: { ...actual.tasksApi, list: taskList }, contentApi: { ...actual.contentApi, list: contentList, get: contentGet }, activitiesApi: { list: activityList }, publicationsApi: { listCampaign: publicationList, calendar: publicationCalendar, approve: publicationApprove, create: publicationCreate, schedule: publicationSchedule, cancel: publicationCancel, publishNow: publicationPublishNow, retry: publicationRetry } };
 });
 
 const campaign = {
@@ -27,7 +27,7 @@ const campaign = {
 
 describe("Campaigns UI", () => {
   afterEach(() => cleanup());
-  beforeEach(() => { vi.clearAllMocks(); list.mockResolvedValue([campaign]); get.mockResolvedValue(campaign); taskList.mockResolvedValue([]); approvalList.mockResolvedValue([]); contentList.mockResolvedValue([]); activityList.mockResolvedValue([]); publicationList.mockResolvedValue([]); vi.spyOn(window, "confirm").mockReturnValue(true); });
+  beforeEach(() => { vi.clearAllMocks(); list.mockResolvedValue([campaign]); get.mockResolvedValue(campaign); taskList.mockResolvedValue([]); approvalList.mockResolvedValue([]); contentList.mockResolvedValue([]); activityList.mockResolvedValue([]); publicationList.mockResolvedValue([]); publicationCalendar.mockResolvedValue([]); vi.spyOn(window, "confirm").mockReturnValue(true); });
 
   it("renders campaign list and empty state", async () => {
     const first = render(<CampaignsPage />);
@@ -199,10 +199,22 @@ describe("Campaigns UI", () => {
     render(<CampaignDetailsPage />);
     expect(await screen.findByText(/Статус публикации: SCHEDULED/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Назначить / перенести" }));
-    await waitFor(() => expect(publicationSchedule).toHaveBeenCalledWith("publication-1", "2026-10-02T10:00:00Z"));
+    await waitFor(() => expect(publicationSchedule).toHaveBeenCalledWith("publication-1", "2026-10-02T10:00:00.000Z"));
     fireEvent.click(screen.getByRole("button", { name: "Отменить" }));
     await waitFor(() => expect(publicationCancel).toHaveBeenCalledWith("publication-1"));
     expect(screen.queryByRole("button", { name: /Опубликовать/ })).not.toBeInTheDocument();
+  });
+
+  it("renders upcoming calendar publications in ascending local time", async () => {
+    contentList.mockResolvedValue([]);
+    publicationCalendar.mockResolvedValue([
+      { publication_id: "late", content_item_id: "post-2", content_version_id: "v2", title: "Позже", channel: "VK", status: "SCHEDULED", scheduled_at: "2026-10-02T10:00:00Z", published_at: null, external_url: null, provider_enabled: true, failure_code: null },
+      { publication_id: "early", content_item_id: "post-1", content_version_id: "v1", title: "Раньше", channel: "TELEGRAM", status: "SCHEDULED", scheduled_at: "2026-10-01T10:00:00Z", published_at: null, external_url: null, provider_enabled: true, failure_code: null },
+    ]);
+    render(<CampaignDetailsPage />);
+    const upcoming = await screen.findByRole("list", { name: "Предстоящие публикации" });
+    expect(upcoming.textContent?.indexOf("Раньше")).toBeLessThan(upcoming.textContent?.indexOf("Позже") ?? 0);
+    expect(publicationCalendar).toHaveBeenCalled();
   });
 
   it("publishes approved Telegram publication explicitly and exposes retry only for retryable failures", async () => {

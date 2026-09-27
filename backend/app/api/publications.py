@@ -1,12 +1,15 @@
+from datetime import datetime
+from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Query, status
 
 from app.api.dependencies import CurrentUser, SessionDependency
 from app.core.config import settings
 from app.core.errors import AppError
 from app.models.publication import PublicationStatus
 from app.schemas.publication import (
+    PublicationCalendarItem,
     PublicationCreate,
     PublicationResponse,
     PublicationScheduleRequest,
@@ -29,6 +32,17 @@ async def list_campaign_publications(
     campaign_id: UUID, _user: CurrentUser, session: SessionDependency
 ) -> list[PublicationResponse]:
     return await PublicationService(session).list_campaign(campaign_id)
+
+
+@router.get("/campaign/{campaign_id}/calendar", response_model=list[PublicationCalendarItem])
+async def campaign_publication_calendar(
+    campaign_id: UUID,
+    _user: CurrentUser,
+    session: SessionDependency,
+    from_at: Annotated[datetime, Query(alias="from")],
+    to_at: Annotated[datetime, Query(alias="to")],
+) -> list[PublicationCalendarItem]:
+    return await PublicationService(session).calendar(campaign_id, from_at, to_at)
 
 
 @router.get("/{publication_id}", response_model=PublicationResponse)

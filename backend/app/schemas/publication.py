@@ -47,3 +47,19 @@ class PublicationResponse(BaseModel):
     updated_at: datetime
     provider_enabled: bool = True
     provenance: list[PublicationProvenance]
+
+
+class PublicationCalendarItem(BaseModel):
+    """Safe, compact read model used by the campaign calendar."""
+
+    publication_id: UUID
+    content_item_id: UUID
+    content_version_id: UUID
+    title: str
+    channel: ContentChannel
+    status: PublicationStatus
+    scheduled_at: datetime | None
+    published_at: datetime | None
+    external_url: str | None
+    provider_enabled: bool
+    failure_code: str | None
