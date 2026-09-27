@@ -33,6 +33,7 @@ jobs:
     env:
       DATABASE_URL: postgresql+asyncpg://iteam:iteam@localhost:5432/iteam_test
       TEST_DATABASE_URL: postgresql+asyncpg://iteam:iteam@localhost:5432/iteam_test
+      REDIS_URL: redis://localhost:6379/0
       JWT_SECRET: test-only-secret
       ADMIN_EMAIL: admin@example.com
       ADMIN_PASSWORD: test-password
