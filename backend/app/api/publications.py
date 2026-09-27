@@ -71,9 +71,14 @@ async def publish_now(
     publication_id: UUID, user: CurrentUser, session: SessionDependency
 ) -> PublicationResponse:
     publication = await PublicationService(session).claim_for_publish(publication_id, user)
-    from app.workers.telegram_worker import publish_telegram_publication
+    if publication.channel.value == "VK":
+        from app.workers.vk_worker import publish_vk_publication
 
-    publish_telegram_publication.delay(str(publication.id))
+        publish_vk_publication.delay(str(publication.id))
+    else:
+        from app.workers.telegram_worker import publish_telegram_publication
+
+        publish_telegram_publication.delay(str(publication.id))
     return publication
 
 
@@ -91,6 +96,8 @@ async def retry_publication(
         "TELEGRAM_RATE_LIMIT",
         "TELEGRAM_PROVIDER_TIMEOUT",
         "TELEGRAM_PROVIDER_ERROR",
+        "VK_RATE_LIMIT",
+        "VK_PROVIDER_ERROR",
     }:
         raise AppError(
             "PUBLICATION_NOT_RETRYABLE", "Публикацию нельзя повторить автоматически.", 409
@@ -99,6 +106,7 @@ async def retry_publication(
         raise AppError("PUBLICATION_RETRY_EXHAUSTED", "Лимит повторных публикаций исчерпан.", 409)
     previous_failure = publication.failure_code
     publication.status = PublicationStatus.APPROVED
+    publication.execution_token = None
     publication.failure_code = None
     publication.failure_message = None
     await ActivityLogService(session).record(
@@ -111,7 +119,12 @@ async def retry_publication(
     )
     await session.commit()
     claimed = await service.claim_for_publish(publication_id, user)
-    from app.workers.telegram_worker import publish_telegram_publication
+    if claimed.channel.value == "VK":
+        from app.workers.vk_worker import publish_vk_publication
 
-    publish_telegram_publication.delay(str(claimed.id))
+        publish_vk_publication.delay(str(claimed.id))
+    else:
+        from app.workers.telegram_worker import publish_telegram_publication
+
+        publish_telegram_publication.delay(str(claimed.id))
     return claimed

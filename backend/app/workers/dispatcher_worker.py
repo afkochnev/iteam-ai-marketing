@@ -13,6 +13,7 @@ from app.services.publication_service import PublicationService
 from app.services.task_dispatcher_service import TaskDispatcherService
 from app.workers.celery_app import celery_app
 from app.workers.telegram_worker import publish_telegram_publication
+from app.workers.vk_worker import publish_vk_publication
 
 
 @celery_app.task(name="dispatch_ready_tasks")  # type: ignore[misc]
@@ -61,7 +62,11 @@ async def _dispatch_publications() -> None:
             for publication_id in rows:
                 try:
                     await PublicationService(session).claim_for_publish(publication_id)
-                    publish_telegram_publication.delay(str(publication_id))
+                    row = await session.get(Publication, publication_id)
+                    if row is not None and row.channel.value == "VK":
+                        publish_vk_publication.delay(str(publication_id))
+                    else:
+                        publish_telegram_publication.delay(str(publication_id))
                 except Exception:
                     await session.rollback()
     except Exception as error:

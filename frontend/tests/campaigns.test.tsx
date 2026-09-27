@@ -218,6 +218,24 @@ describe("Campaigns UI", () => {
     await waitFor(() => expect(publicationRetry).toHaveBeenCalledWith("publication-1"));
   });
 
+  it("publishes an approved VK publication through the shared action", async () => {
+    contentList.mockResolvedValue([{ id: "post-vk", campaign_id: campaign.id, content_type: "SOCIAL_POST", title: "VK-пост", status: "APPROVED", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at, channel: "VK" }]);
+    publicationList.mockResolvedValue([{ id: "publication-vk", campaign_id: campaign.id, content_item_id: "post-vk", content_version_id: "version-vk", channel: "VK", status: "APPROVED", scheduled_at: null, approved_for_publish_at: campaign.created_at, approved_for_publish_by: "user-1", external_id: null, external_url: null, published_at: null, failure_code: null, failure_message: null, retry_count: 0, created_at: campaign.created_at, updated_at: campaign.updated_at, provenance: [] }]);
+    publicationPublishNow.mockResolvedValue({});
+    render(<CampaignDetailsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Опубликовать сейчас" }));
+    await waitFor(() => expect(publicationPublishNow).toHaveBeenCalledWith("publication-vk"));
+  });
+
+  it("hides VK publish action when the provider is disabled", async () => {
+    contentList.mockResolvedValue([{ id: "post-vk", campaign_id: campaign.id, content_type: "SOCIAL_POST", title: "VK-пост", status: "APPROVED", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at, channel: "VK" }]);
+    publicationList.mockResolvedValue([{ id: "publication-vk", campaign_id: campaign.id, content_item_id: "post-vk", content_version_id: "version-vk", channel: "VK", provider_enabled: false, status: "APPROVED", scheduled_at: null, approved_for_publish_at: campaign.created_at, approved_for_publish_by: "user-1", external_id: null, external_url: null, published_at: null, failure_code: null, failure_message: null, retry_count: 0, created_at: campaign.created_at, updated_at: campaign.updated_at, provenance: [] }]);
+    render(<CampaignDetailsPage />);
+    expect(await screen.findByText("Статус публикации: APPROVED")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Опубликовать сейчас" })).not.toBeInTheDocument();
+    expect(publicationPublishNow).not.toHaveBeenCalled();
+  });
+
   it("polls PUBLISHING to PUBLISHED without sending twice", async () => {
     const base = { id: "publication-1", campaign_id: campaign.id, content_item_id: "post-1", content_version_id: "version-1", channel: "TELEGRAM", scheduled_at: null, approved_for_publish_at: campaign.created_at, approved_for_publish_by: "user-1", external_id: null, failure_code: null, failure_message: null, retry_count: 0, created_at: campaign.created_at, updated_at: campaign.updated_at, provenance: [] };
     contentList.mockResolvedValue([{ id: "post-1", campaign_id: campaign.id, content_type: "SOCIAL_POST", title: "Пост", status: "APPROVED", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at, channel: "TELEGRAM" }]);

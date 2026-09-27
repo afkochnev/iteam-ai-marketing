@@ -9,7 +9,7 @@ import httpx
 from app.core.config import settings
 
 
-class TelegramProviderError(Exception):
+class PublicationProviderError(Exception):
     def __init__(
         self, code: str, message: str, *, retryable: bool = False, ambiguous: bool = False
     ):
@@ -18,6 +18,14 @@ class TelegramProviderError(Exception):
         self.safe_message = message
         self.retryable = retryable
         self.ambiguous = ambiguous
+
+
+class TelegramProviderError(PublicationProviderError):
+    pass
+
+
+class VKProviderError(PublicationProviderError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -83,6 +91,66 @@ class TelegramProvider:
             ) from exc
         return ProviderPublicationResult(
             external_id=message_id,
+            external_url=None,
+            published_at=datetime.now(UTC),
+        )
+
+
+class VKProvider:
+    """Minimal VK wall.post adapter; business state remains in PublicationService."""
+
+    def __init__(self, token: str | None = None) -> None:
+        self._token = token or settings.vk_access_token
+        if not self._token or settings.vk_owner_id is None:
+            raise VKProviderError("VK_AUTH_ERROR", "VK publishing is not configured.")
+
+    async def publish(self, *, text: str, chat_id: str) -> ProviderPublicationResult:
+        if not text.strip() or len(text) > 4096:
+            raise VKProviderError("VK_BAD_REQUEST", "VK message is invalid.")
+        try:
+            async with httpx.AsyncClient(timeout=settings.vk_request_timeout_seconds) as client:
+                response = await client.post(
+                    "https://api.vk.com/method/wall.post",
+                    params={
+                        "owner_id": settings.vk_owner_id,
+                        "access_token": self._token,
+                        "v": settings.vk_api_version,
+                        "message": text,
+                    },
+                )
+        except httpx.TimeoutException as exc:
+            raise VKProviderError(
+                "VK_PROVIDER_TIMEOUT", "VK request timed out.", ambiguous=True
+            ) from exc
+        except httpx.NetworkError as exc:
+            raise VKProviderError(
+                "VK_PROVIDER_ERROR",
+                "VK request failed before delivery confirmation.",
+                retryable=True,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise VKProviderError("VK_PROVIDER_ERROR", "VK request failed.") from exc
+        try:
+            payload: dict[str, Any] = response.json()
+            if "error" in payload:
+                error = payload["error"]
+                code = int(error.get("error_code", 0))
+                if code in {5, 27}:
+                    raise VKProviderError("VK_AUTH_ERROR", "VK authentication failed.")
+                if code in {7, 15}:
+                    raise VKProviderError("VK_PERMISSION_ERROR", "VK access was denied.")
+                if code in {6, 9}:
+                    raise VKProviderError("VK_RATE_LIMIT", "VK rate limit reached.", retryable=True)
+                raise VKProviderError("VK_BAD_REQUEST", "VK rejected the message.")
+            post_id = str(payload["response"]["post_id"])
+        except VKProviderError:
+            raise
+        except (ValueError, KeyError, TypeError) as exc:
+            raise VKProviderError(
+                "VK_PROVIDER_ERROR", "VK returned an invalid response.", ambiguous=True
+            ) from exc
+        return ProviderPublicationResult(
+            external_id=post_id,
             external_url=None,
             published_at=datetime.now(UTC),
         )

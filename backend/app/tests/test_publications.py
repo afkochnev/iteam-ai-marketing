@@ -13,6 +13,8 @@ from app.integrations.telegram import (
     ProviderPublicationResult,
     TelegramProvider,
     TelegramProviderError,
+    VKProvider,
+    VKProviderError,
 )
 from app.main import app
 from app.models.activity import ActivityLog
@@ -305,7 +307,7 @@ async def test_telegram_publish_uses_exact_version_and_is_idempotent(
 
 
 @pytest.mark.integration
-async def test_telegram_publish_rejects_vk_and_draft(db_session: AsyncSession) -> None:
+async def test_publish_rejects_disabled_vk_and_draft(db_session: AsyncSession) -> None:
     user, _campaign, post, version = await _approved_post(db_session)
     post.channel = ContentChannel.VK
     await db_session.commit()
@@ -322,7 +324,7 @@ async def test_telegram_publish_rejects_vk_and_draft(db_session: AsyncSession) -
     await service.approve(publication.id, user)
     with pytest.raises(AppError) as unsupported:
         await service.claim_for_publish(publication.id, user)
-    assert unsupported.value.code == "PUBLICATION_CHANNEL_UNSUPPORTED"
+    assert unsupported.value.code == "VK_PUBLISHING_DISABLED"
 
 
 @pytest.mark.integration
@@ -375,6 +377,39 @@ async def test_stuck_publishing_recovery_is_conservative(db_session: AsyncSessio
 
 
 @pytest.mark.integration
+async def test_stuck_vk_publishing_requires_reconciliation(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.channel = ContentChannel.VK
+    await db_session.commit()
+    service = PublicationService(db_session)
+    publication = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(publication.id, user)
+    await service.claim_for_publish(publication.id, user)
+    row = await db_session.get(Publication, publication.id)
+    assert row is not None
+    row.updated_at = datetime.now(UTC) - timedelta(hours=1)
+    await db_session.commit()
+    assert (
+        await service.recover_stuck_publishing(cutoff=datetime.now(UTC) - timedelta(minutes=5)) == 1
+    )
+    recovered = await db_session.get(Publication, publication.id)
+    assert recovered is not None
+    assert recovered.status is PublicationStatus.FAILED
+    assert recovered.failure_code == "VK_RECONCILIATION_REQUIRED"
+    assert recovered.retry_count == 0
+
+
+@pytest.mark.integration
 async def test_concurrent_claims_have_one_owner_and_one_send(db_session: AsyncSession) -> None:
     import asyncio
 
@@ -405,6 +440,96 @@ async def test_concurrent_claims_have_one_owner_and_one_send(db_session: AsyncSe
     async with async_session_factory() as session:
         await PublicationService(session).execute_telegram(created.id, provider)
     assert provider.calls == 1
+
+
+@pytest.mark.integration
+async def test_concurrent_vk_claims_have_one_owner_and_one_send(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    from app.core.config import settings
+    from app.core.database import async_session_factory
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.channel = ContentChannel.VK
+    await db_session.commit()
+    created = await PublicationService(db_session).create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await PublicationService(db_session).approve(created.id, user)
+
+    async def claim():
+        async with async_session_factory() as session:
+            try:
+                return await PublicationService(session).claim_for_publish(created.id, user)
+            except Exception as error:
+                return error
+
+    results = await asyncio.gather(claim(), claim())
+    assert len([item for item in results if not isinstance(item, Exception)]) == 1
+    assert len([item for item in results if isinstance(item, AppError)]) == 1
+    provider = _FakeTelegramProvider()
+    async with async_session_factory() as session:
+        await PublicationService(session).execute_vk(created.id, provider)
+        await PublicationService(session).execute_vk(created.id, provider)
+    assert provider.calls == 1
+
+
+@pytest.mark.integration
+async def test_vk_provider_send_follows_durable_claim_and_blocks_duplicate_task(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    from app.core.config import settings
+    from app.core.database import async_session_factory
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.channel = ContentChannel.VK
+    await db_session.commit()
+    publication = await PublicationService(db_session).create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await PublicationService(db_session).approve(publication.id, user)
+    await PublicationService(db_session).claim_for_publish(publication.id, user)
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    class _BlockingProvider:
+        async def publish(self, *, text: str, chat_id: str) -> ProviderPublicationResult:
+            nonlocal calls
+            calls += 1
+            async with async_session_factory() as probe:
+                row = await probe.get(Publication, publication.id)
+                assert row is not None
+                assert row.status is PublicationStatus.PUBLISHING
+                assert row.execution_token is not None
+            started.set()
+            await release.wait()
+            return ProviderPublicationResult("vk-1", None, datetime.now(UTC))
+
+    async with async_session_factory() as first_session:
+        first = asyncio.create_task(
+            PublicationService(first_session).execute_vk(publication.id, _BlockingProvider())
+        )
+        await started.wait()
+        async with async_session_factory() as duplicate_session:
+            assert await PublicationService(duplicate_session).execute_vk(publication.id) is None
+        assert calls == 1
+        release.set()
+        result = await first
+    assert result is not None and result.status is PublicationStatus.PUBLISHED
+    assert calls == 1
 
 
 @pytest.mark.integration
@@ -439,6 +564,40 @@ async def test_scheduled_dispatch_only_claims_due_publications(
     assert row.status is PublicationStatus.PUBLISHING
     await dispatcher_worker._dispatch_publications()
     assert calls == [str(due.id)]
+
+
+@pytest.mark.integration
+async def test_scheduled_vk_dispatch_routes_only_due_publication(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+    from app.workers import dispatcher_worker
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.channel = ContentChannel.VK
+    await db_session.commit()
+    service = PublicationService(db_session)
+    due = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(due.id, user)
+    await service.schedule(due.id, datetime.now(UTC) + timedelta(minutes=5), user)
+    row = await db_session.get(Publication, due.id)
+    assert row is not None
+    row.scheduled_at = datetime.now(UTC) - timedelta(minutes=1)
+    await db_session.commit()
+    calls: list[str] = []
+    monkeypatch.setattr(dispatcher_worker.publish_vk_publication, "delay", calls.append)
+    await dispatcher_worker._dispatch_publications()
+    assert calls == [str(due.id)]
+    row = await db_session.get(Publication, due.id)
+    assert row is not None
+    await db_session.refresh(row)
+    assert row.status is PublicationStatus.PUBLISHING
 
 
 @pytest.mark.integration
@@ -536,6 +695,111 @@ async def test_telegram_provider_timeout_is_ambiguous_and_network_connect_is_ret
     assert error.value.code == "TELEGRAM_PROVIDER_ERROR"
     assert error.value.retryable is True
     assert error.value.ambiguous is False
+
+
+@pytest.mark.integration
+async def test_vk_publication_uses_shared_lifecycle_and_exact_version(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.channel = ContentChannel.VK
+    await db_session.commit()
+    service = PublicationService(db_session)
+    publication = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(publication.id, user)
+    await service.claim_for_publish(publication.id, user)
+    provider = _FakeTelegramProvider()
+    result = await service.execute_vk(publication.id, provider)
+    assert result is not None and result.status is PublicationStatus.PUBLISHED
+    assert provider.calls == 1
+
+
+async def test_vk_provider_maps_success_and_bad_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "vk_access_token", "fake-vk-token")
+    monkeypatch.setattr(settings, "vk_owner_id", -123)
+
+    class _Response:
+        status_code = 200
+
+        def json(self):
+            return {"response": {"post_id": 42}}
+
+    class _Client:
+        def __init__(self, **kwargs):
+            assert kwargs["timeout"] == 30
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setattr("app.integrations.telegram.httpx.AsyncClient", _Client)
+    result = await VKProvider().publish(text="Привет", chat_id="-123")
+    assert result.external_id == "42"
+    with pytest.raises(VKProviderError) as invalid:
+        await VKProvider().publish(text="", chat_id="-123")
+    assert invalid.value.code == "VK_BAD_REQUEST"
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_code", "retryable"),
+    [
+        ({"error": {"error_code": 5}}, "VK_AUTH_ERROR", False),
+        ({"error": {"error_code": 15}}, "VK_PERMISSION_ERROR", False),
+        ({"error": {"error_code": 6}}, "VK_RATE_LIMIT", True),
+        ({"error": {"error_code": 100}}, "VK_BAD_REQUEST", False),
+    ],
+)
+async def test_vk_provider_failure_taxonomy(
+    monkeypatch: pytest.MonkeyPatch,
+    payload: dict[str, object],
+    expected_code: str,
+    retryable: bool,
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "vk_access_token", "fake-vk-token")
+    monkeypatch.setattr(settings, "vk_owner_id", -123)
+
+    class _Response:
+        status_code = 200
+
+        def json(self):
+            return payload
+
+    class _Client:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setattr("app.integrations.telegram.httpx.AsyncClient", _Client)
+    with pytest.raises(VKProviderError) as error:
+        await VKProvider().publish(text="Привет", chat_id="-123")
+    assert error.value.code == expected_code
+    assert error.value.retryable is retryable
+    assert "fake-vk-token" not in error.value.safe_message
 
 
 @pytest.mark.integration

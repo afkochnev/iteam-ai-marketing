@@ -95,3 +95,4 @@ class Publication(UUIDTimestampMixin, Base):
     retry_count: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
+    execution_token: Mapped[str | None] = mapped_column(String(36), nullable=True)

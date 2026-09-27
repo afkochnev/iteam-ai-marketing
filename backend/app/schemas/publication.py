@@ -45,4 +45,5 @@ class PublicationResponse(BaseModel):
     retry_count: int
     created_at: datetime
     updated_at: datetime
+    provider_enabled: bool = True
     provenance: list[PublicationProvenance]

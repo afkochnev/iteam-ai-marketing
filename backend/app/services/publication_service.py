@@ -1,5 +1,5 @@
 from datetime import UTC, datetime
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -10,6 +10,8 @@ from app.integrations.telegram import (
     PublicationProvider,
     TelegramProvider,
     TelegramProviderError,
+    VKProvider,
+    VKProviderError,
 )
 from app.models.approval import Approval, ApprovalObjectType, ApprovalStatus
 from app.models.content import (
@@ -143,6 +145,11 @@ class PublicationService:
             content_item_id=publication.content_item_id,
             content_version_id=publication.content_version_id,
             channel=publication.channel,
+            provider_enabled=(
+                settings.telegram_publishing_enabled
+                if publication.channel.value == "TELEGRAM"
+                else settings.vk_publishing_enabled
+            ),
             status=publication.status,
             scheduled_at=publication.scheduled_at,
             approved_for_publish_at=publication.approved_for_publish_at,
@@ -327,12 +334,14 @@ class PublicationService:
             raise AppError(
                 "PUBLICATION_INVALID_STATE", "Публикацию нельзя запустить в текущем состоянии.", 409
             )
-        if publication.channel.value != "TELEGRAM":
+        if publication.channel.value not in {"TELEGRAM", "VK"}:
             raise AppError(
                 "PUBLICATION_CHANNEL_UNSUPPORTED",
                 "Для этого канала публикация пока недоступна.",
                 422,
             )
+        if publication.channel.value == "VK" and not settings.vk_publishing_enabled:
+            raise AppError("VK_PUBLISHING_DISABLED", "VK publishing отключён.", 409)
         await self._ensure_content_version_approved(
             publication.content_item_id, publication.content_version_id, publication.channel
         )
@@ -344,6 +353,145 @@ class PublicationService:
             user_id=user.id if user else None,
             content_item_id=publication.content_item_id,
             metadata={"publication_id": str(publication.id)},
+        )
+        await self.session.commit()
+        await self.session.refresh(publication)
+        return await self._response(publication)
+
+    async def execute_vk(
+        self, publication_id: UUID, provider: PublicationProvider | None = None
+    ) -> PublicationResponse | None:
+        publication = await self.session.scalar(
+            select(Publication).where(Publication.id == publication_id).with_for_update()
+        )
+        if publication is None or publication.status is not PublicationStatus.PUBLISHING:
+            return None
+        if publication.channel.value != "VK":
+            return None
+        if publication.execution_token is not None:
+            return None
+        publication.execution_token = str(uuid4())
+        item = await self.session.scalar(
+            select(ContentItem).where(ContentItem.id == publication.content_item_id)
+        )
+        version = await self.session.scalar(
+            select(ContentVersion).where(
+                ContentVersion.id == publication.content_version_id,
+                ContentVersion.content_item_id == publication.content_item_id,
+            )
+        )
+        if (
+            item is None
+            or version is None
+            or item.status is not ContentStatus.APPROVED
+            or item.campaign_id != publication.campaign_id
+        ):
+            publication.status = PublicationStatus.FAILED
+            publication.failure_code = "PUBLICATION_CONTENT_MISSING"
+            publication.failure_message = "Согласованная версия материала недоступна."
+            await self.session.commit()
+            await self.session.refresh(publication)
+            return await self._response(publication)
+        try:
+            await self._ensure_content_version_approved(
+                publication.content_item_id, publication.content_version_id, publication.channel
+            )
+        except AppError:
+            publication.status = PublicationStatus.FAILED
+            publication.failure_code = "PUBLICATION_CONTENT_MISSING"
+            publication.failure_message = "Согласованная версия материала недоступна."
+            await self.session.commit()
+            await self.session.refresh(publication)
+            return await self._response(publication)
+        await ActivityLogService(self.session).record(
+            "PUBLICATION_STARTED",
+            operation_key=f"publication-started:{publication.id}",
+            campaign_id=publication.campaign_id,
+            content_item_id=publication.content_item_id,
+            metadata={
+                "publication_id": str(publication.id),
+                "attempt": publication.retry_count + 1,
+            },
+        )
+        await self.session.commit()
+        provider = provider or VKProvider()
+        try:
+            result = await provider.publish(
+                text=version.content, chat_id=str(settings.vk_owner_id or "")
+            )
+        except VKProviderError as error:
+            publication = await self.session.scalar(
+                select(Publication).where(Publication.id == publication_id).with_for_update()
+            )
+            if publication is None:
+                return None
+            publication.status = PublicationStatus.FAILED
+            publication.failure_code = (
+                "VK_RECONCILIATION_REQUIRED" if error.ambiguous else error.code
+            )
+            publication.failure_message = (
+                "Публикация требует проверки доставки." if error.ambiguous else error.safe_message
+            )
+            if (
+                error.retryable
+                and not error.ambiguous
+                and publication.retry_count < settings.publication_max_retries
+            ):
+                publication.retry_count += 1
+            event = (
+                "PUBLICATION_RECONCILIATION_REQUIRED" if error.ambiguous else "PUBLICATION_FAILED"
+            )
+            await ActivityLogService(self.session).record(
+                event,
+                operation_key=f"publication-failed:{publication.id}:{publication.retry_count}",
+                campaign_id=publication.campaign_id,
+                content_item_id=publication.content_item_id,
+                metadata={
+                    "publication_id": str(publication.id),
+                    "failure_code": publication.failure_code,
+                },
+            )
+            await self.session.commit()
+            await self.session.refresh(publication)
+            return await self._response(publication)
+        except Exception:
+            publication = await self.session.scalar(
+                select(Publication).where(Publication.id == publication_id).with_for_update()
+            )
+            if publication is None:
+                return None
+            publication.status = PublicationStatus.FAILED
+            publication.failure_code = "VK_RECONCILIATION_REQUIRED"
+            publication.failure_message = (
+                "Не удалось подтвердить результат доставки; требуется проверка."
+            )
+            await ActivityLogService(self.session).record(
+                "PUBLICATION_RECONCILIATION_REQUIRED",
+                operation_key=f"publication-reconciliation:{publication.id}:{publication.retry_count}",
+                campaign_id=publication.campaign_id,
+                content_item_id=publication.content_item_id,
+                metadata={"publication_id": str(publication.id)},
+            )
+            await self.session.commit()
+            await self.session.refresh(publication)
+            return await self._response(publication)
+        publication = await self.session.scalar(
+            select(Publication).where(Publication.id == publication_id).with_for_update()
+        )
+        if publication is None:
+            return None
+        publication.status = PublicationStatus.PUBLISHED
+        publication.external_id = result.external_id
+        publication.external_url = result.external_url
+        publication.published_at = result.published_at
+        publication.failure_code = None
+        publication.failure_message = None
+        await ActivityLogService(self.session).record(
+            "PUBLICATION_PUBLISHED",
+            operation_key=f"publication-published:{publication.id}",
+            campaign_id=publication.campaign_id,
+            content_item_id=publication.content_item_id,
+            metadata={"publication_id": str(publication.id), "external_id": result.external_id},
         )
         await self.session.commit()
         await self.session.refresh(publication)
@@ -365,6 +513,9 @@ class PublicationService:
             await self.session.commit()
             await self.session.refresh(publication)
             return await self._response(publication)
+        if publication.execution_token is not None:
+            return None
+        publication.execution_token = str(uuid4())
         item = await self.session.scalar(
             select(ContentItem).where(ContentItem.id == publication.content_item_id)
         )
@@ -505,7 +656,11 @@ class PublicationService:
         )
         for publication in rows:
             publication.status = PublicationStatus.FAILED
-            publication.failure_code = "TELEGRAM_RECONCILIATION_REQUIRED"
+            publication.failure_code = (
+                "VK_RECONCILIATION_REQUIRED"
+                if publication.channel.value == "VK"
+                else "TELEGRAM_RECONCILIATION_REQUIRED"
+            )
             publication.failure_message = (
                 "Состояние доставки неоднозначно; требуется ручная проверка."
             )

@@ -50,6 +50,11 @@ class Settings(BaseSettings):
     telegram_target_chat_id: str | None = None
     telegram_request_timeout_seconds: int = 30
     publication_max_retries: int = 3
+    vk_publishing_enabled: bool = False
+    vk_access_token: str | None = None
+    vk_owner_id: int | None = None
+    vk_api_version: str = "5.199"
+    vk_request_timeout_seconds: int = 30
 
     @property
     def allowed_host_list(self) -> list[str]:
@@ -86,6 +91,11 @@ class Settings(BaseSettings):
                 errors.append("TELEGRAM_BOT_TOKEN")
             if not self.telegram_target_chat_id:
                 errors.append("TELEGRAM_TARGET_CHAT_ID")
+        if self.vk_publishing_enabled:
+            if not self.vk_access_token:
+                errors.append("VK_ACCESS_TOKEN")
+            if self.vk_owner_id is None:
+                errors.append("VK_OWNER_ID")
         if not self.cookie_secure:
             errors.append("COOKIE_SECURE")
         if not self.allowed_hosts or self.allowed_hosts == "localhost,127.0.0.1":
