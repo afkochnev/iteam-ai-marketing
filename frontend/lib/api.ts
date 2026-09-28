@@ -48,6 +48,8 @@ export interface PublicationMetricsSnapshot { id: string; publication_id: string
 export interface PublicationMetrics { publication_id: string; sync_capable: boolean; latest: PublicationMetricsSnapshot | null; history: PublicationMetricsSnapshot[]; }
 export interface CampaignPerformance { total_published: number; with_metrics: number; metric_coverage: Record<string, number>; totals: Record<string, number>; publications: Array<{ publication_id: string; content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK"; published_at: string | null; metrics: PublicationMetricsSnapshot | null }>; }
 export interface Activity { id: string; event_type: string; campaign_id: string | null; task_id: string | null; content_item_id: string | null; approval_id: string | null; metadata: Record<string, unknown>; created_at: string; }
+export interface MarketingFeedback { id: string; campaign_id: string; publication_id: string | null; content_item_id: string | null; content_version_id: string | null; source_type: string; category: string; rating: number | null; comment: string | null; observed_at: string | null; created_by_user_id: string | null; created_at: string; }
+export interface FeedbackAnalysis { id: string; campaign_id: string; status: "DRAFT" | "ACCEPTED" | "REJECTED" | "FAILED"; strategy_version: number; summary: string; input_snapshot: Record<string, unknown>; findings: Array<Record<string, unknown>>; recommendations: Array<Record<string, unknown>>; experiment_ideas: Array<Record<string, unknown>>; limitations: string[]; agent_run_id: string | null; generated_at: string | null; reviewed_by_user_id: string | null; reviewed_at: string | null; }
 export interface SystemStatus { tasks: Record<string, number>; agent_runs: Record<string, number>; stuck_tasks: number; pending_approvals: number; last_activity_at: string | null; }
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
@@ -113,7 +115,7 @@ export const tasksApi = {
   start: (id: string) => request<Task>(`/tasks/${id}/start`, { method: "POST" }),
   complete: (id: string, output_data: Record<string, unknown> = {}) => request<Task>(`/tasks/${id}/complete`, { method: "POST", body: JSON.stringify({ output_data }) }),
   cancel: (id: string) => request<Task>(`/tasks/${id}/cancel`, { method: "POST" }),
-  run: (id: string) => request<AgentRun>(`/tasks/${id}/run`, { method: "POST" }),
+  run: (id: string, feedback_analysis_id?: string) => request<AgentRun>(`/tasks/${id}/run`, feedback_analysis_id ? { method: "POST", body: JSON.stringify({ feedback_analysis_id }) } : { method: "POST" }),
   retry: (id: string) => request<AgentRun>(`/tasks/${id}/retry`, { method: "POST" }),
   addDependency: (id: string, depends_on_task_id: string) => request<Task>(`/tasks/${id}/dependencies`, { method: "POST", body: JSON.stringify({ depends_on_task_id }) }),
   removeDependency: (id: string, dependencyId: string) => request<Task>(`/tasks/${id}/dependencies/${dependencyId}`, { method: "DELETE" }),
@@ -164,6 +166,14 @@ export const publicationsApi = {
 };
 export const metricsApi = {
   campaign: (campaignId: string, from: string, to: string, channel?: string) => request<CampaignPerformance>(`/campaigns/${campaignId}/performance?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${channel ? `&channel=${channel}` : ""}`),
+};
+export const feedbackApi = {
+  list: (campaignId: string) => request<MarketingFeedback[]>(`/campaigns/${campaignId}/feedback`),
+  create: (campaignId: string, payload: Record<string, unknown>) => request<MarketingFeedback>(`/campaigns/${campaignId}/feedback`, { method: "POST", body: JSON.stringify(payload) }),
+  analyses: (campaignId: string) => request<FeedbackAnalysis[]>(`/campaigns/${campaignId}/feedback-analysis`),
+  generate: (campaignId: string) => request<FeedbackAnalysis>(`/campaigns/${campaignId}/feedback-analysis`, { method: "POST" }),
+  accept: (id: string) => request<FeedbackAnalysis>(`/feedback-analysis/${id}/accept`, { method: "POST" }),
+  reject: (id: string) => request<FeedbackAnalysis>(`/feedback-analysis/${id}/reject`, { method: "POST" }),
 };
 export const activitiesApi = { list: (campaignId?: string) => request<Activity[]>(`/activities${campaignId ? `?campaign_id=${campaignId}` : ""}`) };
 export const systemApi = { status: () => request<SystemStatus>("/system/status") };

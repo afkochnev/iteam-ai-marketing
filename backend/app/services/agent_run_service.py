@@ -61,7 +61,13 @@ class AgentRunService:
         self.session_factory = session_factory
         self.repository = AgentRunRepository(session)
 
-    async def create_queued_run(self, task_id: UUID, *, retry: bool = False) -> AgentRun:
+    async def create_queued_run(
+        self,
+        task_id: UUID,
+        *,
+        retry: bool = False,
+        feedback_analysis_id: UUID | None = None,
+    ) -> AgentRun:
         query = (
             select(Task)
             .options(
@@ -378,6 +384,21 @@ class AgentRunService:
                 "Configured agent tools are not implemented",
                 extra={"agent_id": str(agent.id), "missing_tools": missing},
             )
+        feedback_analysis_id = feedback_analysis_id or (
+            UUID(str(task.input_data["feedback_analysis_id"]))
+            if task.input_data.get("feedback_analysis_id")
+            else None
+        )
+        if feedback_analysis_id:
+            from app.services.feedback_service import FeedbackService
+
+            feedback_snapshot = await FeedbackService(self.session).accepted_snapshot(
+                UUID(str(feedback_analysis_id)), task.campaign_id
+            )
+            task.input_data = {
+                **task.input_data,
+                "feedback_analysis_snapshot": feedback_snapshot,
+            }
         runtime_input = build_task_input(task, allowed_pack_ids, allowed_content_version_ids)
         try:
             run = await self.repository.create(
@@ -393,12 +414,33 @@ class AgentRunService:
                             str(item) for item in allowed_content_version_ids
                         ],
                         "revision_target_type": task.input_data.get("revision_target_type"),
+                        **(
+                            {
+                                "feedback_analysis_id": str(feedback_analysis_id),
+                                "feedback_analysis_snapshot": feedback_snapshot,
+                            }
+                            if feedback_analysis_id
+                            else {}
+                        ),
                     },
                     "model": model,
                     "prompt_snapshot": agent.system_prompt,
                     "prompt_hash": hashlib.sha256(agent.system_prompt.encode()).hexdigest(),
                 }
             )
+            if feedback_analysis_id:
+                await ActivityLogService(self.session).record(
+                    "FEEDBACK_ANALYSIS_USED",
+                    operation_key=f"feedback-analysis-used:{run.id}",
+                    campaign_id=task.campaign_id,
+                    agent_id=agent.id,
+                    task_id=task.id,
+                    metadata={
+                        "analysis_id": str(feedback_analysis_id),
+                        "agent_run_id": str(run.id),
+                        "target_agent": agent.slug,
+                    },
+                )
             await self.session.commit()
         except IntegrityError as exc:
             await self.session.rollback()

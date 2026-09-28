@@ -14,6 +14,7 @@ celery_app = Celery(
         "app.workers.telegram_worker",
         "app.workers.vk_worker",
         "app.workers.metrics_worker",
+        "app.workers.feedback_worker",
     ],
 )
 celery_app.conf.update(task_track_started=True, timezone="UTC", enable_utc=True)

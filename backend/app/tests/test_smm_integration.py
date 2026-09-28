@@ -26,6 +26,7 @@ from app.models.content import (
     ContentType,
     ContentVersion,
 )
+from app.models.marketing_feedback import FeedbackAnalysisStatus
 from app.models.task import Task, TaskStatus, TaskType
 from app.models.user import User, UserRole
 from app.repositories.users import UserRepository
@@ -36,6 +37,7 @@ from app.services.agent_run_service import AgentRunService
 from app.services.agent_runner_service import RuntimeResult
 from app.services.approval_service import ApprovalService
 from app.services.campaign_service import CampaignService
+from app.services.feedback_service import FeedbackService
 from app.services.task_dispatcher_service import TaskDispatcherService
 from app.services.task_result_processors import result_processor_registry
 from app.services.task_service import TaskService
@@ -330,7 +332,10 @@ async def test_operator_recovery_rejects_stale_strategy_version(
     db_session: AsyncSession,
 ) -> None:
     task, campaign, _version, historical = await exhausted_smm_fixture(db_session)
-    task.input_data = {**task.input_data, "strategy_version": campaign.strategy_version + 1}
+    task.input_data = {
+        **task.input_data,
+        "strategy_version": campaign.strategy_version + 1,
+    }
     historical.error_code = "INVALID_SOCIAL_POST_RESULT"
     await db_session.commit()
     with pytest.raises(AppError) as error:
@@ -754,6 +759,50 @@ async def test_social_post_quality_blocks_forbidden_format_at_approval(
     assert error.value.code == "SOCIAL_POST_QUALITY_INVALID"
     assert version.content == "**Неподходящий текст**"
     assert version.content != original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("forbidden", ["**жирный текст**", "CTA: ответьте", "Порядок: 1"])
+async def test_feedback_recommendations_cannot_bypass_smm_quality_validation(
+    db_session: AsyncSession, forbidden: str
+) -> None:
+    task, campaign, article_version = await smm_fixture(db_session)
+    user = await db_session.scalar(select(User))
+    assert user is not None
+    analysis = await FeedbackService(db_session).generate_analysis(campaign.id)
+    analysis.recommendations = [
+        {
+            "category": "FORMAT",
+            "recommendation": f"Используй {forbidden}",
+            "evidence_refs": [],
+            "expected_effect": "Больше внимания",
+            "priority": "high",
+        }
+    ]
+    analysis.status = FeedbackAnalysisStatus.ACCEPTED
+    await db_session.commit()
+    service = AgentRunService(db_session)
+    run = await service.create_queued_run(task.id, feedback_analysis_id=analysis.id)
+    assert run.input_data["feedback_analysis_snapshot"]["analysis_id"] == str(analysis.id)
+    assert await service.claim(run.id)
+    await add_read_audit(db_session, run.id, article_version)
+    await db_session.commit()
+    output = social_result(str(article_version.id))
+    posts = output["pack"]["posts"]
+    assert isinstance(posts, list)
+    posts[0]["text_markdown"] = forbidden
+    await service.finish_success(run.id, RuntimeResult(output, 1, 10, 5, 15, None))
+    await db_session.refresh(run)
+    assert run.status is AgentRunStatus.FAILED
+    assert run.error_code == "INVALID_SOCIAL_POST_RESULT"
+    persisted = list(
+        (
+            await db_session.scalars(
+                select(ContentItem).where(ContentItem.source_task_id == task.id)
+            )
+        ).all()
+    )
+    assert persisted == []
 
 
 @pytest.mark.asyncio

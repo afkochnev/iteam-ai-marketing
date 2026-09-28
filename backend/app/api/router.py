@@ -7,6 +7,7 @@ from app.api.approvals import router as approvals_router
 from app.api.auth import router as auth_router
 from app.api.campaigns import router as campaigns_router
 from app.api.content import router as content_router
+from app.api.feedback import router as feedback_router
 from app.api.knowledge import router as knowledge_router
 from app.api.knowledge_packs import router as knowledge_packs_router
 from app.api.metrics import router as metrics_router
@@ -27,6 +28,7 @@ api_router.include_router(knowledge_packs_router)
 api_router.include_router(publications_router)
 api_router.include_router(metrics_router)
 api_router.include_router(content_router)
+api_router.include_router(feedback_router)
 api_router.include_router(system_router)
 
 

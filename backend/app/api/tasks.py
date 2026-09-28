@@ -5,7 +5,7 @@ from fastapi import APIRouter, Query, status
 
 from app.api.dependencies import AdminUser, CurrentUser, SessionDependency
 from app.models.task import TaskPriority, TaskStatus, TaskType
-from app.schemas.agent_run import AgentRunSummary
+from app.schemas.agent_run import AgentRunContextRequest, AgentRunSummary
 from app.schemas.task import (
     TaskCompleteRequest,
     TaskCreate,
@@ -68,7 +68,10 @@ async def start_task(task_id: UUID, _user: CurrentUser, session: SessionDependen
 
 @router.post("/{task_id}/complete", response_model=TaskResponse)
 async def complete_task(
-    task_id: UUID, payload: TaskCompleteRequest, _user: CurrentUser, session: SessionDependency
+    task_id: UUID,
+    payload: TaskCompleteRequest,
+    _user: CurrentUser,
+    session: SessionDependency,
 ) -> TaskResponse:
     return task_to_response(await TaskService(session).complete_task(task_id, payload.output_data))
 
@@ -80,12 +83,24 @@ async def cancel_task(
     return task_to_response(await TaskService(session).cancel_task(task_id))
 
 
-@router.post("/{task_id}/run", response_model=AgentRunSummary, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/{task_id}/run",
+    response_model=AgentRunSummary,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def run_task(
-    task_id: UUID, _user: CurrentUser, session: SessionDependency
+    task_id: UUID,
+    _user: CurrentUser,
+    session: SessionDependency,
+    payload: AgentRunContextRequest | None = None,
 ) -> AgentRunSummary:
     service = AgentRunService(session)
-    run = await service.enqueue(await service.create_queued_run(task_id))
+    run = await service.enqueue(
+        await service.create_queued_run(
+            task_id,
+            feedback_analysis_id=payload.feedback_analysis_id if payload else None,
+        )
+    )
     return AgentRunSummary.model_validate(
         {
             "id": run.id,
@@ -100,7 +115,9 @@ async def run_task(
 
 
 @router.post(
-    "/{task_id}/retry", response_model=AgentRunSummary, status_code=status.HTTP_202_ACCEPTED
+    "/{task_id}/retry",
+    response_model=AgentRunSummary,
+    status_code=status.HTTP_202_ACCEPTED,
 )
 async def retry_task(
     task_id: UUID, _user: CurrentUser, session: SessionDependency
@@ -144,10 +161,15 @@ async def recover_smm_task(
 
 
 @router.post(
-    "/{task_id}/dependencies", response_model=TaskResponse, status_code=status.HTTP_201_CREATED
+    "/{task_id}/dependencies",
+    response_model=TaskResponse,
+    status_code=status.HTTP_201_CREATED,
 )
 async def add_dependency(
-    task_id: UUID, payload: TaskDependencyCreate, _user: CurrentUser, session: SessionDependency
+    task_id: UUID,
+    payload: TaskDependencyCreate,
+    _user: CurrentUser,
+    session: SessionDependency,
 ) -> TaskResponse:
     return task_to_response(
         await TaskService(session).add_dependency(task_id, payload.depends_on_task_id)

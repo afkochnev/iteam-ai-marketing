@@ -34,6 +34,7 @@ from app.schemas.publication import (
     PublicationCalendarItem,
     PublicationCreate,
     PublicationProvenance,
+    PublicationReconciliationResponse,
     PublicationResponse,
 )
 from app.services.activity_log_service import ActivityLogService
@@ -205,7 +206,9 @@ class PublicationService:
             provenance=await self._provenance(publication.content_version_id),
             retry_allowed=retry_allowed,
             reconciliation_required=reconciliation_required,
-            reconciliation_history=history,
+            reconciliation_history=[
+                PublicationReconciliationResponse.model_validate(item) for item in history
+            ],
         )
 
     @staticmethod

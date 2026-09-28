@@ -14,6 +14,13 @@ from app.models.content import (
 )
 from app.models.knowledge import KnowledgeItem, KnowledgeSource, KnowledgeStore
 from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem
+from app.models.marketing_feedback import (
+    FeedbackAnalysisStatus,
+    FeedbackCategory,
+    FeedbackSource,
+    MarketingFeedback,
+    MarketingFeedbackAnalysis,
+)
 from app.models.publication import (
     Publication,
     PublicationReconciliation,
@@ -56,6 +63,11 @@ __all__ = [
     "ReconciliationDecision",
     "MetricsSource",
     "PublicationMetricsSnapshot",
+    "FeedbackAnalysisStatus",
+    "FeedbackCategory",
+    "FeedbackSource",
+    "MarketingFeedback",
+    "MarketingFeedbackAnalysis",
     "Task",
     "TaskDependency",
     "TaskPriority",

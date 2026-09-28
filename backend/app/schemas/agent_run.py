@@ -34,6 +34,10 @@ class AgentRunSummary(BaseModel):
     created_at: datetime
 
 
+class AgentRunContextRequest(BaseModel):
+    feedback_analysis_id: UUID | None = None
+
+
 class AgentRunResponse(AgentRunSummary):
     agent: AgentRunAgentSummary
     output_data: dict[str, Any] | None
