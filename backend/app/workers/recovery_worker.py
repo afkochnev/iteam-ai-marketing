@@ -27,7 +27,8 @@ async def _recover() -> None:
             await recover_stale_indexing(session)
             try:
                 await PublicationService(session).recover_stuck_publishing(
-                    cutoff=datetime.now(UTC) - timedelta(seconds=settings.task_stuck_after_seconds)
+                    cutoff=datetime.now(UTC)
+                    - timedelta(seconds=settings.publication_publishing_stale_seconds)
                 )
             except ProgrammingError as error:
                 if "publications" not in str(error).lower():

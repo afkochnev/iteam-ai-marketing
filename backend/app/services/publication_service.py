@@ -25,7 +25,9 @@ from app.models.publication import (
     ACTIVE_PUBLICATION_STATUSES,
     PUBLICATION_ALLOWED_TRANSITIONS,
     Publication,
+    PublicationReconciliation,
     PublicationStatus,
+    ReconciliationDecision,
 )
 from app.models.user import User
 from app.schemas.publication import (
@@ -149,17 +151,45 @@ class PublicationService:
         return item
 
     async def _response(self, publication: Publication) -> PublicationResponse:
+        history = list(
+            (
+                await self.session.scalars(
+                    select(PublicationReconciliation)
+                    .where(PublicationReconciliation.publication_id == publication.id)
+                    .order_by(PublicationReconciliation.created_at.asc())
+                )
+            ).all()
+        )
+        provider_enabled = (
+            settings.telegram_publishing_enabled
+            if publication.channel.value == "TELEGRAM"
+            else settings.vk_publishing_enabled
+        )
+        reconciliation_required = publication.failure_code in {
+            "TELEGRAM_RECONCILIATION_REQUIRED",
+            "VK_RECONCILIATION_REQUIRED",
+        }
+        retry_allowed = (
+            publication.status is PublicationStatus.FAILED
+            and publication.failure_code
+            in {
+                "TELEGRAM_RATE_LIMIT",
+                "TELEGRAM_PROVIDER_TIMEOUT",
+                "TELEGRAM_PROVIDER_ERROR",
+                "VK_RATE_LIMIT",
+                "VK_PROVIDER_ERROR",
+                "PUBLICATION_RECONCILED_NOT_PUBLISHED",
+            }
+            and provider_enabled
+            and publication.retry_count < settings.publication_max_retries
+        )
         return PublicationResponse(
             id=publication.id,
             campaign_id=publication.campaign_id,
             content_item_id=publication.content_item_id,
             content_version_id=publication.content_version_id,
             channel=publication.channel,
-            provider_enabled=(
-                settings.telegram_publishing_enabled
-                if publication.channel.value == "TELEGRAM"
-                else settings.vk_publishing_enabled
-            ),
+            provider_enabled=provider_enabled,
             status=publication.status,
             scheduled_at=publication.scheduled_at,
             approved_for_publish_at=publication.approved_for_publish_at,
@@ -173,7 +203,159 @@ class PublicationService:
             created_at=publication.created_at,
             updated_at=publication.updated_at,
             provenance=await self._provenance(publication.content_version_id),
+            retry_allowed=retry_allowed,
+            reconciliation_required=reconciliation_required,
+            reconciliation_history=history,
         )
+
+    @staticmethod
+    def _reconciliation_code(channel: object) -> str:
+        return (
+            "VK_RECONCILIATION_REQUIRED"
+            if getattr(channel, "value", channel) == "VK"
+            else "TELEGRAM_RECONCILIATION_REQUIRED"
+        )
+
+    async def _require_reconciliation(self, publication_id: UUID) -> Publication:
+        publication = await self._locked(publication_id)
+        if (
+            publication.status is not PublicationStatus.FAILED
+            or publication.failure_code != self._reconciliation_code(publication.channel)
+        ):
+            raise AppError(
+                "PUBLICATION_RECONCILIATION_NOT_ALLOWED",
+                "Для этой публикации не требуется сверка доставки.",
+                409,
+            )
+        return publication
+
+    @staticmethod
+    def _validate_external_id(channel: object, external_id: str) -> None:
+        if not external_id.strip() or not external_id.strip().lstrip("-").isdigit():
+            raise AppError(
+                "PUBLICATION_EXTERNAL_ID_INVALID",
+                "Укажите корректный идентификатор внешней публикации.",
+                422,
+            )
+        if (
+            getattr(channel, "value", channel) == "TELEGRAM"
+            and not external_id.strip().lstrip("-").isdigit()
+        ):
+            raise AppError(
+                "PUBLICATION_EXTERNAL_ID_INVALID",
+                "Идентификатор Telegram должен быть числовым.",
+                422,
+            )
+
+    async def reconcile_published(
+        self,
+        publication_id: UUID,
+        user: User,
+        *,
+        external_id: str,
+        external_url: str | None,
+        published_at: datetime | None,
+        note: str | None,
+    ) -> PublicationResponse:
+        publication = await self._locked(publication_id)
+        if publication.status is PublicationStatus.PUBLISHED:
+            existing = await self.session.scalar(
+                select(PublicationReconciliation)
+                .where(
+                    PublicationReconciliation.publication_id == publication.id,
+                    PublicationReconciliation.decision
+                    == ReconciliationDecision.CONFIRMED_PUBLISHED,
+                    PublicationReconciliation.external_id == external_id,
+                )
+                .order_by(PublicationReconciliation.created_at.desc())
+            )
+            if existing:
+                return await self._response(publication)
+            raise AppError(
+                "PUBLICATION_RECONCILIATION_CONFLICT", "Публикация уже подтверждена.", 409
+            )
+        if (
+            publication.status is not PublicationStatus.FAILED
+            or publication.failure_code != self._reconciliation_code(publication.channel)
+        ):
+            raise AppError(
+                "PUBLICATION_RECONCILIATION_NOT_ALLOWED",
+                "Для этой публикации нельзя подтвердить доставку.",
+                409,
+            )
+        self._validate_external_id(publication.channel, external_id)
+        if published_at is not None:
+            if published_at.tzinfo is None or published_at.utcoffset() is None:
+                raise AppError(
+                    "PUBLICATION_TIMEZONE_REQUIRED",
+                    "Время публикации должно содержать timezone.",
+                    422,
+                )
+            published_at = published_at.astimezone(UTC)
+        else:
+            published_at = utc_now()
+        self.session.add(
+            PublicationReconciliation(
+                publication_id=publication.id,
+                operator_user_id=user.id,
+                channel=publication.channel,
+                decision=ReconciliationDecision.CONFIRMED_PUBLISHED,
+                external_id=external_id.strip(),
+                external_url=external_url,
+                external_published_at=published_at,
+                note=note,
+            )
+        )
+        publication.status = PublicationStatus.PUBLISHED
+        publication.external_id = external_id.strip()
+        publication.external_url = external_url
+        publication.published_at = published_at
+        publication.failure_code = None
+        publication.failure_message = None
+        await ActivityLogService(self.session).record(
+            "PUBLICATION_RECONCILED_PUBLISHED",
+            operation_key=f"publication-reconciled-published:{publication.id}",
+            campaign_id=publication.campaign_id,
+            user_id=user.id,
+            content_item_id=publication.content_item_id,
+            metadata={"publication_id": str(publication.id), "external_id": external_id.strip()},
+        )
+        await self.session.commit()
+        await self.session.refresh(publication)
+        return await self._response(publication)
+
+    async def reconcile_not_published(
+        self, publication_id: UUID, user: User, *, note: str | None
+    ) -> PublicationResponse:
+        publication = await self._locked(publication_id)
+        if (
+            publication.status is PublicationStatus.FAILED
+            and publication.failure_code == "PUBLICATION_RECONCILED_NOT_PUBLISHED"
+        ):
+            return await self._response(publication)
+        await self._require_reconciliation(publication_id)
+        publication.failure_code = "PUBLICATION_RECONCILED_NOT_PUBLISHED"
+        publication.failure_message = "Оператор подтвердил, что внешняя публикация не найдена."
+        self.session.add(
+            PublicationReconciliation(
+                publication_id=publication.id,
+                operator_user_id=user.id,
+                channel=publication.channel,
+                decision=ReconciliationDecision.CONFIRMED_NOT_PUBLISHED,
+                note=note,
+            )
+        )
+        await ActivityLogService(self.session).record(
+            "PUBLICATION_RECONCILED_NOT_PUBLISHED",
+            operation_key=f"publication-reconciled-not-published:{publication.id}",
+            campaign_id=publication.campaign_id,
+            user_id=user.id,
+            content_item_id=publication.content_item_id,
+            metadata={"publication_id": str(publication.id)},
+        )
+        await self.session.commit()
+        await self.session.refresh(publication)
+        return await self._response(publication)
 
     async def create(self, payload: PublicationCreate, user: User) -> PublicationResponse:
         item = await self._ensure_content_version_approved(
@@ -760,8 +942,9 @@ class PublicationService:
             publication.failure_message = (
                 "Состояние доставки неоднозначно; требуется ручная проверка."
             )
+            publication.execution_token = None
             await ActivityLogService(self.session).record(
-                "PUBLICATION_RECONCILIATION_REQUIRED",
+                "PUBLICATION_RECOVERY_REQUIRED",
                 operation_key=f"publication-recovery:{publication.id}",
                 campaign_id=publication.campaign_id,
                 content_item_id=publication.content_item_id,
@@ -770,3 +953,31 @@ class PublicationService:
         if rows:
             await self.session.commit()
         return len(rows)
+
+    async def recover_one_stuck(self, publication_id: UUID) -> Publication:
+        publication = await self._locked(publication_id)
+        cutoff = utc_now() - timedelta(seconds=settings.publication_publishing_stale_seconds)
+        if (
+            publication.status is not PublicationStatus.PUBLISHING
+            or publication.updated_at >= cutoff
+        ):
+            raise AppError(
+                "PUBLICATION_NOT_STALE",
+                "Публикация не находится в просроченном состоянии PUBLISHING.",
+                409,
+            )
+        publication.status = PublicationStatus.FAILED
+        publication.failure_code = self._reconciliation_code(publication.channel)
+        publication.failure_message = "Состояние доставки неоднозначно; требуется ручная проверка."
+        publication.execution_token = None
+        await ActivityLogService(self.session).record(
+            "PUBLICATION_RECOVERY_REQUIRED",
+            operation_key=f"publication-recovery:{publication.id}",
+            campaign_id=publication.campaign_id,
+            user_id=None,
+            content_item_id=publication.content_item_id,
+            metadata={"publication_id": str(publication.id)},
+        )
+        await self.session.commit()
+        await self.session.refresh(publication)
+        return publication

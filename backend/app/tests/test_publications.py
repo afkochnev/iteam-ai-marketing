@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from uuid import uuid4
@@ -8,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user
+from app.core.database import async_session_factory
 from app.core.errors import AppError
 from app.integrations.telegram import (
     ProviderPublicationResult,
@@ -27,7 +29,12 @@ from app.models.content import (
     ContentType,
     ContentVersion,
 )
-from app.models.publication import Publication, PublicationStatus
+from app.models.publication import (
+    Publication,
+    PublicationReconciliation,
+    PublicationStatus,
+    ReconciliationDecision,
+)
 from app.models.user import User
 from app.schemas.publication import PublicationCreate
 from app.services.approval_service import ApprovalService
@@ -82,6 +89,238 @@ async def _approved_post(session: AsyncSession):
     )
     await session.commit()
     return user, campaign, post, version
+
+
+async def _reconciliation_fixture(session: AsyncSession):
+    user, campaign, post, version = await _approved_post(session)
+    publication = await PublicationService(session).create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    publication_row = await session.get(Publication, publication.id)
+    assert publication_row is not None
+    publication_row.status = PublicationStatus.FAILED
+    publication_row.failure_code = "TELEGRAM_RECONCILIATION_REQUIRED"
+    publication_row.failure_message = "Проверка доставки требуется."
+    await session.commit()
+    return user, campaign, post, version, publication_row
+
+
+@pytest.mark.integration
+async def test_reconciliation_published_is_durable_and_does_not_call_provider(
+    db_session: AsyncSession,
+) -> None:
+    user, _campaign, post, _version, publication = await _reconciliation_fixture(db_session)
+    result = await PublicationService(db_session).reconcile_published(
+        publication.id,
+        user,
+        external_id="12345",
+        external_url="https://t.me/example/12345",
+        published_at=datetime.now(UTC),
+        note="Проверено оператором",
+    )
+    assert result.status is PublicationStatus.PUBLISHED
+    assert result.external_id == "12345"
+    assert result.retry_count == 0
+    assert result.failure_code is None
+    history = list(
+        (
+            await db_session.scalars(
+                select(PublicationReconciliation).where(
+                    PublicationReconciliation.publication_id == publication.id
+                )
+            )
+        ).all()
+    )
+    assert len(history) == 1
+    assert history[0].decision is ReconciliationDecision.CONFIRMED_PUBLISHED
+    assert history[0].operator_user_id == user.id
+    event = await db_session.scalar(
+        select(ActivityLog).where(ActivityLog.event_type == "PUBLICATION_RECONCILED_PUBLISHED")
+    )
+    assert event is not None and event.content_item_id == post.id
+
+
+@pytest.mark.integration
+async def test_reconciliation_not_published_unlocks_explicit_retry_only(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
+    user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
+    service = PublicationService(db_session)
+    result = await service.reconcile_not_published(publication.id, user, note="Проверено вручную")
+    assert result.status is PublicationStatus.FAILED
+    assert result.failure_code == "PUBLICATION_RECONCILED_NOT_PUBLISHED"
+    assert result.retry_allowed is True
+    row = await db_session.get(Publication, publication.id)
+    assert row is not None and row.retry_count == 0
+    history = await db_session.scalar(
+        select(PublicationReconciliation).where(
+            PublicationReconciliation.publication_id == publication.id
+        )
+    )
+    assert (
+        history is not None and history.decision is ReconciliationDecision.CONFIRMED_NOT_PUBLISHED
+    )
+    event = await db_session.scalar(
+        select(ActivityLog).where(ActivityLog.event_type == "PUBLICATION_RECONCILED_NOT_PUBLISHED")
+    )
+    assert event is not None
+
+
+@pytest.mark.integration
+async def test_reconciliation_rejects_non_ambiguous_failure(db_session: AsyncSession) -> None:
+    user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
+    publication.failure_code = "TELEGRAM_AUTH_ERROR"
+    await db_session.commit()
+    with pytest.raises(AppError) as error:
+        await PublicationService(db_session).reconcile_not_published(
+            publication.id, user, note=None
+        )
+    assert error.value.code == "PUBLICATION_RECONCILIATION_NOT_ALLOWED"
+
+
+@pytest.mark.integration
+async def test_stale_publishing_becomes_reconciliation_required_without_resend(
+    db_session: AsyncSession,
+) -> None:
+    user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
+    publication.status = PublicationStatus.PUBLISHING
+    publication.failure_code = None
+    publication.updated_at = datetime.now(UTC) - timedelta(hours=1)
+    await db_session.commit()
+    recovered = await PublicationService(db_session).recover_one_stuck(publication.id)
+    assert recovered.status is PublicationStatus.FAILED
+    assert recovered.failure_code == "TELEGRAM_RECONCILIATION_REQUIRED"
+    assert recovered.execution_token is None
+    with pytest.raises(AppError) as error:
+        await PublicationService(db_session).reconcile_published(
+            publication.id,
+            user,
+            external_id="not-numeric",
+            external_url=None,
+            published_at=None,
+            note=None,
+        )
+    assert error.value.code == "PUBLICATION_EXTERNAL_ID_INVALID"
+
+
+@pytest.mark.integration
+async def test_concurrent_confirm_not_published_is_one_history_row(
+    db_session: AsyncSession,
+) -> None:
+    user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
+
+    async def confirm() -> str:
+        async with async_session_factory() as session:
+            row = await PublicationService(session).reconcile_not_published(
+                publication.id, user, note="concurrent check"
+            )
+            return row.failure_code or ""
+
+    results = await asyncio.gather(confirm(), confirm())
+    assert results == ["PUBLICATION_RECONCILED_NOT_PUBLISHED"] * 2
+    history = list(
+        (
+            await db_session.scalars(
+                select(PublicationReconciliation).where(
+                    PublicationReconciliation.publication_id == publication.id
+                )
+            )
+        ).all()
+    )
+    assert len(history) == 1
+
+
+@pytest.mark.integration
+async def test_published_vs_not_published_race_has_one_winner(
+    db_session: AsyncSession,
+) -> None:
+    user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
+
+    async def confirm_published() -> str:
+        async with async_session_factory() as session:
+            try:
+                result = await PublicationService(session).reconcile_published(
+                    publication.id,
+                    user,
+                    external_id="777",
+                    external_url=None,
+                    published_at=None,
+                    note="published race",
+                )
+                return result.status.value
+            except AppError as error:
+                return error.code
+
+    async def confirm_absent() -> str:
+        async with async_session_factory() as session:
+            try:
+                result = await PublicationService(session).reconcile_not_published(
+                    publication.id, user, note="absent race"
+                )
+                return result.failure_code or ""
+            except AppError as error:
+                return error.code
+
+    results = await asyncio.gather(confirm_published(), confirm_absent())
+    assert set(results) <= {"PUBLISHED", "PUBLICATION_RECONCILIATION_NOT_ALLOWED"}
+    history = list(
+        (
+            await db_session.scalars(
+                select(PublicationReconciliation).where(
+                    PublicationReconciliation.publication_id == publication.id
+                )
+            )
+        ).all()
+    )
+    assert len(history) == 1
+
+
+@pytest.mark.integration
+async def test_repeated_stuck_recovery_and_late_worker_are_noops(
+    db_session: AsyncSession,
+) -> None:
+    _user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
+    publication.status = PublicationStatus.PUBLISHING
+    publication.updated_at = datetime.now(UTC) - timedelta(hours=1)
+    await db_session.commit()
+    service = PublicationService(db_session)
+    cutoff = datetime.now(UTC) + timedelta(seconds=1)
+    assert await service.recover_stuck_publishing(cutoff=cutoff) == 1
+    assert await service.recover_stuck_publishing(cutoff=cutoff) == 0
+    provider = _FakeTelegramProvider()
+    assert await service.execute_telegram(publication.id, provider) is None
+    assert provider.calls == 0
+
+
+@pytest.mark.integration
+async def test_retry_after_reconciliation_gets_fresh_execution_token(
+    db_session: AsyncSession,
+) -> None:
+    user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
+    publication.execution_token = "old-token"
+    await db_session.commit()
+    service = PublicationService(db_session)
+    await service.reconcile_not_published(publication.id, user, note="absent")
+    row = await db_session.get(Publication, publication.id)
+    assert row is not None
+    row.status = PublicationStatus.APPROVED
+    row.failure_code = None
+    row.failure_message = None
+    row.execution_token = None
+    await db_session.commit()
+    await service.claim_for_publish(publication.id, user)
+    provider = _FakeTelegramProvider()
+    result = await service.execute_telegram(publication.id, provider)
+    assert result is not None and result.status is PublicationStatus.PUBLISHED
+    assert provider.calls == 1
+    persisted = await db_session.get(Publication, publication.id)
+    assert persisted is not None and persisted.execution_token != "old-token"
 
 
 @pytest.mark.integration
@@ -357,7 +596,12 @@ async def test_telegram_publish_uses_exact_version_and_is_idempotent(
 
 
 @pytest.mark.integration
-async def test_publish_rejects_disabled_vk_and_draft(db_session: AsyncSession) -> None:
+async def test_publish_rejects_disabled_vk_and_draft(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", False)
     user, _campaign, post, version = await _approved_post(db_session)
     post.channel = ContentChannel.VK
     await db_session.commit()

@@ -11,6 +11,8 @@ from app.models.publication import PublicationStatus
 from app.schemas.publication import (
     PublicationCalendarItem,
     PublicationCreate,
+    PublicationReconcileNotPublishedRequest,
+    PublicationReconcilePublishedRequest,
     PublicationResponse,
     PublicationScheduleRequest,
 )
@@ -112,12 +114,17 @@ async def retry_publication(
         "TELEGRAM_PROVIDER_ERROR",
         "VK_RATE_LIMIT",
         "VK_PROVIDER_ERROR",
+        "PUBLICATION_RECONCILED_NOT_PUBLISHED",
     }:
         raise AppError(
             "PUBLICATION_NOT_RETRYABLE", "Публикацию нельзя повторить автоматически.", 409
         )
     if publication.retry_count >= settings.publication_max_retries:
         raise AppError("PUBLICATION_RETRY_EXHAUSTED", "Лимит повторных публикаций исчерпан.", 409)
+    if (publication.channel.value == "TELEGRAM" and not settings.telegram_publishing_enabled) or (
+        publication.channel.value == "VK" and not settings.vk_publishing_enabled
+    ):
+        raise AppError("PUBLICATION_PROVIDER_DISABLED", "Провайдер публикации отключён.", 409)
     previous_failure = publication.failure_code
     publication.status = PublicationStatus.APPROVED
     publication.execution_token = None
@@ -142,3 +149,49 @@ async def retry_publication(
 
         publish_telegram_publication.delay(str(claimed.id))
     return claimed
+
+
+@router.post(
+    "/{publication_id}/reconcile/published",
+    response_model=PublicationResponse,
+)
+async def reconcile_published(
+    publication_id: UUID,
+    payload: PublicationReconcilePublishedRequest,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> PublicationResponse:
+    return await PublicationService(session).reconcile_published(
+        publication_id,
+        user,
+        external_id=payload.external_id,
+        external_url=payload.external_url,
+        published_at=payload.published_at,
+        note=payload.note,
+    )
+
+
+@router.post(
+    "/{publication_id}/reconcile/not-published",
+    response_model=PublicationResponse,
+)
+async def reconcile_not_published(
+    publication_id: UUID,
+    payload: PublicationReconcileNotPublishedRequest,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> PublicationResponse:
+    return await PublicationService(session).reconcile_not_published(
+        publication_id, user, note=payload.note
+    )
+
+
+@router.post(
+    "/{publication_id}/recover-stuck",
+    response_model=PublicationResponse,
+)
+async def recover_stuck_publication(
+    publication_id: UUID, user: CurrentUser, session: SessionDependency
+) -> PublicationResponse:
+    publication = await PublicationService(session).recover_one_stuck(publication_id)
+    return await PublicationService(session)._response(publication)

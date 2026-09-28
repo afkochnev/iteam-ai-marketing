@@ -14,7 +14,12 @@ from app.models.content import (
 )
 from app.models.knowledge import KnowledgeItem, KnowledgeSource, KnowledgeStore
 from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem
-from app.models.publication import Publication, PublicationStatus
+from app.models.publication import (
+    Publication,
+    PublicationReconciliation,
+    PublicationStatus,
+    ReconciliationDecision,
+)
 from app.models.task import Task, TaskDependency, TaskPriority, TaskStatus, TaskType
 from app.models.user import User, UserRole
 
@@ -45,7 +50,9 @@ __all__ = [
     "KnowledgeSource",
     "KnowledgeStore",
     "Publication",
+    "PublicationReconciliation",
     "PublicationStatus",
+    "ReconciliationDecision",
     "Task",
     "TaskDependency",
     "TaskPriority",

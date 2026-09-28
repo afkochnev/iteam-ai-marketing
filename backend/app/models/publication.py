@@ -22,6 +22,11 @@ class PublicationStatus(StrEnum):
     CANCELLED = "CANCELLED"
 
 
+class ReconciliationDecision(StrEnum):
+    CONFIRMED_PUBLISHED = "CONFIRMED_PUBLISHED"
+    CONFIRMED_NOT_PUBLISHED = "CONFIRMED_NOT_PUBLISHED"
+
+
 ACTIVE_PUBLICATION_STATUSES = (
     PublicationStatus.DRAFT,
     PublicationStatus.WAITING_APPROVAL,
@@ -96,3 +101,28 @@ class Publication(UUIDTimestampMixin, Base):
         Integer, nullable=False, default=0, server_default=text("0")
     )
     execution_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+
+
+class PublicationReconciliation(UUIDTimestampMixin, Base):
+    __tablename__ = "publication_reconciliations"
+    __table_args__ = (
+        Index("ix_publication_reconciliations_publication_id", "publication_id"),
+        Index("ix_publication_reconciliations_created_at", "created_at"),
+    )
+
+    publication_id: Mapped[UUID] = mapped_column(
+        ForeignKey("publications.id", ondelete="CASCADE"), nullable=False
+    )
+    operator_user_id: Mapped[UUID] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"), nullable=False
+    )
+    channel: Mapped[ContentChannel] = mapped_column(
+        Enum(ContentChannel, name="content_channel", create_type=False), nullable=False
+    )
+    decision: Mapped[ReconciliationDecision] = mapped_column(
+        Enum(ReconciliationDecision, name="reconciliation_decision"), nullable=False
+    )
+    external_id: Mapped[str | None] = mapped_column(String(255))
+    external_url: Mapped[str | None] = mapped_column(Text)
+    external_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    note: Mapped[str | None] = mapped_column(Text)
