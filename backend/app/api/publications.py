@@ -7,16 +7,20 @@ from fastapi import APIRouter, Query, status
 from app.api.dependencies import CurrentUser, SessionDependency
 from app.core.config import settings
 from app.core.errors import AppError
-from app.models.publication import PublicationStatus
+from app.models.publication import Publication, PublicationStatus
 from app.schemas.publication import (
     PublicationCalendarItem,
     PublicationCreate,
+    PublicationMetricsInput,
+    PublicationMetricsResponse,
+    PublicationMetricsSnapshotResponse,
     PublicationReconcileNotPublishedRequest,
     PublicationReconcilePublishedRequest,
     PublicationResponse,
     PublicationScheduleRequest,
 )
 from app.services.activity_log_service import ActivityLogService
+from app.services.metrics_service import MetricsService
 from app.services.publication_service import PublicationService
 
 router = APIRouter(prefix="/publications", tags=["publications"])
@@ -195,3 +199,56 @@ async def recover_stuck_publication(
 ) -> PublicationResponse:
     publication = await PublicationService(session).recover_one_stuck(publication_id)
     return await PublicationService(session)._response(publication)
+
+
+@router.get("/{publication_id}/metrics", response_model=PublicationMetricsResponse)
+async def publication_metrics(
+    publication_id: UUID, _user: CurrentUser, session: SessionDependency
+) -> PublicationMetricsResponse:
+    return PublicationMetricsResponse.model_validate(
+        await MetricsService(session).publication_metrics(publication_id)
+    )
+
+
+@router.post(
+    "/{publication_id}/metrics",
+    response_model=PublicationMetricsSnapshotResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def record_publication_metrics(
+    publication_id: UUID,
+    payload: PublicationMetricsInput,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> PublicationMetricsSnapshotResponse:
+    values = payload.model_dump(exclude={"observed_at", "note"})
+    return PublicationMetricsSnapshotResponse.model_validate(
+        await MetricsService(session).record_manual(
+            publication_id, user, observed_at=payload.observed_at, values=values, note=payload.note
+        )
+    )
+
+
+@router.post(
+    "/{publication_id}/metrics/sync",
+    response_model=PublicationMetricsResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def sync_publication_metrics(
+    publication_id: UUID, _user: CurrentUser, session: SessionDependency
+) -> PublicationMetricsResponse:
+    publication = await session.get(Publication, publication_id)
+    if publication is None:
+        raise AppError("PUBLICATION_NOT_FOUND", "Публикация не найдена.", 404)
+    if publication.status is not PublicationStatus.PUBLISHED:
+        raise AppError(
+            "METRICS_PUBLICATION_NOT_PUBLISHED",
+            "Метрики доступны только для опубликованного контента.",
+            409,
+        )
+    from app.workers.metrics_worker import sync_publication_metrics as task
+
+    task.delay(str(publication_id))
+    return PublicationMetricsResponse.model_validate(
+        await MetricsService(session).publication_metrics(publication_id)
+    )

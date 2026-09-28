@@ -1,10 +1,12 @@
 from datetime import datetime
+from typing import Any
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.content import ContentChannel
 from app.models.publication import PublicationStatus, ReconciliationDecision
+from app.models.publication_metrics import MetricsSource
 
 
 class PublicationCreate(BaseModel):
@@ -92,3 +94,51 @@ class PublicationCalendarItem(BaseModel):
     external_url: str | None
     provider_enabled: bool
     failure_code: str | None
+
+
+class PublicationMetricsInput(BaseModel):
+    observed_at: datetime
+    views: int | None = Field(default=None, ge=0)
+    impressions: int | None = Field(default=None, ge=0)
+    reactions: int | None = Field(default=None, ge=0)
+    likes: int | None = Field(default=None, ge=0)
+    comments: int | None = Field(default=None, ge=0)
+    shares: int | None = Field(default=None, ge=0)
+    clicks: int | None = Field(default=None, ge=0)
+    subscribers: int | None = Field(default=None, ge=0)
+    note: str | None = Field(default=None, max_length=2000)
+
+
+class PublicationMetricsSnapshotResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    publication_id: UUID
+    channel: ContentChannel
+    observed_at: datetime
+    views: int | None
+    impressions: int | None
+    reactions: int | None
+    likes: int | None
+    comments: int | None
+    shares: int | None
+    clicks: int | None
+    subscribers: int | None
+    source: MetricsSource
+    provider: str | None
+    created_at: datetime
+
+
+class PublicationMetricsResponse(BaseModel):
+    publication_id: UUID
+    sync_capable: bool
+    latest: PublicationMetricsSnapshotResponse | None
+    history: list[PublicationMetricsSnapshotResponse]
+
+
+class CampaignPerformanceResponse(BaseModel):
+    total_published: int
+    with_metrics: int
+    metric_coverage: dict[str, float]
+    totals: dict[str, int]
+    publications: list[dict[str, Any]]

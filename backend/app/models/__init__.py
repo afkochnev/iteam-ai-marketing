@@ -20,6 +20,7 @@ from app.models.publication import (
     PublicationStatus,
     ReconciliationDecision,
 )
+from app.models.publication_metrics import MetricsSource, PublicationMetricsSnapshot
 from app.models.task import Task, TaskDependency, TaskPriority, TaskStatus, TaskType
 from app.models.user import User, UserRole
 
@@ -53,6 +54,8 @@ __all__ = [
     "PublicationReconciliation",
     "PublicationStatus",
     "ReconciliationDecision",
+    "MetricsSource",
+    "PublicationMetricsSnapshot",
     "Task",
     "TaskDependency",
     "TaskPriority",

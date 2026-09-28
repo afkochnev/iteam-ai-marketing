@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     vk_owner_id: int | None = None
     vk_api_version: str = "5.199"
     vk_request_timeout_seconds: int = 30
+    metrics_sync_enabled: bool = False
+    metrics_sync_interval_seconds: int = 3600
+    metrics_lookback_days: int = 30
 
     @property
     def allowed_host_list(self) -> list[str]:

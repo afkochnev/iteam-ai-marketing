@@ -38,6 +38,7 @@ from app.models.content import (  # noqa: E402
 from app.models.knowledge import KnowledgeItem, KnowledgeSource, KnowledgeStore  # noqa: E402
 from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem  # noqa: E402
 from app.models.publication import Publication, PublicationReconciliation  # noqa: E402
+from app.models.publication_metrics import PublicationMetricsSnapshot  # noqa: E402
 from app.models.task import Task, TaskDependency  # noqa: E402
 from app.models.user import User  # noqa: E402
 
@@ -48,6 +49,7 @@ async def db_session() -> AsyncIterator[AsyncSession]:
     async with async_session_factory() as session:
         await session.execute(update(ContentItem).values(current_version_id=None))
         await session.execute(delete(PublicationReconciliation))
+        await session.execute(delete(PublicationMetricsSnapshot))
         await session.execute(delete(Publication))
         await session.execute(delete(ContentDerivation))
         await session.execute(delete(ContentVersionSource))
@@ -71,6 +73,7 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.rollback()
         await session.execute(update(ContentItem).values(current_version_id=None))
         await session.execute(delete(PublicationReconciliation))
+        await session.execute(delete(PublicationMetricsSnapshot))
         await session.execute(delete(Publication))
         await session.execute(delete(ContentDerivation))
         await session.execute(delete(ContentVersionSource))

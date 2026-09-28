@@ -44,6 +44,9 @@ export interface PublicationProvenance { content_version_id: string; source_cont
 export interface PublicationReconciliation { id: string; publication_id: string; operator_user_id: string; channel: "TELEGRAM" | "VK"; decision: "CONFIRMED_PUBLISHED" | "CONFIRMED_NOT_PUBLISHED"; external_id: string | null; external_url: string | null; external_published_at: string | null; note: string | null; created_at: string; }
 export interface Publication { id: string; campaign_id: string; content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK"; provider_enabled?: boolean; status: PublicationStatus; scheduled_at: string | null; approved_for_publish_at: string | null; approved_for_publish_by: string | null; external_id: string | null; external_url: string | null; published_at: string | null; failure_code: string | null; failure_message: string | null; retry_count: number; retry_allowed?: boolean; reconciliation_required?: boolean; reconciliation_history?: PublicationReconciliation[]; created_at: string; updated_at: string; provenance: PublicationProvenance[]; }
 export interface PublicationCalendarItem { publication_id: string; content_item_id: string; content_version_id: string; title: string; channel: "TELEGRAM" | "VK"; status: PublicationStatus; scheduled_at: string | null; published_at: string | null; external_url: string | null; provider_enabled: boolean; failure_code: string | null; }
+export interface PublicationMetricsSnapshot { id: string; publication_id: string; channel: "TELEGRAM" | "VK"; observed_at: string; views: number | null; impressions: number | null; reactions: number | null; likes: number | null; comments: number | null; shares: number | null; clicks: number | null; subscribers: number | null; source: "PROVIDER" | "MANUAL"; provider: string | null; created_at: string; }
+export interface PublicationMetrics { publication_id: string; sync_capable: boolean; latest: PublicationMetricsSnapshot | null; history: PublicationMetricsSnapshot[]; }
+export interface CampaignPerformance { total_published: number; with_metrics: number; metric_coverage: Record<string, number>; totals: Record<string, number>; publications: Array<{ publication_id: string; content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK"; published_at: string | null; metrics: PublicationMetricsSnapshot | null }>; }
 export interface Activity { id: string; event_type: string; campaign_id: string | null; task_id: string | null; content_item_id: string | null; approval_id: string | null; metadata: Record<string, unknown>; created_at: string; }
 export interface SystemStatus { tasks: Record<string, number>; agent_runs: Record<string, number>; stuck_tasks: number; pending_approvals: number; last_activity_at: string | null; }
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
@@ -155,6 +158,12 @@ export const publicationsApi = {
   reconcilePublished: (id: string, payload: { external_id: string; external_url?: string; published_at?: string; note?: string }) => request<Publication>(`/publications/${id}/reconcile/published`, { method: "POST", body: JSON.stringify(payload) }),
   reconcileNotPublished: (id: string, note?: string) => request<Publication>(`/publications/${id}/reconcile/not-published`, { method: "POST", body: JSON.stringify({ note: note || null }) }),
   recoverStuck: (id: string) => request<Publication>(`/publications/${id}/recover-stuck`, { method: "POST" }),
+  metrics: (id: string) => request<PublicationMetrics>(`/publications/${id}/metrics`),
+  addManualMetrics: (id: string, payload: Record<string, unknown>) => request<PublicationMetricsSnapshot>(`/publications/${id}/metrics`, { method: "POST", body: JSON.stringify(payload) }),
+  syncMetrics: (id: string) => request<PublicationMetrics>(`/publications/${id}/metrics/sync`, { method: "POST" }),
+};
+export const metricsApi = {
+  campaign: (campaignId: string, from: string, to: string, channel?: string) => request<CampaignPerformance>(`/campaigns/${campaignId}/performance?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${channel ? `&channel=${channel}` : ""}`),
 };
 export const activitiesApi = { list: (campaignId?: string) => request<Activity[]>(`/activities${campaignId ? `?campaign_id=${campaignId}` : ""}`) };
 export const systemApi = { status: () => request<SystemStatus>("/system/status") };
