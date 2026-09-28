@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     telegram_target_chat_id: str | None = None
     telegram_request_timeout_seconds: int = 30
     publication_max_retries: int = 3
+    publication_publishing_stale_seconds: int = 600
     vk_publishing_enabled: bool = False
     vk_access_token: str | None = None
     vk_owner_id: int | None = None
