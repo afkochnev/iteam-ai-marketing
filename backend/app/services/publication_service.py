@@ -632,6 +632,10 @@ class PublicationService:
             publication.content_item_id, publication.content_version_id, publication.channel
         )
         publication.status = PublicationStatus.PUBLISHING
+        # Bind the queue message to a durable, one-use attempt before commit.
+        # Workers must present this token; an old message carrying only the
+        # publication id can no longer authorize a later retry.
+        publication.execution_token = str(uuid4())
         await ActivityLogService(self.session).record(
             "PUBLICATION_QUEUED",
             operation_key=f"publication-queued:{publication.id}",
@@ -645,7 +649,11 @@ class PublicationService:
         return await self._response(publication)
 
     async def execute_vk(
-        self, publication_id: UUID, provider: PublicationProvider | None = None
+        self,
+        publication_id: UUID,
+        provider: PublicationProvider | None = None,
+        *,
+        execution_token: str | None = None,
     ) -> PublicationResponse | None:
         publication = await self.session.scalar(
             select(Publication).where(Publication.id == publication_id).with_for_update()
@@ -654,9 +662,15 @@ class PublicationService:
             return None
         if publication.channel.value != "VK":
             return None
-        if publication.execution_token is not None:
+        if publication.execution_token is None:
             return None
-        publication.execution_token = str(uuid4())
+        # Production workers must carry the exact token committed by the
+        # claim.  Direct provider-injected calls remain available to tests and
+        # local orchestration, but a Celery task without a token is stale.
+        if execution_token is None and provider is None:
+            return None
+        if execution_token is not None and publication.execution_token != execution_token:
+            return None
         item = await self.session.scalar(
             select(ContentItem).where(ContentItem.id == publication.content_item_id)
         )
@@ -784,7 +798,11 @@ class PublicationService:
         return await self._response(publication)
 
     async def execute_telegram(
-        self, publication_id: UUID, provider: PublicationProvider | None = None
+        self,
+        publication_id: UUID,
+        provider: PublicationProvider | None = None,
+        *,
+        execution_token: str | None = None,
     ) -> PublicationResponse | None:
         """Publish a claimed record; provider errors are persisted without raw payloads."""
         publication = await self.session.scalar(
@@ -799,9 +817,12 @@ class PublicationService:
             await self.session.commit()
             await self.session.refresh(publication)
             return await self._response(publication)
-        if publication.execution_token is not None:
+        if publication.execution_token is None:
             return None
-        publication.execution_token = str(uuid4())
+        if execution_token is None and provider is None:
+            return None
+        if execution_token is not None and publication.execution_token != execution_token:
+            return None
         item = await self.session.scalar(
             select(ContentItem).where(ContentItem.id == publication.content_item_id)
         )

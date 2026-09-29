@@ -172,6 +172,211 @@ async def test_reconciliation_not_published_unlocks_explicit_retry_only(
         select(ActivityLog).where(ActivityLog.event_type == "PUBLICATION_RECONCILED_NOT_PUBLISHED")
     )
     assert event is not None
+    retry_event = await db_session.scalar(
+        select(ActivityLog).where(ActivityLog.event_type == "PUBLICATION_RETRY_SCHEDULED")
+    )
+    assert retry_event is None
+    row = await db_session.get(Publication, publication.id)
+    assert row is not None and row.execution_token is None
+
+
+@pytest.mark.integration
+async def test_reconciled_not_published_does_not_enqueue_retry_automatically(
+    db_session: AsyncSession,
+) -> None:
+    user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
+    result = await PublicationService(db_session).reconcile_not_published(
+        publication.id, user, note="проверено"
+    )
+    assert result.retry_allowed is True
+    events = list(
+        (
+            await db_session.scalars(
+                select(ActivityLog).where(
+                    ActivityLog.event_type.in_(
+                        {"PUBLICATION_CREATED", "PUBLICATION_RECONCILED_NOT_PUBLISHED"}
+                    )
+                )
+            )
+        ).all()
+    )
+    assert {event.event_type for event in events} == {
+        "PUBLICATION_CREATED",
+        "PUBLICATION_RECONCILED_NOT_PUBLISHED",
+    }
+    persisted = await db_session.get(Publication, publication.id)
+    assert persisted is not None
+    assert persisted.execution_token is None
+    assert persisted.status is PublicationStatus.FAILED
+
+
+@pytest.mark.integration
+async def test_retry_task_requires_matching_execution_token(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.channel = ContentChannel.VK
+    await db_session.commit()
+    service = PublicationService(db_session)
+    publication = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(publication.id, user)
+    await service.claim_for_publish(publication.id, user)
+    persisted = await db_session.get(Publication, publication.id)
+    assert persisted is not None and persisted.execution_token is not None
+    provider = _FakeTelegramProvider()
+    # Legacy/stale Celery payloads carried only publication_id.
+    assert await service.execute_vk(publication.id) is None
+    assert (
+        await service.execute_vk(publication.id, provider, execution_token="obsolete-attempt-token")
+        is None
+    )
+    assert provider.calls == 0
+
+
+@pytest.mark.integration
+async def test_legacy_tokenless_publish_task_is_noop(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.channel = ContentChannel.VK
+    await db_session.commit()
+    service = PublicationService(db_session)
+    publication = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(publication.id, user)
+    await service.claim_for_publish(publication.id, user)
+    assert await service.execute_vk(publication.id) is None
+
+
+@pytest.mark.integration
+async def test_enqueue_failure_after_claim_is_recoverable(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.channel = ContentChannel.VK
+    await db_session.commit()
+    service = PublicationService(db_session)
+    publication = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(publication.id, user)
+    await service.claim_for_publish(publication.id, user)
+    claimed = await db_session.get(Publication, publication.id)
+    assert claimed is not None and claimed.execution_token is not None
+
+    # Redis failure happens after the durable claim; stale recovery is the
+    # conservative operator-safe path and never reopens the publication.
+    claimed.updated_at = datetime.now(UTC) - timedelta(hours=1)
+    await db_session.commit()
+    assert (
+        await service.recover_stuck_publishing(cutoff=datetime.now(UTC) - timedelta(minutes=5)) == 1
+    )
+    recovered = await db_session.get(Publication, publication.id)
+    assert recovered is not None
+    assert recovered.status is PublicationStatus.FAILED
+    assert recovered.failure_code == "VK_RECONCILIATION_REQUIRED"
+    assert recovered.execution_token is None
+
+
+@pytest.mark.integration
+async def test_publish_now_task_uses_claim_execution_token(
+    client, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+    from app.workers import vk_worker
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.channel = ContentChannel.VK
+    await db_session.commit()
+    service = PublicationService(db_session)
+    publication = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(publication.id, user)
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        vk_worker.publish_vk_publication,
+        "delay",
+        lambda publication_id, token: calls.append((publication_id, token)),
+    )
+
+    async def current_user():
+        return user
+
+    app.dependency_overrides[get_current_user] = current_user
+    response = await client.post(f"/api/v1/publications/{publication.id}/publish-now")
+    assert response.status_code == 202
+    assert len(calls) == 1
+    assert calls[0][0] == str(publication.id)
+    assert calls[0][1]
+
+
+@pytest.mark.integration
+async def test_retry_endpoint_creates_fresh_execution_token_before_enqueue(
+    client, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+    from app.workers import vk_worker
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.channel = ContentChannel.VK
+    await db_session.commit()
+    service = PublicationService(db_session)
+    publication = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(publication.id, user)
+    row = await db_session.get(Publication, publication.id)
+    assert row is not None
+    row.status = PublicationStatus.FAILED
+    row.failure_code = "PUBLICATION_RECONCILED_NOT_PUBLISHED"
+    row.failure_message = "Проверено оператором."
+    row.execution_token = None
+    await db_session.commit()
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        vk_worker.publish_vk_publication,
+        "delay",
+        lambda publication_id, token: calls.append((publication_id, token)),
+    )
+
+    async def current_user():
+        return user
+
+    app.dependency_overrides[get_current_user] = current_user
+    response = await client.post(f"/api/v1/publications/{publication.id}/retry")
+    assert response.status_code == 202
+    assert calls[0][0] == str(publication.id)
+    assert calls[0][1]
 
 
 @pytest.mark.integration
@@ -1087,8 +1292,12 @@ async def test_scheduled_dispatch_only_claims_due_publications(
     )
     await service.approve(due.id, user)
     await service.schedule(due.id, datetime.now(UTC) + timedelta(minutes=5), user)
-    calls: list[str] = []
-    monkeypatch.setattr(dispatcher_worker.publish_telegram_publication, "delay", calls.append)
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        dispatcher_worker.publish_telegram_publication,
+        "delay",
+        lambda publication_id, token: calls.append((publication_id, token)),
+    )
     await dispatcher_worker._dispatch_publications()
     assert calls == []
     row = await db_session.get(Publication, due.id)
@@ -1096,13 +1305,15 @@ async def test_scheduled_dispatch_only_claims_due_publications(
     row.scheduled_at = datetime.now(UTC) - timedelta(minutes=1)
     await db_session.commit()
     await dispatcher_worker._dispatch_publications()
-    assert calls == [str(due.id)]
+    assert [item[0] for item in calls] == [str(due.id)]
+    assert calls[0][1]
     row = await db_session.get(Publication, due.id)
     assert row is not None
     await db_session.refresh(row)
     assert row.status is PublicationStatus.PUBLISHING
     await dispatcher_worker._dispatch_publications()
-    assert calls == [str(due.id)]
+    assert [item[0] for item in calls] == [str(due.id)]
+    assert calls[0][1]
 
 
 @pytest.mark.integration
@@ -1129,10 +1340,15 @@ async def test_scheduled_vk_dispatch_routes_only_due_publication(
     assert row is not None
     row.scheduled_at = datetime.now(UTC) - timedelta(minutes=1)
     await db_session.commit()
-    calls: list[str] = []
-    monkeypatch.setattr(dispatcher_worker.publish_vk_publication, "delay", calls.append)
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        dispatcher_worker.publish_vk_publication,
+        "delay",
+        lambda publication_id, token: calls.append((publication_id, token)),
+    )
     await dispatcher_worker._dispatch_publications()
-    assert calls == [str(due.id)]
+    assert [item[0] for item in calls] == [str(due.id)]
+    assert calls[0][1]
     row = await db_session.get(Publication, due.id)
     assert row is not None
     await db_session.refresh(row)
@@ -1163,8 +1379,12 @@ async def test_due_vk_provider_disabled_stays_scheduled_without_enqueue(
     assert row is not None
     row.scheduled_at = datetime.now(UTC) - timedelta(minutes=1)
     await db_session.commit()
-    calls: list[str] = []
-    monkeypatch.setattr(dispatcher_worker.publish_vk_publication, "delay", calls.append)
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        dispatcher_worker.publish_vk_publication,
+        "delay",
+        lambda publication_id, token: calls.append((publication_id, token)),
+    )
 
     await dispatcher_worker._dispatch_publications()
 
@@ -1197,14 +1417,19 @@ async def test_publication_dispatch_two_workers_claim_due_once(
     assert row is not None
     row.scheduled_at = datetime.now(UTC) - timedelta(minutes=1)
     await db_session.commit()
-    calls: list[str] = []
-    monkeypatch.setattr(dispatcher_worker.publish_telegram_publication, "delay", calls.append)
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        dispatcher_worker.publish_telegram_publication,
+        "delay",
+        lambda publication_id, token: calls.append((publication_id, token)),
+    )
 
     await asyncio.gather(
         dispatcher_worker._dispatch_publications(), dispatcher_worker._dispatch_publications()
     )
 
-    assert calls == [str(publication.id)]
+    assert [item[0] for item in calls] == [str(publication.id)]
+    assert calls[0][1]
     async with async_session_factory() as verify:
         claimed = await verify.get(Publication, publication.id)
         assert claimed is not None and claimed.status is PublicationStatus.PUBLISHING
@@ -1218,8 +1443,12 @@ async def test_publication_dispatch_does_not_enqueue_after_reschedule_or_cancel(
 
     user, _campaign, post, version = await _approved_post(db_session)
     service = PublicationService(db_session)
-    calls: list[str] = []
-    monkeypatch.setattr(dispatcher_worker.publish_telegram_publication, "delay", calls.append)
+    calls: list[tuple[str, str | None]] = []
+    monkeypatch.setattr(
+        dispatcher_worker.publish_telegram_publication,
+        "delay",
+        lambda publication_id, token: calls.append((publication_id, token)),
+    )
 
     rescheduled = await service.create(
         PublicationCreate(
@@ -1402,6 +1631,8 @@ async def test_vk_provider_maps_success_and_bad_request(monkeypatch: pytest.Monk
         def json(self):
             return {"response": {"post_id": 42}}
 
+    request: dict[str, object] = {}
+
     class _Client:
         def __init__(self, **kwargs):
             assert kwargs["timeout"] == 30
@@ -1412,12 +1643,17 @@ async def test_vk_provider_maps_success_and_bad_request(monkeypatch: pytest.Monk
         async def __aexit__(self, *_args):
             return None
 
-        async def post(self, *_args, **_kwargs):
+        async def post(self, url, **kwargs):
+            request.update(url=url, **kwargs)
             return _Response()
 
     monkeypatch.setattr("app.integrations.telegram.httpx.AsyncClient", _Client)
     result = await VKProvider().publish(text="Привет", chat_id="-123")
     assert result.external_id == "42"
+    assert "fake-vk-token" not in str(request["url"])
+    data = request["data"]
+    assert isinstance(data, dict)
+    assert data["access_token"] == "fake-vk-token"
     with pytest.raises(VKProviderError) as invalid:
         await VKProvider().publish(text="", chat_id="-123")
     assert invalid.value.code == "VK_BAD_REQUEST"

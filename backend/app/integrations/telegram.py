@@ -111,7 +111,9 @@ class VKProvider:
             async with httpx.AsyncClient(timeout=settings.vk_request_timeout_seconds) as client:
                 response = await client.post(
                     "https://api.vk.com/method/wall.post",
-                    params={
+                    # Keep credentials out of request URLs.  httpx may log
+                    # URLs at INFO level; form data is not included there.
+                    data={
                         "owner_id": settings.vk_owner_id,
                         "access_token": self._token,
                         "v": settings.vk_api_version,

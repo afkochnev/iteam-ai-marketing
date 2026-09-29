@@ -64,9 +64,13 @@ async def _dispatch_publications() -> None:
                     await PublicationService(session).claim_for_publish(publication_id)
                     row = await session.get(Publication, publication_id)
                     if row is not None and row.channel.value == "VK":
-                        publish_vk_publication.delay(str(publication_id))
+                        if row.execution_token is None:
+                            raise RuntimeError("publication claim did not create execution token")
+                        publish_vk_publication.delay(str(publication_id), row.execution_token)
                     else:
-                        publish_telegram_publication.delay(str(publication_id))
+                        if row is None or row.execution_token is None:
+                            raise RuntimeError("publication claim did not create execution token")
+                        publish_telegram_publication.delay(str(publication_id), row.execution_token)
                 except Exception:
                     await session.rollback()
     except Exception as error:

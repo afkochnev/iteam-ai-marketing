@@ -78,3 +78,11 @@ def test_redaction_removes_supported_secret_shapes() -> None:
         "nested-token",
     ):
         assert secret not in rendered
+
+
+def test_redaction_removes_tokens_from_logged_query_strings() -> None:
+    rendered = redact(
+        "https://api.example.test/method?access_token=sentinel-vk&api_key=sentinel-key"
+    )
+    assert "sentinel-vk" not in rendered
+    assert "sentinel-key" not in rendered

@@ -12,15 +12,17 @@ SessionFactory = async_sessionmaker[AsyncSession]
 
 
 @celery_app.task(name="publish_telegram_publication")  # type: ignore[misc]
-def publish_telegram_publication(publication_id: str) -> None:
-    asyncio.run(_run_in_worker_loop(UUID(publication_id)))
+def publish_telegram_publication(publication_id: str, execution_token: str | None = None) -> None:
+    asyncio.run(_run_in_worker_loop(UUID(publication_id), execution_token))
 
 
-async def _run_in_worker_loop(publication_id: UUID) -> None:
+async def _run_in_worker_loop(publication_id: UUID, execution_token: str | None = None) -> None:
     engine, factory = create_worker_session_factory()
     try:
         async with factory() as session:
-            await PublicationService(session).execute_telegram(publication_id)
+            await PublicationService(session).execute_telegram(
+                publication_id, execution_token=execution_token
+            )
     except Exception as error:
         report_exception(
             error, publication_id=str(publication_id), event="telegram_publication_failed"

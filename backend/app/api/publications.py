@@ -91,14 +91,19 @@ async def publish_now(
     publication_id: UUID, user: CurrentUser, session: SessionDependency
 ) -> PublicationResponse:
     publication = await PublicationService(session).claim_for_publish(publication_id, user)
+    row = await session.get(Publication, publication.id)
+    if row is None or row.execution_token is None:
+        raise AppError(
+            "PUBLICATION_CLAIM_INVALID", "Не удалось подтвердить владение попыткой.", 409
+        )
     if publication.channel.value == "VK":
         from app.workers.vk_worker import publish_vk_publication
 
-        publish_vk_publication.delay(str(publication.id))
+        publish_vk_publication.delay(str(publication.id), row.execution_token)
     else:
         from app.workers.telegram_worker import publish_telegram_publication
 
-        publish_telegram_publication.delay(str(publication.id))
+        publish_telegram_publication.delay(str(publication.id), row.execution_token)
     return publication
 
 
@@ -144,14 +149,19 @@ async def retry_publication(
     )
     await session.commit()
     claimed = await service.claim_for_publish(publication_id, user)
+    row = await session.get(Publication, claimed.id)
+    if row is None or row.execution_token is None:
+        raise AppError(
+            "PUBLICATION_CLAIM_INVALID", "Не удалось подтвердить владение попыткой.", 409
+        )
     if claimed.channel.value == "VK":
         from app.workers.vk_worker import publish_vk_publication
 
-        publish_vk_publication.delay(str(claimed.id))
+        publish_vk_publication.delay(str(claimed.id), row.execution_token)
     else:
         from app.workers.telegram_worker import publish_telegram_publication
 
-        publish_telegram_publication.delay(str(claimed.id))
+        publish_telegram_publication.delay(str(claimed.id), row.execution_token)
     return claimed
 
 
