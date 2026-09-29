@@ -329,14 +329,30 @@ class KnowledgeResearchResultProcessor:
 def render_article_markdown(article: object) -> str:
     draft = ArticleWritingResult.model_validate({"sufficient": True, "article": article}).article
     assert draft is not None
-    parts = [f"# {draft.title}"]
+    parts = [draft.title]
     if draft.subtitle:
-        parts.append(f"## {draft.subtitle}")
+        parts.append(draft.subtitle)
     parts.append(draft.lead)
     for section in draft.sections:
-        parts.extend([f"## {section.heading}", section.body_markdown])
-    parts.extend(["## Заключение", draft.conclusion, draft.cta])
+        parts.extend([section.heading, section.body_markdown])
+    parts.extend(["Заключение", draft.conclusion, draft.cta])
     return "\n\n".join(parts)
+
+
+def article_quality_errors(text: str) -> list[str]:
+    """Validate objective defects in the stored reader-facing Article body."""
+    errors: list[str] = []
+    if len(text.strip()) < 100:
+        errors.append("too_short")
+    if "**" in text:
+        errors.append("markdown_bold")
+    if "```" in text:
+        errors.append("markdown_fence")
+    lowered = text.casefold()
+    for label in ("cta:", "section_key", "content_version_id", "provenance", "debug metadata"):
+        if label in lowered:
+            errors.append(f"internal_label:{label}")
+    return errors
 
 
 class WriterResultProcessor:
@@ -429,6 +445,13 @@ class WriterResultProcessor:
         }
         if any(source_id not in rows for source_id in selected):
             raise AppError("INVALID_ARTICLE_SOURCE", "Источник статьи не найден.", 422)
+        rendered_content = render_article_markdown(result.article)
+        if article_quality_errors(rendered_content):
+            raise AppError(
+                "INVALID_ARTICLE_QUALITY",
+                "Статья содержит недопустимые служебные или форматные артефакты.",
+                422,
+            )
         if task.task_type is TaskType.CONTENT_REVISION:
             if task.input_data.get("revision_target_type") != ContentType.ARTICLE.value:
                 raise AppError(
@@ -464,7 +487,7 @@ class WriterResultProcessor:
             version = ContentVersion(
                 content_item_id=item.id,
                 version_number=current_number + 1,
-                content=render_article_markdown(result.article),
+                content=rendered_content,
                 structured_content=result.article.model_dump(mode="json"),
                 created_by_agent_id=run.agent_id,
                 source_agent_run_id=run.id,
@@ -532,7 +555,7 @@ class WriterResultProcessor:
         version = ContentVersion(
             content_item_id=item.id,
             version_number=1,
-            content=render_article_markdown(result.article),
+            content=rendered_content,
             structured_content=result.article.model_dump(mode="json"),
             created_by_agent_id=run.agent_id,
             source_agent_run_id=run.id,

@@ -25,6 +25,7 @@ from app.models.campaign import CampaignStatus
 from app.models.content import (
     ContentDerivation,
     ContentItem,
+    ContentStatus,
     ContentType,
     ContentVersion,
     ContentVersionSource,
@@ -568,6 +569,7 @@ class AgentRunService:
                 ContentVersion.id == source_version_id,
                 ContentItem.campaign_id == task.campaign_id,
                 ContentItem.content_type == ContentType.ARTICLE,
+                ContentItem.status != ContentStatus.ARCHIVED,
                 Approval.subject_version == ContentVersion.version_number,
                 Approval.status == ApprovalStatus.APPROVED,
             )

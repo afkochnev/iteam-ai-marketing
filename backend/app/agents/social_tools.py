@@ -13,7 +13,7 @@ from app.agents.tool_registry import tool_registry
 from app.core.database import async_session_factory
 from app.core.errors import AppError
 from app.models.agent_run import ToolCall, ToolCallStatus
-from app.models.content import ContentItem, ContentType, ContentVersion
+from app.models.content import ContentItem, ContentStatus, ContentType, ContentVersion
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +59,7 @@ async def read_content_version(
                     .where(
                         ContentVersion.id == content_version_id,
                         ContentItem.content_type == ContentType.ARTICLE,
+                        ContentItem.status != ContentStatus.ARCHIVED,
                     )
                 )
             ).one_or_none()

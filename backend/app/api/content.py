@@ -216,6 +216,12 @@ async def _resolve_content(
         from app.core.errors import AppError
 
         raise AppError("CONTENT_NOT_FOUND", "Материал не найден.", 404)
+    if item.status is ContentStatus.ARCHIVED:
+        raise ContentAppError(
+            "CONTENT_ARCHIVED",
+            "Архивный материал доступен только для просмотра истории.",
+            409,
+        )
     approval = (
         await session.execute(
             select(Approval)

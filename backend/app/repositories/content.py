@@ -4,7 +4,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.content import ContentItem, ContentVersion
+from app.models.content import ContentItem, ContentStatus, ContentVersion
 
 
 class ContentRepository:
@@ -17,6 +17,8 @@ class ContentRepository:
             .options(selectinload(ContentItem.versions).selectinload(ContentVersion.sources))
             .order_by(ContentItem.created_at.desc(), ContentItem.id.desc())
         )
+        if filters.get("status") is None:
+            stmt = stmt.where(ContentItem.status != ContentStatus.ARCHIVED)
         for field, value in filters.items():
             if value is not None:
                 stmt = stmt.where(getattr(ContentItem, field) == value)

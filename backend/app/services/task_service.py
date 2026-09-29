@@ -8,7 +8,7 @@ from app.core.errors import AppError
 from app.models.agent import Agent
 from app.models.approval import Approval, ApprovalObjectType, ApprovalStatus
 from app.models.campaign import Campaign, CampaignStatus
-from app.models.content import ContentItem, ContentType, ContentVersion
+from app.models.content import ContentItem, ContentStatus, ContentType, ContentVersion
 from app.models.task import Task, TaskPriority, TaskStatus, TaskType
 from app.repositories.tasks import TaskRepository
 from app.schemas.task import TaskCreate, TaskUpdate
@@ -275,6 +275,7 @@ class TaskService:
                 ContentVersion.id == version_id,
                 ContentItem.campaign_id == task.campaign_id,
                 ContentItem.content_type == ContentType.ARTICLE,
+                ContentItem.status != ContentStatus.ARCHIVED,
                 ContentItem.source_task_id == article_task.id,
             )
         )
