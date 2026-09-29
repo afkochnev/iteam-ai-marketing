@@ -182,8 +182,11 @@ async def test_reconciliation_not_published_unlocks_explicit_retry_only(
 
 @pytest.mark.integration
 async def test_reconciled_not_published_does_not_enqueue_retry_automatically(
-    db_session: AsyncSession,
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
     user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
     result = await PublicationService(db_session).reconcile_not_published(
         publication.id, user, note="проверено"
