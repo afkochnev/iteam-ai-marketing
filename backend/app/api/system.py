@@ -11,7 +11,12 @@ from app.core.errors import AppError
 from app.models.activity import ActivityLog
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.approval import Approval, ApprovalStatus
+from app.models.marketing_feedback import MarketingFeedbackAnalysis
+from app.models.publication import Publication, PublicationStatus
 from app.models.task import Task, TaskStatus
+from app.services.reconciliation_integrity import reconciliation_integrity_report
+
+EXPECTED_MIGRATION_HEAD = "20260928_0018"
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -37,6 +42,46 @@ async def system_status(_admin: AdminUser, session: SessionDependency) -> dict[s
         )
         for status in (AgentRunStatus.RUNNING, AgentRunStatus.FAILED)
     }
+    publication_counts = {
+        "reconciliation_required": int(
+            await session.scalar(
+                select(func.count())
+                .select_from(Publication)
+                .where(
+                    Publication.status == PublicationStatus.FAILED,
+                    Publication.failure_code.in_(
+                        ["TELEGRAM_RECONCILIATION_REQUIRED", "VK_RECONCILIATION_REQUIRED"]
+                    ),
+                )
+            )
+            or 0
+        ),
+        "failed": int(
+            await session.scalar(
+                select(func.count())
+                .select_from(Publication)
+                .where(Publication.status == PublicationStatus.FAILED)
+            )
+            or 0
+        ),
+    }
+    metrics_failures = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(ActivityLog)
+            .where(ActivityLog.event_type == "PUBLICATION_METRICS_SYNC_FAILED")
+        )
+        or 0
+    )
+    feedback_failures = int(
+        await session.scalar(
+            select(func.count())
+            .select_from(MarketingFeedbackAnalysis)
+            .where(MarketingFeedbackAnalysis.status == "FAILED")
+        )
+        or 0
+    )
+    reconciliation_integrity = await reconciliation_integrity_report(session)
     stuck = await session.scalar(
         select(func.count())
         .select_from(AgentRun)
@@ -59,6 +104,10 @@ async def system_status(_admin: AdminUser, session: SessionDependency) -> dict[s
         "environment": settings.app_env,
         "tasks": task_counts,
         "agent_runs": run_counts,
+        "publications": publication_counts,
+        "metrics_sync_failures": metrics_failures,
+        "feedback_analysis_failures": feedback_failures,
+        "reconciliation_integrity": reconciliation_integrity,
         "stuck_tasks": int(stuck or 0),
         "pending_approvals": int(pending or 0),
         "last_activity_at": latest,
@@ -87,15 +136,38 @@ async def _check_redis() -> bool:
         return False
 
 
+async def _check_schema() -> bool:
+    try:
+        async with engine.connect() as connection:
+            rows = (
+                (await connection.execute(text("SELECT version_num FROM alembic_version")))
+                .scalars()
+                .all()
+            )
+        return len(rows) == 1 and rows[0] == EXPECTED_MIGRATION_HEAD
+    except Exception:
+        return False
+
+
 @router.get("/ready")
 async def readiness() -> dict[str, str]:
+    try:
+        settings.validate_production()
+    except RuntimeError as error:
+        raise AppError(
+            "READINESS_CONFIG_INVALID",
+            "Конфигурация сервиса не позволяет принимать рабочие запросы.",
+            503,
+        ) from error
     database_ok, redis_ok = await _check_database(), await _check_redis()
+    schema_ok = await _check_schema() if database_ok else False
     payload = {
-        "status": "ok" if database_ok and redis_ok else "degraded",
+        "status": "ok" if database_ok and redis_ok and schema_ok else "degraded",
         "database": "ok" if database_ok else "unavailable",
         "redis": "ok" if redis_ok else "unavailable",
+        "schema": "ok" if schema_ok else "incompatible",
     }
-    if not database_ok or not redis_ok:
+    if not database_ok or not redis_ok or not schema_ok:
         raise AppError(
             "READINESS_CHECK_FAILED",
             "Сервис ещё не готов принимать запросы.",

@@ -43,6 +43,15 @@ def test_redaction_removes_secrets_from_nested_context() -> None:
     assert "redis://:pw" not in rendered
 
 
+def test_celery_redelivery_settings_match_claimed_work_safety() -> None:
+    from app.workers.celery_app import celery_app
+
+    assert celery_app.conf.task_acks_late is True
+    assert celery_app.conf.task_reject_on_worker_lost is True
+    assert celery_app.conf.worker_prefetch_multiplier == 1
+    assert celery_app.conf.task_serializer == "json"
+
+
 @pytest.mark.asyncio
 async def test_readiness_dependency_failures_are_not_ready(
     monkeypatch: pytest.MonkeyPatch,
@@ -56,3 +65,35 @@ async def test_readiness_dependency_failures_are_not_ready(
         await system.readiness()
     assert error.value.code == "READINESS_CHECK_FAILED"
     assert error.value.status_code == 503
+
+
+@pytest.mark.asyncio
+async def test_readiness_rejects_schema_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def available() -> bool:
+        return True
+
+    monkeypatch.setattr(system, "_check_database", available)
+    monkeypatch.setattr(system, "_check_redis", available)
+    monkeypatch.setattr(system, "_check_schema", lambda: _false_async())
+    with pytest.raises(AppError) as error:
+        await system.readiness()
+    assert error.value.code == "READINESS_CHECK_FAILED"
+    assert error.value.details["schema"] == "incompatible"
+
+
+@pytest.mark.asyncio
+async def test_readiness_rejects_invalid_production_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(system.settings, "app_env", "production")
+    monkeypatch.setattr(system.settings, "app_secret", "short")
+    with pytest.raises(AppError) as error:
+        await system.readiness()
+    assert error.value.code == "READINESS_CONFIG_INVALID"
+    assert error.value.status_code == 503
+
+
+async def _false_async() -> bool:
+    return False

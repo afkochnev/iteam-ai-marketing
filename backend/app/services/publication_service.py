@@ -309,6 +309,10 @@ class PublicationService:
                 note=note,
             )
         )
+        # Materialize the reconciliation insert before changing the delivery
+        # fact.  This remains one transaction; the explicit flush makes the
+        # intended atomic ordering observable and testable.
+        await self.session.flush()
         publication.status = PublicationStatus.PUBLISHED
         publication.external_id = external_id.strip()
         publication.external_url = external_url
@@ -337,8 +341,6 @@ class PublicationService:
         ):
             return await self._response(publication)
         await self._require_reconciliation(publication_id)
-        publication.failure_code = "PUBLICATION_RECONCILED_NOT_PUBLISHED"
-        publication.failure_message = "Оператор подтвердил, что внешняя публикация не найдена."
         self.session.add(
             PublicationReconciliation(
                 publication_id=publication.id,
@@ -348,6 +350,9 @@ class PublicationService:
                 note=note,
             )
         )
+        await self.session.flush()
+        publication.failure_code = "PUBLICATION_RECONCILED_NOT_PUBLISHED"
+        publication.failure_message = "Оператор подтвердил, что внешняя публикация не найдена."
         await ActivityLogService(self.session).record(
             "PUBLICATION_RECONCILED_NOT_PUBLISHED",
             operation_key=f"publication-reconciled-not-published:{publication.id}",

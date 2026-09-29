@@ -36,6 +36,14 @@ def test_production_configuration_accepts_secure_values(
     settings.validate_production()
 
 
+def test_configuration_rejects_invalid_numeric_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "agent_run_timeout_seconds", 0)
+    with pytest.raises(RuntimeError, match="AGENT_RUN_TIMEOUT_SECONDS"):
+        settings.validate_production()
+
+
 def test_security_headers_and_production_liveness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

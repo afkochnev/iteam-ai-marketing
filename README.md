@@ -87,9 +87,18 @@ celery -A app.workers.celery_app:celery_app worker --loglevel=INFO
 
 ```bash
 docker compose exec backend alembic upgrade head
-docker compose exec backend alembic downgrade base
 docker compose exec backend python -m app.seed
 ```
+
+**Никогда не выполняйте `alembic downgrade base` в runtime/production.**
+Проверка downgrade/upgrade разрешена только в отдельной базе тестов
+(`*_test`), потому что downgrade может удалить таблицы и исторические строки;
+последующий upgrade создаёт схему заново, но не восстанавливает данные.
+Production-развёртывание выполняет только проверенный forward `alembic upgrade
+head` после backup и review.
+
+Для CI/test-only round-trip используйте явно заданную `DATABASE_URL` с именем,
+оканчивающимся на `_test`.
 
 Миграции последовательно создают пользователей, конфигурацию агентов, Campaigns, Tasks, AgentRuns и ToolCalls. Все миграции обратимы; актуальность ORM metadata проверяется командой `alembic check`.
 

@@ -12,6 +12,10 @@ _SECRET_KEYS = {
     "jwt_secret",
     "secret",
     "token",
+    "access_token",
+    "bot_token",
+    "database_url",
+    "redis_url",
 }
 _SENSITIVE_TEXT_PATTERNS = (
     (re.compile(r"(?i)(authorization\s*:\s*bearer\s+)[^\s,;]+"), r"\1[REDACTED]"),

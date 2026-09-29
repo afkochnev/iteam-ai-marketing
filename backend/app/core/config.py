@@ -70,6 +70,34 @@ class Settings(BaseSettings):
         return [item.strip() for item in value.split(",") if item.strip()]
 
     def validate_production(self) -> None:
+        numeric_errors: list[str] = []
+        positive_values = {
+            "ACCESS_TOKEN_EXPIRE_MINUTES": self.access_token_expire_minutes,
+            "AGENT_RUN_TIMEOUT_SECONDS": self.agent_run_timeout_seconds,
+            "AGENT_PROVIDER_REQUEST_TIMEOUT_SECONDS": self.agent_provider_request_timeout_seconds,
+            "SMM_FINAL_PROVIDER_TIMEOUT_SECONDS": self.smm_final_provider_timeout_seconds,
+            "AGENT_MAX_TURNS": self.agent_max_turns,
+            "SMM_AGENT_MAX_TURNS": self.smm_agent_max_turns,
+            "AGENT_OUTPUT_REPAIR_ATTEMPTS": self.agent_output_repair_attempts,
+            "AGENT_RETRY_BACKOFF_SECONDS": self.agent_retry_backoff_seconds,
+            "TASK_STUCK_AFTER_SECONDS": self.task_stuck_after_seconds,
+            "TASK_DISPATCH_INTERVAL_SECONDS": self.task_dispatch_interval_seconds,
+            "TELEGRAM_REQUEST_TIMEOUT_SECONDS": self.telegram_request_timeout_seconds,
+            "VK_REQUEST_TIMEOUT_SECONDS": self.vk_request_timeout_seconds,
+            "METRICS_SYNC_INTERVAL_SECONDS": self.metrics_sync_interval_seconds,
+            "METRICS_LOOKBACK_DAYS": self.metrics_lookback_days,
+            "PUBLICATION_PUBLISHING_STALE_SECONDS": self.publication_publishing_stale_seconds,
+        }
+        numeric_errors.extend(name for name, value in positive_values.items() if value <= 0)
+        if self.publication_max_retries < 0 or self.publication_max_retries > 10:
+            numeric_errors.append("PUBLICATION_MAX_RETRIES")
+        if self.agent_max_retries < 0 or self.agent_max_retries > 10:
+            numeric_errors.append("AGENT_MAX_RETRIES")
+        if numeric_errors:
+            raise RuntimeError(
+                "Configuration contains invalid numeric values: "
+                + ", ".join(sorted(set(numeric_errors)))
+            )
         if self.app_env.lower() not in {"production", "prod"}:
             return
         placeholders = {

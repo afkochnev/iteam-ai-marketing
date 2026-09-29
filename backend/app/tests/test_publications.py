@@ -5,7 +5,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
-from sqlalchemy import select
+from sqlalchemy import event, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_current_user
@@ -37,8 +37,10 @@ from app.models.publication import (
 )
 from app.models.user import User
 from app.schemas.publication import PublicationCreate
+from app.services.activity_log_service import ActivityLogService
 from app.services.approval_service import ApprovalService
 from app.services.publication_service import PublicationService
+from app.services.reconciliation_integrity import reconciliation_integrity_report
 from app.tests.test_smm_integration import smm_fixture
 
 
@@ -170,6 +172,249 @@ async def test_reconciliation_not_published_unlocks_explicit_retry_only(
         select(ActivityLog).where(ActivityLog.event_type == "PUBLICATION_RECONCILED_NOT_PUBLISHED")
     )
     assert event is not None
+
+
+@pytest.mark.integration
+async def test_reconciliation_published_restart_durability(
+    db_session: AsyncSession,
+) -> None:
+    user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
+    await PublicationService(db_session).reconcile_published(
+        publication.id,
+        user,
+        external_id="2468",
+        external_url=None,
+        published_at=datetime.now(UTC),
+        note=None,
+    )
+    await db_session.close()
+    async with async_session_factory() as restarted:
+        persisted = await restarted.get(Publication, publication.id)
+        history = list(
+            (
+                await restarted.scalars(
+                    select(PublicationReconciliation).where(
+                        PublicationReconciliation.publication_id == publication.id
+                    )
+                )
+            ).all()
+        )
+        events = list(
+            (
+                await restarted.scalars(
+                    select(ActivityLog).where(
+                        ActivityLog.event_type == "PUBLICATION_RECONCILED_PUBLISHED",
+                        ActivityLog.metadata_["publication_id"].as_string() == str(publication.id),
+                    )
+                )
+            ).all()
+        )
+    assert persisted is not None and persisted.status is PublicationStatus.PUBLISHED
+    assert len(history) == len(events) == 1
+
+
+@pytest.mark.integration
+async def test_reconciliation_not_published_restart_durability(
+    db_session: AsyncSession,
+) -> None:
+    user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
+    await PublicationService(db_session).reconcile_not_published(publication.id, user, note=None)
+    await db_session.close()
+    async with async_session_factory() as restarted:
+        persisted = await restarted.get(Publication, publication.id)
+        history = list(
+            (
+                await restarted.scalars(
+                    select(PublicationReconciliation).where(
+                        PublicationReconciliation.publication_id == publication.id
+                    )
+                )
+            ).all()
+        )
+        events = list(
+            (
+                await restarted.scalars(
+                    select(ActivityLog).where(
+                        ActivityLog.event_type == "PUBLICATION_RECONCILED_NOT_PUBLISHED",
+                        ActivityLog.metadata_["publication_id"].as_string() == str(publication.id),
+                    )
+                )
+            ).all()
+        )
+    assert (
+        persisted is not None
+        and persisted.status is PublicationStatus.FAILED
+        and persisted.failure_code == "PUBLICATION_RECONCILED_NOT_PUBLISHED"
+    )
+    assert len(history) == len(events) == 1
+
+
+@pytest.mark.integration
+async def test_reconciliation_rolls_back_if_insert_flush_fails(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
+    publication_id = publication.id
+    original_flush = db_session.flush
+
+    async def fail_flush(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("injected reconciliation insert failure")
+
+    monkeypatch.setattr(db_session, "flush", fail_flush)
+    with pytest.raises(RuntimeError, match="injected reconciliation insert failure"):
+        await PublicationService(db_session).reconcile_published(
+            publication_id,
+            user,
+            external_id="111",
+            external_url=None,
+            published_at=None,
+            note=None,
+        )
+    monkeypatch.setattr(db_session, "flush", original_flush)
+    await db_session.rollback()
+    persisted = await db_session.get(Publication, publication_id)
+    assert persisted is not None and persisted.status is PublicationStatus.FAILED
+    assert not await db_session.scalar(
+        select(PublicationReconciliation).where(
+            PublicationReconciliation.publication_id == publication_id
+        )
+    )
+    assert not await db_session.scalar(
+        select(ActivityLog).where(
+            ActivityLog.metadata_["publication_id"].as_string() == str(publication_id),
+            ActivityLog.event_type.like("PUBLICATION_RECONCILED_%"),
+        )
+    )
+
+
+@pytest.mark.integration
+async def test_reconciliation_rolls_back_after_insert_before_publication_mutation(
+    db_session: AsyncSession,
+) -> None:
+    user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
+    publication_id = publication.id
+    raised = False
+
+    def fail_after_flush(sync_session: object, _flush_context: object) -> None:
+        nonlocal raised
+        if not raised:
+            raised = True
+            raise RuntimeError("injected post-insert failure")
+
+    event.listen(db_session.sync_session, "after_flush", fail_after_flush)
+    try:
+        with pytest.raises(RuntimeError, match="injected post-insert failure"):
+            await PublicationService(db_session).reconcile_published(
+                publication_id,
+                user,
+                external_id="113",
+                external_url=None,
+                published_at=None,
+                note=None,
+            )
+    finally:
+        event.remove(db_session.sync_session, "after_flush", fail_after_flush)
+    await db_session.rollback()
+    persisted = await db_session.get(Publication, publication_id)
+    assert persisted is not None and persisted.status is PublicationStatus.FAILED
+    assert not await db_session.scalar(
+        select(PublicationReconciliation).where(
+            PublicationReconciliation.publication_id == publication_id
+        )
+    )
+    assert not await db_session.scalar(
+        select(ActivityLog).where(
+            ActivityLog.metadata_["publication_id"].as_string() == str(publication_id),
+            ActivityLog.event_type.like("PUBLICATION_RECONCILED_%"),
+        )
+    )
+
+
+@pytest.mark.integration
+async def test_reconciliation_rolls_back_if_activity_log_fails(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
+    publication_id = publication.id
+
+    async def fail_record(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("injected activity failure")
+
+    monkeypatch.setattr(ActivityLogService, "record", fail_record)
+    with pytest.raises(RuntimeError, match="injected activity failure"):
+        await PublicationService(db_session).reconcile_not_published(
+            publication_id, user, note=None
+        )
+    await db_session.rollback()
+    persisted = await db_session.get(Publication, publication_id)
+    assert persisted is not None and persisted.failure_code == "TELEGRAM_RECONCILIATION_REQUIRED"
+    assert not await db_session.scalar(
+        select(PublicationReconciliation).where(
+            PublicationReconciliation.publication_id == publication_id
+        )
+    )
+    assert not await db_session.scalar(
+        select(ActivityLog).where(
+            ActivityLog.metadata_["publication_id"].as_string() == str(publication_id),
+            ActivityLog.event_type.like("PUBLICATION_RECONCILED_%"),
+        )
+    )
+
+
+@pytest.mark.integration
+async def test_reconciliation_rolls_back_if_commit_fails(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
+    publication_id = publication.id
+
+    async def fail_commit() -> None:
+        raise RuntimeError("injected commit failure")
+
+    monkeypatch.setattr(db_session, "commit", fail_commit)
+    with pytest.raises(RuntimeError, match="injected commit failure"):
+        await PublicationService(db_session).reconcile_published(
+            publication_id,
+            user,
+            external_id="112",
+            external_url=None,
+            published_at=None,
+            note=None,
+        )
+    monkeypatch.undo()
+    await db_session.rollback()
+    persisted = await db_session.get(Publication, publication_id)
+    assert persisted is not None and persisted.status is PublicationStatus.FAILED
+    assert not await db_session.scalar(
+        select(PublicationReconciliation).where(
+            PublicationReconciliation.publication_id == publication_id
+        )
+    )
+
+
+@pytest.mark.integration
+async def test_reconciliation_integrity_report_detects_historical_gap(
+    db_session: AsyncSession,
+) -> None:
+    user, campaign, post, _version, publication = await _reconciliation_fixture(db_session)
+    publication_id = publication.id
+    publication.failure_code = "PUBLICATION_RECONCILED_NOT_PUBLISHED"
+    publication.failure_message = "Операторское подтверждение ожидается."
+    await db_session.commit()
+    db_session.add(
+        ActivityLog(
+            event_type="PUBLICATION_RECONCILED_NOT_PUBLISHED",
+            operation_key=f"test-integrity-gap:{publication_id}",
+            campaign_id=campaign.id,
+            user_id=user.id,
+            content_item_id=post.id,
+            metadata_={"publication_id": str(publication_id)},
+        )
+    )
+    await db_session.commit()
+    report = await reconciliation_integrity_report(db_session)
+    assert report["activity_without_reconciliation"] == 1
+    assert report["reconciled_not_published_without_history"] == 1
 
 
 @pytest.mark.integration
