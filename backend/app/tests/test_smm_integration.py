@@ -572,7 +572,10 @@ async def test_plan_item_smm_binds_authoritative_vk_channel(
                 {
                     "key": "plan_item_post",
                     "title": "Как выбрать формат работы",
-                    "text_markdown": "Когда неопределённость относится к будущим сценариям, сначала нужно разобрать варианты развития событий.",
+                    "text_markdown": (
+                        "Когда неопределённость относится к будущим сценариям, "
+                        "сначала нужно разобрать варианты развития событий."
+                    ),
                     "cta": "",
                     "sources": [
                         {
@@ -601,7 +604,10 @@ async def test_plan_item_smm_binds_authoritative_vk_channel(
     version = await db_session.get(ContentVersion, post.current_version_id)
     assert version is not None
     assert version.structured_content["channel"] == "VK"
-    assert version.structured_content["text_markdown"] == output["pack"]["posts"][0]["text_markdown"]
+    assert (
+        version.structured_content["text_markdown"]
+        == output["pack"]["posts"][0]["text_markdown"]
+    )
 
 
 @pytest.mark.asyncio
