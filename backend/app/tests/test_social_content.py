@@ -45,6 +45,47 @@ def test_single_plan_item_schema_accepts_exactly_one_post() -> None:
     assert result.pack is not None and len(result.pack.posts) == 1
 
 
+def test_plan_item_normalization_uses_single_post_contract() -> None:
+    payload = {
+        "sufficient": True,
+        "pack": {"strategy_summary": "Диагностическая развилка", "posts": [_post(1)]},
+    }
+
+    normalized = output_type_registry.normalize(
+        payload,
+        TaskType.CREATE_SOCIAL_POSTS,
+        output_type=SingleSocialPostResult,
+    )
+
+    assert len(normalized["pack"]["posts"]) == 1  # type: ignore[index]
+
+
+def test_bulk_normalization_keeps_social_pack_contract() -> None:
+    payload = _valid()
+
+    normalized = output_type_registry.normalize(payload, TaskType.CREATE_SOCIAL_POSTS)
+
+    assert len(normalized["pack"]["posts"]) == 5  # type: ignore[index]
+
+
+def test_plan_item_normalization_rejects_zero_or_multiple_posts() -> None:
+    with pytest.raises(ValidationError):
+        output_type_registry.normalize(
+            {"sufficient": True, "pack": {"strategy_summary": "x", "posts": []}},
+            TaskType.CREATE_SOCIAL_POSTS,
+            output_type=SingleSocialPostResult,
+        )
+    with pytest.raises(ValidationError):
+        output_type_registry.normalize(
+            {
+                "sufficient": True,
+                "pack": {"strategy_summary": "x", "posts": [_post(1), _post(2)]},
+            },
+            TaskType.CREATE_SOCIAL_POSTS,
+            output_type=SingleSocialPostResult,
+        )
+
+
 def test_single_plan_item_schema_rejects_multiple_posts() -> None:
     with pytest.raises(ValidationError):
         SingleSocialPostResult.model_validate(

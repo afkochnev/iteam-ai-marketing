@@ -21,8 +21,21 @@ class TaskOutputTypeRegistry:
         }
         return mapping.get(task_type)
 
-    def normalize(self, value: Any, task_type: TaskType) -> dict[str, Any]:
-        output_type = self.get(task_type)
+    def normalize(
+        self,
+        value: Any,
+        task_type: TaskType,
+        *,
+        output_type: type[BaseModel] | None = None,
+    ) -> dict[str, Any]:
+        """Validate output against the schema selected for this run.
+
+        Task type remains the legacy default, while callers that selected a
+        more specific contract during claim (for example a single plan-item
+        Social Post) pass that exact schema through explicitly.
+        """
+
+        output_type = output_type or self.get(task_type)
         if output_type is None:
             return {"text": str(value)}
         if not isinstance(value, output_type):

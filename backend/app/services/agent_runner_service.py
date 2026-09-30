@@ -468,7 +468,11 @@ class AgentRunnerService:
                     ) from exc
                 usage = result.context_wrapper.usage
                 try:
-                    output_data = output_type_registry.normalize(result.final_output, task_type)
+                    output_data = output_type_registry.normalize(
+                        result.final_output,
+                        task_type,
+                        output_type=snapshot.output_type,
+                    )
                 except ValidationError as exc:
                     if repair_attempt >= settings.agent_output_repair_attempts:
                         raise AgentRuntimeError(

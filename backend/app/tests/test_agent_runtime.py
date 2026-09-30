@@ -19,7 +19,7 @@ from app.models.campaign import Campaign
 from app.models.task import Task, TaskStatus, TaskType
 from app.models.user import User, UserRole
 from app.repositories.users import UserRepository
-from app.schemas.agent_outputs import CampaignPlan, SocialPostPackResult
+from app.schemas.agent_outputs import CampaignPlan, SingleSocialPostResult, SocialPostPackResult
 from app.schemas.campaign import CampaignCreate
 from app.schemas.task import TaskCreate
 from app.services.agent_run_service import AgentRunService
@@ -210,6 +210,42 @@ async def test_runner_normalizes_usage_and_errors(
     assert "provider detail" in caplog.text
     assert "sk-live-secret" not in caplog.text
     assert "bearer-secret" not in caplog.text
+
+
+async def test_runner_preserves_claimed_single_social_post_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    usage = SimpleNamespace(requests=1, input_tokens=2, output_tokens=3, total_tokens=5)
+    post = {
+        "key": "diagnostic",
+        "channel": "TELEGRAM",
+        "title": "Диагностика",
+        "text_markdown": "Команда может спорить о выполнении курса или о самом направлении.",
+        "cta": "",
+        "sources": [{"content_version_id": str(uuid4()), "section_key": "signal_1"}],
+        "suggested_publish_order": 1,
+    }
+
+    async def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            final_output={
+                "sufficient": True,
+                "pack": {"strategy_summary": "Диагностика", "posts": [post]},
+            },
+            context_wrapper=SimpleNamespace(usage=usage),
+        )
+
+    monkeypatch.setattr("app.services.agent_runner_service.Runner.run", fake_run)
+    context = AgentRuntimeContext(uuid4(), uuid4(), uuid4(), uuid4(), TaskType.CREATE_SOCIAL_POSTS)
+    result = await AgentRunnerService().run(
+        AgentSnapshot("SMM", "Prompt", "model", [], SingleSocialPostResult),
+        "Generate one plan-item post",
+        context,
+        None,
+    )
+
+    assert len(result.output_data["pack"]["posts"]) == 1  # type: ignore[index]
 
 
 async def test_campaign_plan_sdk_schema_error_enters_bounded_repair(
