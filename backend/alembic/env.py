@@ -23,6 +23,8 @@ from app.models import (  # noqa: F401
     KnowledgePackItem,
     KnowledgeSource,
     KnowledgeStore,
+    PublicationPlan,
+    PublicationPlanItem,
     Task,
     TaskDependency,
     ToolCall,

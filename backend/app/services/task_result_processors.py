@@ -1,5 +1,6 @@
 import hashlib
 import logging
+import re
 from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
@@ -335,7 +336,10 @@ def render_article_markdown(article: object) -> str:
     parts.append(draft.lead)
     for section in draft.sections:
         parts.extend([section.heading, section.body_markdown])
-    parts.extend(["Заключение", draft.conclusion, draft.cta])
+    # CTA is structured metadata, not part of the publishable Article body.
+    # Keeping this boundary here prevents arbitrary model values from leaking
+    # into persisted plain text.
+    parts.extend(["Заключение", draft.conclusion])
     return "\n\n".join(parts)
 
 
@@ -348,6 +352,13 @@ def article_quality_errors(text: str) -> list[str]:
         errors.append("markdown_bold")
     if "```" in text:
         errors.append("markdown_fence")
+    # Structured-model residue must never reach the reader-facing body.  Keep
+    # this deliberately narrow: reject only unmistakable JSON-like scalar
+    # tails such as ``:null},`` rather than trying to score prose quality.
+    if re.search(r"(?i)(?::\s*(?:null|true|false)\s*[,}\]]+)\s*$", text):
+        errors.append("serialization_artifact")
+    if re.search(r"\{[^{}]*:\s*[^{}]*\}\s*,?\s*$", text):
+        errors.append("serialization_artifact")
     lowered = text.casefold()
     for label in ("cta:", "section_key", "content_version_id", "provenance", "debug metadata"):
         if label in lowered:

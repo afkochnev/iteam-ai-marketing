@@ -28,6 +28,12 @@ from app.models.publication import (
     ReconciliationDecision,
 )
 from app.models.publication_metrics import MetricsSource, PublicationMetricsSnapshot
+from app.models.publication_plan import (
+    PublicationPlan,
+    PublicationPlanItem,
+    PublicationPlanItemStatus,
+    PublicationPlanStatus,
+)
 from app.models.task import Task, TaskDependency, TaskPriority, TaskStatus, TaskType
 from app.models.user import User, UserRole
 
@@ -63,6 +69,10 @@ __all__ = [
     "ReconciliationDecision",
     "MetricsSource",
     "PublicationMetricsSnapshot",
+    "PublicationPlan",
+    "PublicationPlanItem",
+    "PublicationPlanItemStatus",
+    "PublicationPlanStatus",
     "FeedbackAnalysisStatus",
     "FeedbackCategory",
     "FeedbackSource",

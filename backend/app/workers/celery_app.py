@@ -15,6 +15,7 @@ celery_app = Celery(
         "app.workers.vk_worker",
         "app.workers.metrics_worker",
         "app.workers.feedback_worker",
+        "app.workers.publication_plan_worker",
     ],
 )
 celery_app.conf.update(

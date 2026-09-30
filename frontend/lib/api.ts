@@ -50,6 +50,10 @@ export interface CampaignPerformance { total_published: number; with_metrics: nu
 export interface Activity { id: string; event_type: string; campaign_id: string | null; task_id: string | null; content_item_id: string | null; approval_id: string | null; metadata: Record<string, unknown>; created_at: string; }
 export interface MarketingFeedback { id: string; campaign_id: string; publication_id: string | null; content_item_id: string | null; content_version_id: string | null; source_type: string; category: string; rating: number | null; comment: string | null; observed_at: string | null; created_by_user_id: string | null; created_at: string; }
 export interface FeedbackAnalysis { id: string; campaign_id: string; status: "DRAFT" | "ACCEPTED" | "REJECTED" | "FAILED"; strategy_version: number; summary: string; input_snapshot: Record<string, unknown>; findings: Array<Record<string, unknown>>; recommendations: Array<Record<string, unknown>>; experiment_ideas: Array<Record<string, unknown>>; limitations: string[]; agent_run_id: string | null; generated_at: string | null; reviewed_by_user_id: string | null; reviewed_at: string | null; }
+export type PublicationPlanStatus = "DRAFT" | "WAITING_APPROVAL" | "APPROVED" | "REJECTED" | "ARCHIVED";
+export interface PublicationCollisionWarning { type: "NEAR_EXISTING_PUBLICATION"; publication_id: string; channel: "TELEGRAM" | "VK"; scheduled_at: string; delta_minutes: number; }
+export interface PublicationPlanItem { id: string; position: number; scheduled_at: string; channel: "TELEGRAM" | "VK"; source_content_item_id: string; source_content_version_id: string; topic: string; angle: string; purpose: string; format: string; message_brief: string; source_claim_ids: string[] | null; source_support_summary: string | null; status: "PLANNED" | "REMOVED"; near_publication_warnings: PublicationCollisionWarning[]; }
+export interface PublicationPlan { id: string; campaign_id: string; status: PublicationPlanStatus; planning_horizon_start: string; planning_horizon_end: string; timezone_policy: string; created_by_user_id: string; generated_by_agent_run_id: string | null; feedback_analysis_id: string | null; approved_at: string | null; approved_by_user_id: string | null; items: PublicationPlanItem[]; }
 export interface SystemStatus { tasks: Record<string, number>; agent_runs: Record<string, number>; stuck_tasks: number; pending_approvals: number; last_activity_at: string | null; }
 export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
@@ -174,6 +178,19 @@ export const feedbackApi = {
   generate: (campaignId: string) => request<FeedbackAnalysis>(`/campaigns/${campaignId}/feedback-analysis`, { method: "POST" }),
   accept: (id: string) => request<FeedbackAnalysis>(`/feedback-analysis/${id}/accept`, { method: "POST" }),
   reject: (id: string) => request<FeedbackAnalysis>(`/feedback-analysis/${id}/reject`, { method: "POST" }),
+};
+export const publicationPlansApi = {
+  list: (campaignId: string) => request<PublicationPlan[]>(`/campaigns/${campaignId}/publication-plans`),
+  create: (campaignId: string, payload: Record<string, unknown>) => request<PublicationPlan>(`/campaigns/${campaignId}/publication-plans`, { method: "POST", body: JSON.stringify(payload) }),
+  generate: (campaignId: string, payload: Record<string, unknown>) => request<PublicationPlan>(`/campaigns/${campaignId}/publication-plans/generate`, { method: "POST", body: JSON.stringify(payload) }),
+  submit: (id: string) => request<PublicationPlan>(`/publication-plans/${id}/submit`, { method: "POST" }),
+  approve: (id: string) => request<PublicationPlan>(`/publication-plans/${id}/approve`, { method: "POST" }),
+  reject: (id: string) => request<PublicationPlan>(`/publication-plans/${id}/reject`, { method: "POST" }),
+  revise: (id: string) => request<PublicationPlan>(`/publication-plans/${id}/revise`, { method: "POST" }),
+  addItem: (id: string, payload: Record<string, unknown>) => request<PublicationPlan>(`/publication-plans/${id}/items`, { method: "POST", body: JSON.stringify(payload) }),
+  updateItem: (id: string, itemId: string, payload: Record<string, unknown>) => request<PublicationPlan>(`/publication-plans/${id}/items/${itemId}`, { method: "PATCH", body: JSON.stringify(payload) }),
+  removeItem: (id: string, itemId: string) => request<PublicationPlan>(`/publication-plans/${id}/items/${itemId}`, { method: "DELETE" }),
+  reorder: (id: string, itemIds: string[]) => request<PublicationPlan>(`/publication-plans/${id}/reorder`, { method: "POST", body: JSON.stringify({ item_ids: itemIds }) }),
 };
 export const activitiesApi = { list: (campaignId?: string) => request<Activity[]>(`/activities${campaignId ? `?campaign_id=${campaignId}` : ""}`) };
 export const systemApi = { status: () => request<SystemStatus>("/system/status") };
