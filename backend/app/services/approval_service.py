@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
@@ -32,6 +33,33 @@ class ApprovalService:
     async def create_content_approval(
         self, content_id: UUID, version: int, snapshot: dict[str, object], agent_id: UUID
     ) -> Approval:
+        # A new immutable version supersedes any still-pending approval for an
+        # older version.  Keep the old approval as audit history, but make it
+        # non-actionable before creating the new exact-version approval.
+        version_id = str(snapshot.get("content_version_id", ""))
+        pending = list(
+            (
+                await self.session.scalars(
+                    select(Approval)
+                    .where(
+                        Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
+                        Approval.object_id == content_id,
+                        Approval.status == ApprovalStatus.PENDING,
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        )
+        for approval in pending:
+            if str(approval.subject_snapshot.get("content_version_id")) == version_id:
+                continue
+            approval.status = ApprovalStatus.REVISION_REQUESTED
+            approval.comment = "Согласование автоматически заменено новой версией контента."
+            approval.resolved_at = datetime.now(UTC)
+            approval.metadata_ = {
+                **approval.metadata_,
+                "superseded_by_content_version_id": version_id,
+            }
         return await self.repository.create(
             Approval(
                 object_type=ApprovalObjectType.CONTENT_ITEM,

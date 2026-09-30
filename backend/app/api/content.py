@@ -1,3 +1,5 @@
+import hashlib
+from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -222,17 +224,37 @@ async def _resolve_content(
             "Архивный материал доступен только для просмотра истории.",
             409,
         )
-    approval = (
-        await session.execute(
-            select(Approval)
-            .where(
-                Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
-                Approval.object_id == content_id,
-                Approval.status == ApprovalStatus.PENDING,
+    pending_approvals = list(
+        (
+            await session.scalars(
+                select(Approval)
+                .where(
+                    Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
+                    Approval.object_id == content_id,
+                    Approval.status == ApprovalStatus.PENDING,
+                )
+                .with_for_update()
             )
-            .with_for_update()
-        )
-    ).scalar_one_or_none()
+        ).all()
+    )
+    current_version_id = str(item.current_version_id)
+    approval = next(
+        (
+            candidate
+            for candidate in pending_approvals
+            if str(candidate.subject_snapshot.get("content_version_id")) == current_version_id
+        ),
+        pending_approvals[0] if pending_approvals else None,
+    )
+    for stale in pending_approvals:
+        if approval is not None and stale.id != approval.id:
+            stale.status = ApprovalStatus.REVISION_REQUESTED
+            stale.comment = "Согласование автоматически заменено новой версией контента."
+            stale.resolved_at = datetime.now(UTC)
+            stale.metadata_ = {
+                **stale.metadata_,
+                "superseded_by_content_version_id": current_version_id,
+            }
     if approval is None:
         requested = (
             await session.execute(
@@ -266,10 +288,27 @@ async def _resolve_content(
             return _response(await ContentService(session).get(content_id))
         raise AppError("CONTENT_APPROVAL_NOT_FOUND", "Согласование контента не найдено.", 404)
     version_id = approval.subject_snapshot.get("content_version_id")
-    if str(item.current_version_id) != str(version_id):
+    current_version = await session.scalar(
+        select(ContentVersion).where(ContentVersion.id == item.current_version_id)
+    )
+    snapshot_hash = approval.subject_snapshot.get("content_hash")
+    snapshot_number = approval.subject_snapshot.get("version_number")
+    if (
+        current_version is None
+        or str(item.current_version_id) != str(version_id)
+        or (snapshot_number is not None and current_version.version_number != int(snapshot_number))
+        or (
+            snapshot_hash is not None
+            and hashlib.sha256(current_version.content.encode()).hexdigest() != str(snapshot_hash)
+        )
+    ):
         from app.core.errors import AppError
 
-        raise AppError("CONTENT_APPROVAL_STALE", "Согласование относится к устаревшей версии.", 409)
+        raise AppError(
+            "STALE_APPROVAL_VERSION",
+            "Согласование относится к устаревшей версии контента.",
+            409,
+        )
     if item.content_type is ContentType.SOCIAL_POST_PACK:
         snapshot_posts = approval.subject_snapshot.get("posts", [])
         child_ids = [
@@ -287,13 +326,32 @@ async def _resolve_content(
         children_by_id = {child.id: child for child in children}
         for snapshot_post in snapshot_posts:
             child = children_by_id.get(UUID(str(snapshot_post["content_item_id"])))
-            if child is None or str(child.current_version_id) != str(
-                snapshot_post.get("content_version_id")
+            child_version = (
+                await session.scalar(
+                    select(ContentVersion).where(ContentVersion.id == child.current_version_id)
+                )
+                if child is not None
+                else None
+            )
+            child_hash = snapshot_post.get("content_hash")
+            child_number = snapshot_post.get("version_number")
+            if (
+                child is None
+                or child_version is None
+                or str(child.current_version_id) != str(snapshot_post.get("content_version_id"))
+                or (child_number is not None and child_version.version_number != int(child_number))
+                or (
+                    child_hash is not None
+                    and hashlib.sha256(child_version.content.encode()).hexdigest()
+                    != str(child_hash)
+                )
             ):
                 from app.core.errors import AppError
 
                 raise AppError(
-                    "CONTENT_APPROVAL_STALE", "Согласование содержит устаревшую версию поста.", 409
+                    "STALE_APPROVAL_VERSION",
+                    "Согласование содержит устаревшую версию поста.",
+                    409,
                 )
             if status is ApprovalStatus.APPROVED:
                 child_version = await session.scalar(
@@ -322,8 +380,6 @@ async def _resolve_content(
     approval.status = status
     approval.reviewed_by_user_id = user.id
     approval.comment = comment
-    from datetime import UTC, datetime
-
     approval.resolved_at = datetime.now(UTC)
     item.status = (
         ContentStatus.APPROVED if status is ApprovalStatus.APPROVED else ContentStatus.REJECTED
@@ -421,17 +477,37 @@ async def request_revision(
         raise AppError(
             "CONTENT_REVISION_NOT_SUPPORTED", "Этот тип контента нельзя дорабатывать.", 409
         )
-    approval = (
-        await session.execute(
-            select(Approval)
-            .where(
-                Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
-                Approval.object_id == content_id,
-                Approval.status == ApprovalStatus.PENDING,
+    pending_approvals = list(
+        (
+            await session.scalars(
+                select(Approval)
+                .where(
+                    Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
+                    Approval.object_id == content_id,
+                    Approval.status == ApprovalStatus.PENDING,
+                )
+                .with_for_update()
             )
-            .with_for_update()
-        )
-    ).scalar_one_or_none()
+        ).all()
+    )
+    current_version_id = str(item.current_version_id)
+    approval = next(
+        (
+            candidate
+            for candidate in pending_approvals
+            if str(candidate.subject_snapshot.get("content_version_id")) == current_version_id
+        ),
+        pending_approvals[0] if pending_approvals else None,
+    )
+    for stale in pending_approvals:
+        if approval is not None and stale.id != approval.id:
+            stale.status = ApprovalStatus.REVISION_REQUESTED
+            stale.comment = "Согласование автоматически заменено новой версией контента."
+            stale.resolved_at = datetime.now(UTC)
+            stale.metadata_ = {
+                **stale.metadata_,
+                "superseded_by_content_version_id": current_version_id,
+            }
     if approval is None:
         from app.core.errors import AppError
 
@@ -439,7 +515,11 @@ async def request_revision(
     if str(item.current_version_id) != str(approval.subject_snapshot.get("content_version_id")):
         from app.core.errors import AppError
 
-        raise AppError("CONTENT_APPROVAL_STALE", "Согласование относится к устаревшей версии.", 409)
+        raise AppError(
+            "STALE_APPROVAL_VERSION",
+            "Согласование относится к устаревшей версии контента.",
+            409,
+        )
     if item.content_type is ContentType.SOCIAL_POST_PACK:
         post_snapshots = approval.subject_snapshot.get("posts", [])
         if post_snapshots:
@@ -458,7 +538,9 @@ async def request_revision(
                 for child_id, post in zip(child_ids, post_snapshots, strict=False)
             ):
                 raise AppError(
-                    "CONTENT_APPROVAL_STALE", "Согласование содержит устаревшую версию поста.", 409
+                    "STALE_APPROVAL_VERSION",
+                    "Согласование содержит устаревшую версию поста.",
+                    409,
                 )
     existing = await session.scalar(
         select(Task).where(
@@ -510,8 +592,6 @@ async def request_revision(
     approval.status = ApprovalStatus.REVISION_REQUESTED
     approval.reviewed_by_user_id = user.id
     approval.comment = payload.comment
-    from datetime import UTC, datetime
-
     approval.resolved_at = datetime.now(UTC)
     task = await TaskService(session).create_task(
         TaskCreate(

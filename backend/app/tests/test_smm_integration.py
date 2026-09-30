@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 from datetime import UTC, datetime
 from uuid import UUID, uuid4
@@ -750,6 +751,19 @@ async def test_social_post_quality_blocks_forbidden_format_at_approval(
     assert version is not None
     original = version.content
     version.content = "**Неподходящий текст**"
+    approval = await db_session.scalar(
+        select(Approval).where(
+            Approval.object_id == pack.id,
+            Approval.status == ApprovalStatus.PENDING,
+        )
+    )
+    assert approval is not None
+    snapshot_posts = [dict(post) for post in approval.subject_snapshot["posts"]]
+    snapshot_post = next(
+        post for post in snapshot_posts if post["content_item_id"] == str(child.id)
+    )
+    snapshot_post["content_hash"] = hashlib.sha256(version.content.encode()).hexdigest()
+    approval.subject_snapshot = {**approval.subject_snapshot, "posts": snapshot_posts}
     await db_session.commit()
 
     with pytest.raises(AppError) as error:
@@ -862,7 +876,169 @@ async def test_pack_approval_rejects_stale_pack_or_child_version(
         await approve_content(
             pack.id, ContentApprovalRequest(comment="Согласовано"), user, db_session
         )
-    assert error.value.code == "CONTENT_APPROVAL_STALE"
+    assert error.value.code == "STALE_APPROVAL_VERSION"
+
+
+async def _social_post_with_pending_approval(
+    db_session: AsyncSession,
+) -> tuple[ContentItem, ContentVersion, Approval, Task, User]:
+    task, campaign, _article_version = await smm_fixture(db_session)
+    user = await db_session.scalar(select(User))
+    assert user is not None
+    post = ContentItem(
+        campaign_id=campaign.id,
+        source_task_id=task.id,
+        content_type=ContentType.SOCIAL_POST,
+        title="Диагностический пост",
+        status=ContentStatus.WAITING_APPROVAL,
+        author_agent_id=task.assigned_agent_id,
+        channel="TELEGRAM",
+        metadata_={},
+    )
+    db_session.add(post)
+    await db_session.flush()
+    first = ContentVersion(
+        content_item_id=post.id,
+        version_number=1,
+        content="Первая версия поста.",
+        structured_content={"text_markdown": "Первая версия поста."},
+        created_by_agent_id=task.assigned_agent_id,
+        generation_key="test-post-v1",
+    )
+    db_session.add(first)
+    await db_session.flush()
+    post.current_version_id = first.id
+    first_approval = await ApprovalService(db_session).create_content_approval(
+        post.id,
+        1,
+        {
+            "content_item_id": str(post.id),
+            "content_version_id": str(first.id),
+            "version_number": 1,
+            "content_hash": hashlib.sha256(first.content.encode()).hexdigest(),
+        },
+        task.assigned_agent_id,
+    )
+    await db_session.commit()
+    return post, first, first_approval, task, user
+
+
+@pytest.mark.asyncio
+async def test_new_social_post_revision_supersedes_pending_approval(
+    db_session: AsyncSession,
+) -> None:
+    post, first, old_approval, task, _user = await _social_post_with_pending_approval(db_session)
+    second = ContentVersion(
+        content_item_id=post.id,
+        version_number=2,
+        content="Вторая версия поста.",
+        structured_content={"text_markdown": "Вторая версия поста."},
+        created_by_agent_id=task.assigned_agent_id,
+        generation_key="test-post-v2",
+    )
+    db_session.add(second)
+    await db_session.flush()
+    post.current_version_id = second.id
+    new_approval = await ApprovalService(db_session).create_content_approval(
+        post.id,
+        2,
+        {
+            "content_item_id": str(post.id),
+            "content_version_id": str(second.id),
+            "version_number": 2,
+            "content_hash": hashlib.sha256(second.content.encode()).hexdigest(),
+        },
+        task.assigned_agent_id,
+    )
+    await db_session.commit()
+    await db_session.refresh(old_approval)
+    assert first.content == "Первая версия поста."
+    assert old_approval.status is ApprovalStatus.REVISION_REQUESTED
+    assert old_approval.metadata_["superseded_by_content_version_id"] == str(second.id)
+    assert new_approval.status is ApprovalStatus.PENDING
+    assert post.current_version_id == second.id
+    assert post.status is ContentStatus.WAITING_APPROVAL
+
+
+@pytest.mark.asyncio
+async def test_stale_approval_is_rejected_without_approving_current_version(
+    db_session: AsyncSession,
+) -> None:
+    post, _first, approval, task, user = await _social_post_with_pending_approval(db_session)
+    second = ContentVersion(
+        content_item_id=post.id,
+        version_number=2,
+        content="Вторая версия поста.",
+        structured_content={"text_markdown": "Вторая версия поста."},
+        created_by_agent_id=task.assigned_agent_id,
+        generation_key="test-post-v2-stale",
+    )
+    db_session.add(second)
+    await db_session.flush()
+    post.current_version_id = second.id
+    # Deliberately preserve a stale pending approval to exercise the defense.
+    with pytest.raises(AppError) as error:
+        await approve_content(
+            post.id,
+            ContentApprovalRequest(comment="Согласовано"),
+            user,
+            db_session,
+        )
+    assert error.value.code == "STALE_APPROVAL_VERSION"
+    await db_session.rollback()
+    await db_session.refresh(post)
+    assert post.status is ContentStatus.WAITING_APPROVAL
+
+
+@pytest.mark.asyncio
+async def test_current_version_approval_requires_exact_hash_and_approves(
+    db_session: AsyncSession,
+) -> None:
+    post, _first, _old_approval, task, user = await _social_post_with_pending_approval(db_session)
+    second = ContentVersion(
+        content_item_id=post.id,
+        version_number=2,
+        content="Вторая версия поста.",
+        structured_content={"text_markdown": "Вторая версия поста."},
+        created_by_agent_id=task.assigned_agent_id,
+        generation_key="test-post-v2-current",
+    )
+    db_session.add(second)
+    await db_session.flush()
+    post.current_version_id = second.id
+    await ApprovalService(db_session).create_content_approval(
+        post.id,
+        2,
+        {
+            "content_item_id": str(post.id),
+            "content_version_id": str(second.id),
+            "version_number": 2,
+            "content_hash": hashlib.sha256(second.content.encode()).hexdigest(),
+        },
+        task.assigned_agent_id,
+    )
+    await approve_content(
+        post.id,
+        ContentApprovalRequest(comment="Согласовано"),
+        user,
+        db_session,
+    )
+    await db_session.commit()
+    await db_session.refresh(post)
+    assert post.status is ContentStatus.APPROVED
+    approved = list(
+        (
+            await db_session.scalars(
+                select(Approval).where(
+                    Approval.object_id == post.id,
+                    Approval.status == ApprovalStatus.APPROVED,
+                )
+            )
+        ).all()
+    )
+    assert len(approved) == 1
+    assert approved[0].subject_snapshot["content_version_id"] == str(second.id)
+    assert approved[0].subject_snapshot["version_number"] == 2
 
 
 @pytest.mark.asyncio
@@ -934,7 +1110,7 @@ async def create_article_approval(session: AsyncSession) -> tuple[ContentItem, U
             "content_version_id": str(version.id),
             "version_number": version.version_number,
             "title": article.title,
-            "content_hash": "hash",
+            "content_hash": hashlib.sha256(version.content.encode()).hexdigest(),
         },
         article.author_agent_id,
     )
