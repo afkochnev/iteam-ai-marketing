@@ -184,6 +184,7 @@ class AgentRunService:
                     "plan_purpose": plan_item.purpose,
                     "plan_format": plan_item.format,
                     "plan_message_brief": plan_item.message_brief,
+                    "plan_channel": plan_item.channel.value,
                 }
         agent = task.assigned_agent
         if agent is None:
@@ -929,6 +930,7 @@ Brief статьи: {task.input_data.get("brief", "Не указан")}
                         "plan_purpose",
                         "plan_format",
                         "plan_message_brief",
+                        "plan_channel",
                         "publication_plan_source_claim_ids",
                     )
                     if task.input_data.get(key) is not None
@@ -939,7 +941,8 @@ Brief статьи: {task.input_data.get("brief", "Не указан")}
         )
         single_instruction = (
             "Это точечная генерация одного поста по утверждённому plan item. "
-            "Верни ровно один пост в пакете; не создавай пакетный календарь."
+            "Верни ровно один пост в пакете; не создавай пакетный календарь. "
+            "Канал уже зафиксирован приложением в plan_channel и не является полем ответа модели."
             if plan_item_mode
             else ""
         )
