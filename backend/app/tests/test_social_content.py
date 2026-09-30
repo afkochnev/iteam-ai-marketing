@@ -37,18 +37,41 @@ def test_social_pack_schema_and_registry() -> None:
     assert output_type_registry.get(TaskType.CREATE_SOCIAL_POSTS) is SocialPostPackResult
 
 
-def test_single_plan_item_schema_accepts_exactly_one_post() -> None:
+def test_single_plan_item_schema_accepts_exactly_one_post_without_channel() -> None:
     post = _post(1)
+    post.pop("channel")
     result = SingleSocialPostResult.model_validate(
         {"sufficient": True, "pack": {"strategy_summary": "x", "posts": [post]}}
     )
     assert result.pack is not None and len(result.pack.posts) == 1
+    assert not hasattr(result.pack.posts[0], "channel")
+
+
+def test_single_plan_item_schema_rejects_model_owned_channel() -> None:
+    with pytest.raises(ValidationError):
+        SingleSocialPostResult.model_validate(
+            {
+                "sufficient": True,
+                "pack": {"strategy_summary": "x", "posts": [_post(1, "VK")]},
+            }
+        )
+
+
+def test_bulk_social_post_contract_still_requires_channel() -> None:
+    posts = [_post(i) for i in range(1, 6)]
+    posts[0].pop("channel")
+    with pytest.raises(ValidationError):
+        SocialPostPackResult.model_validate(
+            {"sufficient": True, "pack": {"strategy_summary": "x", "posts": posts}}
+        )
 
 
 def test_plan_item_normalization_uses_single_post_contract() -> None:
+    post = _post(1)
+    post.pop("channel")
     payload = {
         "sufficient": True,
-        "pack": {"strategy_summary": "Диагностическая развилка", "posts": [_post(1)]},
+        "pack": {"strategy_summary": "Диагностическая развилка", "posts": [post]},
     }
 
     normalized = output_type_registry.normalize(
@@ -79,7 +102,13 @@ def test_plan_item_normalization_rejects_zero_or_multiple_posts() -> None:
         output_type_registry.normalize(
             {
                 "sufficient": True,
-                "pack": {"strategy_summary": "x", "posts": [_post(1), _post(2)]},
+                "pack": {
+                    "strategy_summary": "x",
+                    "posts": [
+                        {key: value for key, value in _post(1).items() if key != "channel"},
+                        {key: value for key, value in _post(2).items() if key != "channel"},
+                    ],
+                },
             },
             TaskType.CREATE_SOCIAL_POSTS,
             output_type=SingleSocialPostResult,
