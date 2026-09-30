@@ -808,9 +808,19 @@ class AgentRunService:
         except AppError as exc:
             logger.warning("Agent result rejected", extra={"run_id": str(run_id), "code": exc.code})
             await self.session.rollback()
-            await self.finish_failure(run_id, AgentRuntimeError(exc.code, exc.message))
+            await self.finish_failure(
+                run_id,
+                AgentRuntimeError(exc.code, exc.message),
+                result=result,
+            )
 
-    async def finish_failure(self, run_id: UUID, error: AgentRuntimeError) -> None:
+    async def finish_failure(
+        self,
+        run_id: UUID,
+        error: AgentRuntimeError,
+        *,
+        result: RuntimeResult | None = None,
+    ) -> None:
         run = await self.repository.get_by_id(run_id, lock=True)
         if run is None or run.status is not AgentRunStatus.RUNNING:
             return
@@ -819,6 +829,13 @@ class AgentRunService:
         accounting = dict((run.input_data or {}).get("model_request_accounting") or {})
         accounting["final_validation_state"] = error.code
         run.input_data = {**run.input_data, "model_request_accounting": accounting}
+        if result is not None:
+            run.request_count = result.request_count
+            run.input_tokens = result.input_tokens
+            run.output_tokens = result.output_tokens
+            run.total_tokens = result.total_tokens
+            run.trace_id = result.trace_id or run.trace_id
+            run.openai_response_id = result.openai_response_id
         if task and task.status is TaskStatus.CANCELLED:
             run.status = AgentRunStatus.CANCELLED
             run.completed_at = now
