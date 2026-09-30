@@ -510,9 +510,7 @@ async def test_smm_wrong_article_version_approval_does_not_unlock(
 
 
 @pytest.mark.asyncio
-async def test_plan_item_smm_binds_authoritative_vk_channel(
-    db_session: AsyncSession,
-) -> None:
+async def test_plan_item_smm_binds_authoritative_vk_channel(db_session: AsyncSession) -> None:
     task, campaign, article_version = await smm_fixture(db_session)
     user = await db_session.scalar(select(User))
     assert user is not None
