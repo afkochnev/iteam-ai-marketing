@@ -758,6 +758,12 @@ async def test_smm_rejects_hallucinated_social_provenance(
         "INVALID_SOCIAL_SOURCE",
         "INVALID_SOCIAL_SOURCE_SECTION",
     }
+    assert failed_run.request_count == 1
+    assert failed_run.input_tokens == 10
+    assert failed_run.output_tokens == 5
+    assert failed_run.total_tokens == 15
+    accounting = failed_run.input_data["model_request_accounting"]
+    assert accounting["final_validation_state"] == failed_run.error_code
     assert await db_session.scalar(select(func.count()).select_from(ContentItem)) == 1
 
 
