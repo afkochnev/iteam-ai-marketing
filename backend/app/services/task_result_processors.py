@@ -27,12 +27,14 @@ from app.models.knowledge_pack import (
     KnowledgePackItem,
     KnowledgePackStatus,
 )
+from app.models.publication_plan import PublicationPlan, PublicationPlanItem, PublicationPlanStatus
 from app.models.task import Task, TaskStatus, TaskType
 from app.repositories.knowledge_packs import KnowledgePackRepository
 from app.schemas.agent_outputs import (
     ArticleWritingResult,
     CampaignPlan,
     KnowledgeResearchResult,
+    SingleSocialPostResult,
     SocialPostPackResult,
 )
 from app.schemas.knowledge import KnowledgeSearchResult
@@ -634,7 +636,11 @@ class SocialPostResultProcessor:
         if existing:
             return
         try:
-            result = SocialPostPackResult.model_validate(output)
+            result = (
+                SingleSocialPostResult.model_validate(output)
+                if task.input_data.get("publication_plan_item_id")
+                else SocialPostPackResult.model_validate(output)
+            )
         except ValidationError as exc:
             raise AppError(
                 "INVALID_SOCIAL_POST_RESULT",
@@ -681,6 +687,118 @@ class SocialPostResultProcessor:
             await session.flush()
             return
         assert result.pack is not None
+        plan_item_id_raw = task.input_data.get("publication_plan_item_id")
+        if plan_item_id_raw:
+            plan_id = UUID(str(task.input_data.get("publication_plan_id")))
+            plan_item_id = UUID(str(plan_item_id_raw))
+            plan = await session.scalar(
+                select(PublicationPlan).where(
+                    PublicationPlan.id == plan_id,
+                    PublicationPlan.status == PublicationPlanStatus.APPROVED,
+                )
+            )
+            plan_item = await session.scalar(
+                select(PublicationPlanItem).where(
+                    PublicationPlanItem.id == plan_item_id,
+                    PublicationPlanItem.publication_plan_id == plan_id,
+                )
+            )
+            if plan is None or plan_item is None or len(result.pack.posts) != 1:
+                raise AppError(
+                    "INVALID_PUBLICATION_PLAN_ITEM",
+                    "Результат не соответствует утверждённому пункту плана.",
+                    422,
+                )
+            post = result.pack.posts[0]
+            if post.channel != plan_item.channel.value:
+                raise AppError(
+                    "INVALID_PUBLICATION_PLAN_ITEM",
+                    "Канал поста не соответствует пункту плана.",
+                    422,
+                )
+            generation_key = f"plan-item:{plan_item.id}"
+            existing_version = await session.scalar(
+                select(ContentVersion).where(
+                    ContentVersion.source_agent_run_id == run.id,
+                    ContentVersion.generation_key == generation_key,
+                )
+            )
+            if existing_version is not None:
+                return
+            child = ContentItem(
+                campaign_id=task.campaign_id,
+                source_task_id=task.id,
+                content_type=ContentType.SOCIAL_POST,
+                title=post.title,
+                status=ContentStatus.WAITING_APPROVAL,
+                author_agent_id=run.agent_id,
+                channel=ContentChannel(post.channel),
+                metadata_={
+                    "publication_plan_id": str(plan.id),
+                    "publication_plan_item_id": str(plan_item.id),
+                    "source_content_version_id": str(plan_item.source_content_version_id),
+                    "source_claim_ids": plan_item.source_claim_ids or [],
+                },
+            )
+            session.add(child)
+            await session.flush()
+            version = ContentVersion(
+                content_item_id=child.id,
+                version_number=1,
+                content=post.text_markdown,
+                structured_content=post.model_dump(mode="json"),
+                created_by_agent_id=run.agent_id,
+                source_agent_run_id=run.id,
+                generation_key=generation_key,
+                change_description="Social post generated from approved publication plan item",
+            )
+            session.add(version)
+            await session.flush()
+            child.current_version_id = version.id
+            session.add(
+                ContentDerivation(
+                    derived_content_version_id=version.id,
+                    source_content_version_id=plan_item.source_content_version_id,
+                    source_section_key="publication_plan_item",
+                )
+            )
+            await ApprovalService(session).create_content_approval(
+                child.id,
+                1,
+                {
+                    "content_item_id": str(child.id),
+                    "content_version_id": str(version.id),
+                    "version_number": 1,
+                    "content_hash": hashlib.sha256(version.content.encode()).hexdigest(),
+                },
+                run.agent_id,
+            )
+            await TaskService(session).complete_task(
+                task.id,
+                {
+                    "content_item_id": str(child.id),
+                    "content_version_id": str(version.id),
+                    "content_type": "SOCIAL_POST",
+                    "publication_plan_id": str(plan.id),
+                    "publication_plan_item_id": str(plan_item.id),
+                },
+                commit=False,
+            )
+            await ActivityLogService(session).record(
+                "PUBLICATION_PLAN_ITEM_USED_FOR_SMM",
+                operation_key=f"publication-plan-item-used:{plan_item.id}",
+                campaign_id=task.campaign_id,
+                task_id=task.id,
+                agent_id=run.agent_id,
+                content_item_id=child.id,
+                metadata={
+                    "publication_plan_id": str(plan.id),
+                    "publication_plan_item_id": str(plan_item.id),
+                    "source_content_version_id": str(plan_item.source_content_version_id),
+                    "source_claim_ids": plan_item.source_claim_ids or [],
+                },
+            )
+            return
         campaign = await session.get(Campaign, task.campaign_id)
         strategy = (campaign.strategy if campaign else {}) or {}
         social = strategy.get("social_strategy", {})

@@ -5,7 +5,7 @@ from pydantic import ValidationError
 
 from app.agents.output_registry import output_type_registry
 from app.models.task import TaskType
-from app.schemas.agent_outputs import SocialPostPackResult
+from app.schemas.agent_outputs import SingleSocialPostResult, SocialPostPackResult
 
 
 def _post(
@@ -35,6 +35,24 @@ def test_social_pack_schema_and_registry() -> None:
     result = SocialPostPackResult.model_validate(_valid())
     assert result.sufficient
     assert output_type_registry.get(TaskType.CREATE_SOCIAL_POSTS) is SocialPostPackResult
+
+
+def test_single_plan_item_schema_accepts_exactly_one_post() -> None:
+    post = _post(1)
+    result = SingleSocialPostResult.model_validate(
+        {"sufficient": True, "pack": {"strategy_summary": "x", "posts": [post]}}
+    )
+    assert result.pack is not None and len(result.pack.posts) == 1
+
+
+def test_single_plan_item_schema_rejects_multiple_posts() -> None:
+    with pytest.raises(ValidationError):
+        SingleSocialPostResult.model_validate(
+            {
+                "sufficient": True,
+                "pack": {"strategy_summary": "x", "posts": [_post(1), _post(2)]},
+            }
+        )
 
 
 def test_social_pack_schema_accepts_global_order_for_nine_posts() -> None:

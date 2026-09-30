@@ -2,6 +2,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from agents import OpenAIResponsesModel, RunConfig, Runner
@@ -31,6 +32,7 @@ class _InstrumentedResponsesModel(OpenAIResponsesModel):
         final_timeout: float,
         deadline: float,
         repair: bool,
+        session_factory: Any = None,
         **kwargs: Any,
     ):
         super().__init__(*args, **kwargs)
@@ -41,10 +43,36 @@ class _InstrumentedResponsesModel(OpenAIResponsesModel):
         self._final_timeout = final_timeout
         self._deadline = deadline
         self._repair = repair
+        self._session_factory = session_factory
+
+    async def _record_external_request(self) -> None:
+        """Persist per-turn accounting independently of the main worker session."""
+
+        if self._session_factory is None:
+            return
+        from sqlalchemy import select
+
+        from app.models.agent_run import AgentRun
+
+        async with self._session_factory() as session:
+            run = await session.scalar(
+                select(AgentRun).where(AgentRun.id == self._agent_run_id).with_for_update()
+            )
+            if run is None:
+                return
+            accounting = dict((run.input_data or {}).get("model_request_accounting") or {})
+            accounting["external_model_request_count"] = (
+                int(accounting.get("external_model_request_count", 0)) + 1
+            )
+            accounting["sdk_turn_count"] = int(accounting.get("sdk_turn_count", 0)) + 1
+            accounting["last_model_request_at"] = datetime.now(UTC).isoformat()
+            run.input_data = {**run.input_data, "model_request_accounting": accounting}
+            await session.commit()
 
     async def get_response(self, *args: Any, **kwargs: Any) -> Any:
         self._turn_index += 1
         turn = self._turn_index
+        await self._record_external_request()
         started = asyncio.get_running_loop().time()
         configured_tools = kwargs.get("tools")
         if configured_tools is None and len(args) > 3:
@@ -239,6 +267,36 @@ class AgentRuntimeError(Exception):
 
 
 class AgentRunnerService:
+    async def _record_generation_attempt(
+        self, context: AgentRuntimeContext, *, repair: bool
+    ) -> None:
+        if context.session_factory is None:
+            return
+        from sqlalchemy import select
+
+        from app.models.agent_run import AgentRun
+
+        async with context.session_factory() as session:
+            run = await session.scalar(
+                select(AgentRun).where(AgentRun.id == context.agent_run_id).with_for_update()
+            )
+            if run is None:
+                return
+            accounting = dict((run.input_data or {}).get("model_request_accounting") or {})
+            logical = int(accounting.get("logical_generation_attempt_count", 0)) + 1
+            if logical > 2:
+                raise AgentRuntimeError(
+                    "AGENT_REQUEST_BOUND_EXCEEDED",
+                    "Превышен предел логических генераций агента.",
+                )
+            accounting["logical_generation_attempt_count"] = logical
+            if repair:
+                accounting["repair_request_count"] = (
+                    int(accounting.get("repair_request_count", 0)) + 1
+                )
+            run.input_data = {**run.input_data, "model_request_accounting": accounting}
+            await session.commit()
+
     async def run(
         self,
         snapshot: AgentSnapshot,
@@ -268,6 +326,7 @@ class AgentRunnerService:
             else settings.agent_max_turns
         )
         for repair_attempt in range(settings.agent_output_repair_attempts + 1):
+            await self._record_generation_attempt(context, repair=repair_attempt > 0)
             attempt_tool_names = enabled_tool_names
             if repair_attempt > 0 and context.content_version_cache:
                 attempt_tool_names = []
@@ -303,6 +362,7 @@ class AgentRunnerService:
                 ),
                 deadline=deadline,
                 repair=repair_attempt > 0,
+                session_factory=context.session_factory,
             )
             config = RunConfig(
                 model=sdk_model,

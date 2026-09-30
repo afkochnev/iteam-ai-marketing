@@ -40,9 +40,11 @@ from app.models.knowledge_pack import (
     KnowledgePackItem,
     KnowledgePackStatus,
 )
+from app.models.publication_plan import PublicationPlan, PublicationPlanItem, PublicationPlanStatus
 from app.models.task import Task, TaskStatus, TaskType
 from app.repositories.agent_runs import AgentRunRepository
 from app.repositories.tasks import TaskRepository
+from app.schemas.agent_outputs import SingleSocialPostResult
 from app.services.activity_log_service import ActivityLogService
 from app.services.agent_runner_service import AgentRuntimeError, RuntimeResult
 from app.services.retry_policy import can_retry, retry_exhausted
@@ -147,6 +149,42 @@ class AgentRunService:
                 **task.input_data,
                 "source_content_version_id": str(approved_version_id),
             }
+            if task.input_data.get("publication_plan_item_id"):
+                plan_item = await self.session.scalar(
+                    select(PublicationPlanItem).where(
+                        PublicationPlanItem.id
+                        == UUID(str(task.input_data["publication_plan_item_id"]))
+                    )
+                )
+                plan = await self.session.scalar(
+                    select(PublicationPlan).where(
+                        PublicationPlan.id == UUID(str(task.input_data["publication_plan_id"])),
+                        PublicationPlan.status == PublicationPlanStatus.APPROVED,
+                        PublicationPlan.campaign_id == task.campaign_id,
+                    )
+                )
+                if (
+                    plan is None
+                    or plan_item is None
+                    or plan_item.publication_plan_id != plan.id
+                    or plan_item.source_content_version_id != approved_version_id
+                ):
+                    raise AppError(
+                        "PUBLICATION_PLAN_SOURCE_INVALID",
+                        "Plan item не связан с точной утверждённой версией статьи.",
+                        409,
+                    )
+                task.input_data = {
+                    **task.input_data,
+                    "publication_plan_id": str(plan.id),
+                    "publication_plan_item_id": str(plan_item.id),
+                    "publication_plan_source_claim_ids": plan_item.source_claim_ids or [],
+                    "plan_topic": plan_item.topic,
+                    "plan_angle": plan_item.angle,
+                    "plan_purpose": plan_item.purpose,
+                    "plan_format": plan_item.format,
+                    "plan_message_brief": plan_item.message_brief,
+                }
         agent = task.assigned_agent
         if agent is None:
             raise AppError("TASK_AGENT_NOT_ASSIGNED", "Задаче не назначен агент.", 409)
@@ -415,6 +453,27 @@ class AgentRunService:
                             str(item) for item in allowed_content_version_ids
                         ],
                         "revision_target_type": task.input_data.get("revision_target_type"),
+                        "model_request_accounting": {
+                            "logical_generation_attempt_count": 0,
+                            "external_model_request_count": 0,
+                            "repair_request_count": 0,
+                            "sdk_turn_count": 0,
+                            "last_model_request_at": None,
+                            "final_validation": None,
+                        },
+                        **(
+                            {
+                                "publication_plan_id": str(task.input_data["publication_plan_id"]),
+                                "publication_plan_item_id": str(
+                                    task.input_data["publication_plan_item_id"]
+                                ),
+                                "publication_plan_source_claim_ids": task.input_data.get(
+                                    "publication_plan_source_claim_ids", []
+                                ),
+                            }
+                            if task.input_data.get("publication_plan_item_id")
+                            else {}
+                        ),
                         **(
                             {
                                 "feedback_analysis_id": str(feedback_analysis_id),
@@ -456,10 +515,15 @@ class AgentRunService:
         try:
             from app.workers.agent_worker import execute_agent_run
 
-            if countdown > 0:
-                result = execute_agent_run.apply_async(args=[str(run.id)], countdown=countdown)
-            else:
+            queue = "ai_live_test" if run.input_data.get("isolated_ai_execution") else None
+            if queue is None and countdown == 0:
                 result = execute_agent_run.delay(str(run.id))
+            elif countdown > 0:
+                result = execute_agent_run.apply_async(
+                    args=[str(run.id)], countdown=countdown, queue=queue
+                )
+            else:
+                result = execute_agent_run.apply_async(args=[str(run.id)], queue=queue)
             await self.repository.update(run, {"queue_job_id": result.id})
             await self.session.commit()
         except Exception as exc:
@@ -668,12 +732,17 @@ class AgentRunService:
             and task.input_data.get("revision_target_type") == ContentType.SOCIAL_POST_PACK.value
             else task.task_type
         )
+        output_type = (
+            SingleSocialPostResult
+            if task.input_data.get("publication_plan_item_id")
+            else output_type_registry.get(output_task_type)
+        )
         snapshot = AgentSnapshot(
             agent.name,
             run.prompt_snapshot,
             run.model,
             enabled,
-            output_type_registry.get(output_task_type),
+            output_type,
         )
         await self.session.commit()
         return (
@@ -834,7 +903,35 @@ Brief статьи: {task.input_data.get("brief", "Не указан")}
             "social_strategy": (campaign.strategy or {}).get("social_strategy", {})
         }
         social_strategy = strategy_snapshot.get("social_strategy", {})
-        expected_count = int(social_strategy.get("post_count", 0) or 0)
+        plan_item_mode = bool(task.input_data.get("publication_plan_item_id"))
+        expected_count = 1 if plan_item_mode else int(social_strategy.get("post_count", 0) or 0)
+        plan_context = (
+            "План публикаций: "
+            + str(
+                {
+                    key: task.input_data.get(key)
+                    for key in (
+                        "publication_plan_id",
+                        "publication_plan_item_id",
+                        "plan_topic",
+                        "plan_angle",
+                        "plan_purpose",
+                        "plan_format",
+                        "plan_message_brief",
+                        "publication_plan_source_claim_ids",
+                    )
+                    if task.input_data.get(key) is not None
+                }
+            )
+            if plan_item_mode
+            else ""
+        )
+        single_instruction = (
+            "Это точечная генерация одного поста по утверждённому plan item. "
+            "Верни ровно один пост в пакете; не создавай пакетный календарь."
+            if plan_item_mode
+            else ""
+        )
         allowed_channels = list(social_strategy.get("channels", []))
         order_example_parts = []
         for index in range(min(expected_count, 9)):
@@ -845,6 +942,8 @@ Brief статьи: {task.input_data.get("brief", "Не указан")}
         order_example = ", ".join(order_example_parts)
         revision_context = f"""
 Одобренный снимок стратегии (версия {task.input_data.get("strategy_version")}): {strategy_snapshot}
+{single_instruction}
+{plan_context}
 Соблюдай social_strategy из снимка: точное число постов и разрешённые каналы.
 Для этого пакета publish_order глобален для всего пакета: значения должны быть
 ровно 1..{expected_count}, уникальны и не должны начинаться заново для каждого канала.

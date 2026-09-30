@@ -293,3 +293,33 @@ class SocialPostPackResult(BaseModel):
         if not self.sufficient and not self.gaps:
             raise ValueError("При недостатке материалов необходимо указать пробелы.")
         return self
+
+
+class SingleSocialPostPackDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    strategy_summary: str = Field(min_length=1, max_length=20_000)
+    posts: list[SocialPostDraft] = Field(min_length=1, max_length=1)
+
+    @model_validator(mode="after")
+    def validate_single_post(self) -> "SingleSocialPostPackDraft":
+        post = self.posts[0]
+        if post.suggested_publish_order != 1:
+            raise ValueError("Для plan item порядок поста должен быть равен 1.")
+        return self
+
+
+class SingleSocialPostResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    sufficient: bool
+    pack: SingleSocialPostPackDraft | None = None
+    gaps: list[str] = Field(default_factory=list, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_semantics(self) -> "SingleSocialPostResult":
+        if self.sufficient and self.pack is None:
+            raise ValueError("Достаточный результат должен содержать пост.")
+        if not self.sufficient and self.pack is not None:
+            raise ValueError("Недостаточный результат не должен содержать пост.")
+        if not self.sufficient and not self.gaps:
+            raise ValueError("При недостатке материалов необходимо указать пробелы.")
+        return self
