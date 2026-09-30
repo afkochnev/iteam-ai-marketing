@@ -240,10 +240,9 @@ class SocialPostSourceRef(BaseModel):
     section_key: str = Field(min_length=1, max_length=100)
 
 
-class SocialPostDraft(BaseModel):
+class SocialPostBaseDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
     key: str = Field(min_length=1, max_length=100)
-    channel: str
     title: str = Field(min_length=1, max_length=255)
     text_markdown: str = Field(min_length=1, max_length=20_000)
     cta: str = Field(default="", max_length=5_000)
@@ -251,13 +250,21 @@ class SocialPostDraft(BaseModel):
     suggested_publish_order: int = Field(ge=1)
 
     @model_validator(mode="after")
-    def validate_plain_text_contract(self) -> "SocialPostDraft":
+    def validate_plain_text_contract(self) -> "SocialPostBaseDraft":
         errors = social_text_quality_errors(self.text_markdown)
         if self.cta:
             errors.extend(social_text_quality_errors(self.cta))
         if errors:
             raise ValueError("Недопустимое форматирование Social Post: " + ", ".join(errors))
         return self
+
+
+class SocialPostDraft(SocialPostBaseDraft):
+    channel: str
+
+
+class PlanSocialPostDraft(SocialPostBaseDraft):
+    """Plan-bound post content; channel is owned by PublicationPlanItem."""
 
 
 class SocialPostPackDraft(BaseModel):
@@ -298,7 +305,7 @@ class SocialPostPackResult(BaseModel):
 class SingleSocialPostPackDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
     strategy_summary: str = Field(min_length=1, max_length=20_000)
-    posts: list[SocialPostDraft] = Field(min_length=1, max_length=1)
+    posts: list[PlanSocialPostDraft] = Field(min_length=1, max_length=1)
 
     @model_validator(mode="after")
     def validate_single_post(self) -> "SingleSocialPostPackDraft":
