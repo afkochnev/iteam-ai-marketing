@@ -166,4 +166,6 @@ async def test_system_status_is_admin_only(client: AsyncClient, db_session: Asyn
     assert (await client.get("/api/v1/system/status")).status_code == 403
     await client.post("/api/v1/auth/logout")
     await create_user_and_login(client, db_session, UserRole.ADMIN)
-    assert (await client.get("/api/v1/system/status")).status_code == 200
+    response = await client.get("/api/v1/system/status")
+    assert response.status_code == 200
+    assert "release_sha" in response.json()

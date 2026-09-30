@@ -325,7 +325,12 @@ class AgentRunnerService:
             if task_type is TaskType.CREATE_SOCIAL_POSTS
             else settings.agent_max_turns
         )
-        for repair_attempt in range(settings.agent_output_repair_attempts + 1):
+        repair_limit = (
+            settings.smm_agent_output_repair_attempts
+            if task_type is TaskType.CREATE_SOCIAL_POSTS
+            else settings.agent_output_repair_attempts
+        )
+        for repair_attempt in range(repair_limit + 1):
             await self._record_generation_attempt(context, repair=repair_attempt > 0)
             attempt_tool_names = enabled_tool_names
             if repair_attempt > 0 and context.content_version_cache:

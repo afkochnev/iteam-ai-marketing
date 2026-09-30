@@ -459,7 +459,7 @@ class AgentRunService:
                             "repair_request_count": 0,
                             "sdk_turn_count": 0,
                             "last_model_request_at": None,
-                            "final_validation": None,
+                            "final_validation_state": None,
                         },
                         **(
                             {
@@ -472,6 +472,11 @@ class AgentRunService:
                                 ),
                             }
                             if task.input_data.get("publication_plan_item_id")
+                            else {}
+                        ),
+                        **(
+                            {"isolated_ai_execution": True}
+                            if task.input_data.get("isolated_ai_execution")
                             else {}
                         ),
                         **(
@@ -783,6 +788,9 @@ class AgentRunService:
             "openai_response_id": result.openai_response_id,
             "completed_at": datetime.now(UTC),
         }
+        accounting = dict((run.input_data or {}).get("model_request_accounting") or {})
+        accounting["final_validation_state"] = "COMPLETED_VALIDATED"
+        run.input_data = {**run.input_data, "model_request_accounting": accounting}
         if task.status is TaskStatus.CANCELLED:
             values["status"] = AgentRunStatus.CANCELLED
             await self.repository.update(run, values)
@@ -807,6 +815,9 @@ class AgentRunService:
             return
         task = await self.session.get(Task, run.task_id, with_for_update=True)
         now = datetime.now(UTC)
+        accounting = dict((run.input_data or {}).get("model_request_accounting") or {})
+        accounting["final_validation_state"] = error.code
+        run.input_data = {**run.input_data, "model_request_accounting": accounting}
         if task and task.status is TaskStatus.CANCELLED:
             run.status = AgentRunStatus.CANCELLED
             run.completed_at = now

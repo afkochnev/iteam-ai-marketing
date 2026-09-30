@@ -52,6 +52,16 @@ def test_celery_redelivery_settings_match_claimed_work_safety() -> None:
     assert celery_app.conf.task_serializer == "json"
 
 
+def test_smm_repair_budget_is_exactly_one() -> None:
+    from app.core.config import Settings
+
+    settings = Settings(smm_agent_output_repair_attempts=1)
+    settings.validate_production()
+    invalid = Settings(smm_agent_output_repair_attempts=2)
+    with pytest.raises(RuntimeError, match="SMM_AGENT_OUTPUT_REPAIR_ATTEMPTS"):
+        invalid.validate_production()
+
+
 @pytest.mark.asyncio
 async def test_readiness_dependency_failures_are_not_ready(
     monkeypatch: pytest.MonkeyPatch,

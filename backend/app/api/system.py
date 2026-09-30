@@ -101,6 +101,8 @@ async def system_status(_admin: AdminUser, session: SessionDependency) -> dict[s
     )
     return {
         "version": settings.app_version,
+        "release_sha": settings.build_sha,
+        "build_sha": settings.build_sha,
         "environment": settings.app_env,
         "tasks": task_counts,
         "agent_runs": run_counts,

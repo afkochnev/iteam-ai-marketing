@@ -27,7 +27,10 @@ services:
       retries: 10
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        BUILD_SHA: ${BUILD_SHA:-unknown}
     env_file: .env
     ports:
       - "8000:8000"
@@ -43,7 +46,10 @@ services:
       retries: 10
 
   worker:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        BUILD_SHA: ${BUILD_SHA:-unknown}
     command: celery -A app.workers.celery_app:celery_app worker --beat --loglevel=INFO
     env_file: .env
     depends_on:
