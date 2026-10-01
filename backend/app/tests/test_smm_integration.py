@@ -539,9 +539,7 @@ async def test_plan_item_smm_binds_authoritative_vk_channel(
         angle="Различить стратегическую и сценарную неопределённость",
         purpose="Помочь руководителю выбрать формат обсуждения",
         format="diagnostic",
-        message_brief=(
-            "Показать, где именно находится неопределённость управленческой команды."
-        ),
+        message_brief=("Показать, где именно находится неопределённость управленческой команды."),
         source_claim_ids=["article_test_p01"],
         source_support_summary="Проверочный источник.",
         status=PublicationPlanItemStatus.PLANNED,
@@ -607,8 +605,7 @@ async def test_plan_item_smm_binds_authoritative_vk_channel(
     assert version is not None
     assert version.structured_content["channel"] == "VK"
     assert (
-        version.structured_content["text_markdown"]
-        == output["pack"]["posts"][0]["text_markdown"]
+        version.structured_content["text_markdown"] == output["pack"]["posts"][0]["text_markdown"]
     )
 
 
