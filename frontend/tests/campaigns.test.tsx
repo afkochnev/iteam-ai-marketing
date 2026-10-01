@@ -6,14 +6,14 @@ import EditCampaignPage from "../app/campaigns/[id]/edit/page";
 import NewCampaignPage from "../app/campaigns/new/page";
 import CampaignsPage from "../app/campaigns/page";
 
-const { replace, push, list, get, create, update, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList, contentList, contentGet, activityList, publicationList, publicationCalendar, publicationCreate, publicationApprove, publicationSchedule, publicationCancel, publicationPublishNow, publicationRetry, publicationReconcilePublished, publicationReconcileNotPublished } = vi.hoisted(() => ({
-  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(), contentList: vi.fn(), contentGet: vi.fn(), activityList: vi.fn(), publicationList: vi.fn(), publicationCalendar: vi.fn(), publicationCreate: vi.fn(), publicationApprove: vi.fn(), publicationSchedule: vi.fn(), publicationCancel: vi.fn(), publicationPublishNow: vi.fn(), publicationRetry: vi.fn(), publicationReconcilePublished: vi.fn(), publicationReconcileNotPublished: vi.fn(),
+const { replace, push, list, get, create, update, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList, contentList, contentGet, activityList, publicationList, publicationCalendar, publicationCreate, publicationScheduleContent, publicationApprove, publicationSchedule, publicationCancel, publicationPublishNow, publicationRetry, publicationReconcilePublished, publicationReconcileNotPublished } = vi.hoisted(() => ({
+  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(), contentList: vi.fn(), contentGet: vi.fn(), activityList: vi.fn(), publicationList: vi.fn(), publicationCalendar: vi.fn(), publicationCreate: vi.fn(), publicationScheduleContent: vi.fn(), publicationApprove: vi.fn(), publicationSchedule: vi.fn(), publicationCancel: vi.fn(), publicationPublishNow: vi.fn(), publicationRetry: vi.fn(), publicationReconcilePublished: vi.fn(), publicationReconcileNotPublished: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace, push }), useParams: () => ({ id: "campaign-1" }) }));
 vi.mock("@/components/auth-provider", () => ({ useAuth: () => ({ user: { role: "ADMIN" }, loading: false }) }));
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
-  return { ...actual, campaignsApi: { list, get, create, update, archive, generateStrategy, approveStrategy, requestStrategyRevision: requestRevision, rejectStrategy }, approvalsApi: { list: approvalList, get: vi.fn() }, tasksApi: { ...actual.tasksApi, list: taskList }, contentApi: { ...actual.contentApi, list: contentList, get: contentGet }, activitiesApi: { list: activityList }, publicationsApi: { listCampaign: publicationList, calendar: publicationCalendar, approve: publicationApprove, create: publicationCreate, schedule: publicationSchedule, cancel: publicationCancel, publishNow: publicationPublishNow, retry: publicationRetry, reconcilePublished: publicationReconcilePublished, reconcileNotPublished: publicationReconcileNotPublished } };
+  return { ...actual, campaignsApi: { list, get, create, update, archive, generateStrategy, approveStrategy, requestStrategyRevision: requestRevision, rejectStrategy }, approvalsApi: { list: approvalList, get: vi.fn() }, tasksApi: { ...actual.tasksApi, list: taskList }, contentApi: { ...actual.contentApi, list: contentList, get: contentGet }, activitiesApi: { list: activityList }, publicationsApi: { listCampaign: publicationList, calendar: publicationCalendar, approve: publicationApprove, create: publicationCreate, scheduleContent: publicationScheduleContent, schedule: publicationSchedule, cancel: publicationCancel, publishNow: publicationPublishNow, retry: publicationRetry, reconcilePublished: publicationReconcilePublished, reconcileNotPublished: publicationReconcileNotPublished } };
 });
 
 const campaign = {
@@ -282,5 +282,55 @@ describe("Campaigns UI", () => {
     expect(screen.getByRole("button", { name: "Подтвердить публикацию" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Подтвердить отсутствие публикации" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Повторить" })).not.toBeInTheDocument();
+  });
+});
+
+
+describe("Plan-bound publication scheduling", () => {
+  const planned = { id: "post-plan", campaign_id: campaign.id, content_type: "SOCIAL_POST", title: "Плановый пост", status: "APPROVED", current_version_number: 1, current_version_id: "exact-v1", channel: "VK", publication_plan_item_id: "plan-item-2", plan_channel: "VK", plan_scheduled_at: "2026-10-06T12:00:00Z", created_at: campaign.created_at, updated_at: campaign.updated_at };
+  const scheduled = { id: "scheduled-1", content_item_id: planned.id, content_version_id: "exact-v1", channel: "VK", status: "SCHEDULED", scheduled_at: planned.plan_scheduled_at, publication_plan_item_id: "plan-item-2" };
+  beforeEach(() => { vi.clearAllMocks(); get.mockResolvedValue(campaign); taskList.mockResolvedValue([]); approvalList.mockResolvedValue([]); activityList.mockResolvedValue([]); contentList.mockResolvedValue([planned]); publicationList.mockResolvedValue([]); publicationCalendar.mockResolvedValue([]); });
+  afterEach(() => cleanup());
+
+  it("shows browser-local plan context and sends only content ID; displays scheduled calendar", async () => {
+    const { formatDateTime } = await import("../lib/campaigns");
+    publicationScheduleContent.mockImplementation(async () => { publicationList.mockResolvedValue([scheduled]); publicationCalendar.mockResolvedValue([{ ...scheduled, publication_id: scheduled.id, title: planned.title }]); return scheduled; });
+    render(<CampaignDetailsPage />);
+    expect(await screen.findByText(`План: VK · ${formatDateTime(planned.plan_scheduled_at)}`)).toBeInTheDocument();
+    expect(screen.getByText("Статус текста: APPROVED")).toBeInTheDocument();
+    expect(screen.getByText("Публикация: ещё не запланирована")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Запланировать публикацию" }));
+    await waitFor(() => expect(publicationScheduleContent).toHaveBeenCalledWith(planned.id));
+    expect(await screen.findByText(`Публикация запланирована на ${formatDateTime(planned.plan_scheduled_at)} · VK`)).toBeInTheDocument();
+    expect(await screen.findByRole("list", { name: "Предстоящие публикации" })).toHaveTextContent(planned.title);
+    expect(screen.queryByRole("button", { name: "Запланировать публикацию" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Опубликовать сейчас" })).not.toBeInTheDocument();
+    expect(publicationCreate).not.toHaveBeenCalled(); expect(publicationPublishNow).not.toHaveBeenCalled();
+    const [, from, to] = publicationCalendar.mock.calls[0];
+    expect(new Date(to).getTime()).toBeGreaterThan(Date.now());
+    expect(new Date(to).getTime()-new Date(from).getTime()).toBeLessThan(90*86400000);
+  });
+
+  it("does not offer duplicate scheduling for exact version already scheduled", async () => {
+    publicationList.mockResolvedValue([scheduled]); render(<CampaignDetailsPage />);
+    expect(await screen.findByText(/Публикация запланирована на/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Запланировать публикацию" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Назначить \/ перенести" })).not.toBeInTheDocument();
+  });
+
+  it("explains overdue schedule without publishing", async () => {
+    const message="Плановая дата уже прошла. Выберите отдельное действие для публикации сейчас или измените план.";
+    publicationScheduleContent.mockRejectedValue(new Error(message)); render(<CampaignDetailsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Запланировать публикацию" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(message);
+    expect(publicationPublishNow).not.toHaveBeenCalled();
+  });
+
+  it("does not treat a published post as scheduled", async () => {
+    publicationList.mockResolvedValue([{ ...scheduled, status: "PUBLISHED" }]);
+    publicationCalendar.mockResolvedValue([{ ...scheduled, publication_id: scheduled.id, title: planned.title, status: "PUBLISHED" }]);
+    render(<CampaignDetailsPage />);
+    expect(await screen.findByText("Запланированных публикаций нет.")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Запланировать публикацию" })).not.toBeInTheDocument();
   });
 });

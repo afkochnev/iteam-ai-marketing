@@ -20,6 +20,7 @@ from app.models.content import (
     ContentVersionSource,
 )
 from app.models.knowledge_pack import KnowledgePackItem
+from app.models.publication_plan import PublicationPlanItem
 from app.models.task import Task, TaskStatus, TaskType
 from app.models.user import User
 from app.repositories.agents import AgentRepository
@@ -68,7 +69,24 @@ def _summary(version: Any) -> ContentVersionSummary:
     )
 
 
-def _response(item: Any, approvals: list[Approval] | None = None) -> ContentResponse:
+async def _plan_context(session: AsyncSession, item: ContentItem) -> dict[str, Any]:
+    raw = (item.metadata_ or {}).get("publication_plan_item_id")
+    try:
+        item_id = UUID(str(raw)) if raw else None
+    except ValueError:
+        item_id = None
+    plan_item = await session.get(PublicationPlanItem, item_id) if item_id else None
+    return {
+        "current_version_id": item.current_version_id,
+        "publication_plan_item_id": item_id,
+        "plan_channel": plan_item.channel.value if plan_item else None,
+        "plan_scheduled_at": plan_item.scheduled_at if plan_item else None,
+    }
+
+
+def _response(
+    item: Any, approvals: list[Approval] | None = None, plan_context: dict[str, Any] | None = None
+) -> ContentResponse:
     versions = sorted(item.versions, key=lambda value: value.version_number)
     current = next((version for version in versions if version.id == item.current_version_id), None)
     current_response = (
@@ -105,6 +123,7 @@ def _response(item: Any, approvals: list[Approval] | None = None) -> ContentResp
         parent_content_item_id=item.parent_content_item_id,
         channel=item.channel,
         approved_version_id=approved_version_id,
+        **(plan_context or {}),
         source_task_id=item.source_task_id,
         author_agent_id=item.author_agent_id,
         current_version=current_response,
@@ -154,6 +173,7 @@ async def list_content(
             parent_content_item_id=item.parent_content_item_id,
             channel=item.channel,
             approved_version_id=None,
+            **await _plan_context(session, item),
         )
         for item in items
     ]
@@ -190,7 +210,7 @@ async def get_content(
         )
         if parent_approval is not None:
             approvals.append(parent_approval)
-    return _response(item, approvals)
+    return _response(item, approvals, await _plan_context(session, item))
 
 
 @router.get("/{content_id}/versions", response_model=list[ContentVersionSummary])

@@ -52,6 +52,10 @@ async def _dispatch_publications() -> None:
                         select(Publication.id)
                         .where(
                             Publication.status == PublicationStatus.SCHEDULED,
+                            Publication.approved_for_publish_at.is_not(None),
+                            Publication.approved_for_publish_by.is_not(None),
+                            Publication.execution_token.is_(None),
+                            Publication.failure_code.is_(None),
                             Publication.scheduled_at <= datetime.now(UTC),
                         )
                         .with_for_update(skip_locked=True)

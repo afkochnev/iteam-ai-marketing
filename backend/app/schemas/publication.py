@@ -63,6 +63,7 @@ class PublicationResponse(BaseModel):
     channel: ContentChannel
     status: PublicationStatus
     scheduled_at: datetime | None
+    publication_plan_item_id: UUID | None = None
     approved_for_publish_at: datetime | None
     approved_for_publish_by: UUID | None
     external_id: str | None
