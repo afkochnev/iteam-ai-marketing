@@ -1,7 +1,7 @@
 import asyncio
 import hashlib
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
@@ -21,6 +21,7 @@ from app.models.agent_run import AgentRun, AgentRunStatus, ToolCall, ToolCallSta
 from app.models.approval import Approval, ApprovalObjectType, ApprovalStatus
 from app.models.campaign import Campaign, CampaignStatus
 from app.models.content import (
+    ContentChannel,
     ContentDerivation,
     ContentItem,
     ContentStatus,
@@ -28,6 +29,12 @@ from app.models.content import (
     ContentVersion,
 )
 from app.models.marketing_feedback import FeedbackAnalysisStatus
+from app.models.publication_plan import (
+    PublicationPlan,
+    PublicationPlanItem,
+    PublicationPlanItemStatus,
+    PublicationPlanStatus,
+)
 from app.models.task import Task, TaskStatus, TaskType
 from app.models.user import User, UserRole
 from app.repositories.users import UserRepository
@@ -503,6 +510,106 @@ async def test_smm_wrong_article_version_approval_does_not_unlock(
 
 
 @pytest.mark.asyncio
+async def test_plan_item_smm_binds_authoritative_vk_channel(
+    db_session: AsyncSession,
+) -> None:
+    task, campaign, article_version = await smm_fixture(db_session)
+    user = await db_session.scalar(select(User))
+    assert user is not None
+    plan = PublicationPlan(
+        campaign_id=campaign.id,
+        status=PublicationPlanStatus.APPROVED,
+        planning_horizon_start=datetime.now(UTC),
+        planning_horizon_end=datetime.now(UTC) + timedelta(days=7),
+        timezone_policy="UTC",
+        created_by_user_id=user.id,
+        approved_at=datetime.now(UTC),
+        approved_by_user_id=user.id,
+    )
+    db_session.add(plan)
+    await db_session.flush()
+    plan_item = PublicationPlanItem(
+        publication_plan_id=plan.id,
+        position=1,
+        scheduled_at=datetime.now(UTC) + timedelta(days=1),
+        channel=ContentChannel.VK,
+        source_content_item_id=article_version.content_item_id,
+        source_content_version_id=article_version.id,
+        topic="Как выбрать формат работы",
+        angle="Различить стратегическую и сценарную неопределённость",
+        purpose="Помочь руководителю выбрать формат обсуждения",
+        format="diagnostic",
+        message_brief=("Показать, где именно находится неопределённость управленческой команды."),
+        source_claim_ids=["article_test_p01"],
+        source_support_summary="Проверочный источник.",
+        status=PublicationPlanItemStatus.PLANNED,
+    )
+    db_session.add(plan_item)
+    await db_session.flush()
+    task.input_data = {
+        **task.input_data,
+        "publication_plan_id": str(plan.id),
+        "publication_plan_item_id": str(plan_item.id),
+    }
+    await db_session.commit()
+
+    service = AgentRunService(db_session)
+    run = await service.create_queued_run(task.id)
+    assert task.input_data["plan_channel"] == "VK"
+    claimed = await service.claim(run.id)
+    assert claimed is not None
+    snapshot, task_input, _context, _trace = claimed
+    assert snapshot.output_type.__name__ == "SingleSocialPostResult"
+    assert "plan_channel" in task_input and "VK" in task_input
+    await add_read_audit(db_session, run.id, article_version)
+    await db_session.commit()
+
+    output = {
+        "sufficient": True,
+        "pack": {
+            "strategy_summary": "Один пост по утверждённому пункту плана.",
+            "posts": [
+                {
+                    "key": "plan_item_post",
+                    "title": "Как выбрать формат работы",
+                    "text_markdown": (
+                        "Когда неопределённость относится к будущим сценариям, "
+                        "сначала нужно разобрать варианты развития событий."
+                    ),
+                    "cta": "",
+                    "sources": [
+                        {
+                            "content_version_id": str(article_version.id),
+                            "section_key": "problem",
+                        }
+                    ],
+                    "suggested_publish_order": 1,
+                }
+            ],
+        },
+    }
+    await service.finish_success(run.id, RuntimeResult(output, 1, 10, 5, 15, None))
+
+    persisted_run = await service.get_run(run.id)
+    assert persisted_run.status is AgentRunStatus.COMPLETED
+    post = await db_session.scalar(
+        select(ContentItem).where(
+            ContentItem.source_task_id == task.id,
+            ContentItem.content_type == ContentType.SOCIAL_POST,
+        )
+    )
+    assert post is not None
+    assert post.channel is ContentChannel.VK
+    assert post.current_version_id is not None
+    version = await db_session.get(ContentVersion, post.current_version_id)
+    assert version is not None
+    assert version.structured_content["channel"] == "VK"
+    assert (
+        version.structured_content["text_markdown"] == output["pack"]["posts"][0]["text_markdown"]
+    )
+
+
+@pytest.mark.asyncio
 async def test_smm_success_persists_pack_posts_versions_and_derivations(
     db_session: AsyncSession,
 ) -> None:
@@ -656,6 +763,12 @@ async def test_smm_rejects_hallucinated_social_provenance(
         "INVALID_SOCIAL_SOURCE",
         "INVALID_SOCIAL_SOURCE_SECTION",
     }
+    assert failed_run.request_count == 1
+    assert failed_run.input_tokens == 10
+    assert failed_run.output_tokens == 5
+    assert failed_run.total_tokens == 15
+    accounting = failed_run.input_data["model_request_accounting"]
+    assert accounting["final_validation_state"] == failed_run.error_code
     assert await db_session.scalar(select(func.count()).select_from(ContentItem)) == 1
 
 

@@ -54,7 +54,11 @@ async def _execute(run_id: UUID, factory: SessionFactory | None = None) -> None:
             "AGENT_RUNTIME_ERROR", "Неожиданная ошибка выполнения агента."
         )
         async with factory() as session:
-            await AgentRunService(session, factory).finish_failure(run_id, runtime_error)
+            await AgentRunService(session, factory).finish_failure(
+                run_id,
+                runtime_error,
+                result=result,
+            )
         return
     try:
         async with factory() as session:

@@ -710,12 +710,7 @@ class SocialPostResultProcessor:
                     422,
                 )
             post = result.pack.posts[0]
-            if post.channel != plan_item.channel.value:
-                raise AppError(
-                    "INVALID_PUBLICATION_PLAN_ITEM",
-                    "Канал поста не соответствует пункту плана.",
-                    422,
-                )
+            authoritative_channel = plan_item.channel.value
             generation_key = f"plan-item:{plan_item.id}"
             existing_version = await session.scalar(
                 select(ContentVersion).where(
@@ -732,7 +727,7 @@ class SocialPostResultProcessor:
                 title=post.title,
                 status=ContentStatus.WAITING_APPROVAL,
                 author_agent_id=run.agent_id,
-                channel=ContentChannel(post.channel),
+                channel=ContentChannel(authoritative_channel),
                 metadata_={
                     "publication_plan_id": str(plan.id),
                     "publication_plan_item_id": str(plan_item.id),
@@ -746,7 +741,10 @@ class SocialPostResultProcessor:
                 content_item_id=child.id,
                 version_number=1,
                 content=post.text_markdown,
-                structured_content=post.model_dump(mode="json"),
+                structured_content={
+                    **post.model_dump(mode="json"),
+                    "channel": authoritative_channel,
+                },
                 created_by_agent_id=run.agent_id,
                 source_agent_run_id=run.id,
                 generation_key=generation_key,
@@ -799,6 +797,12 @@ class SocialPostResultProcessor:
                 },
             )
             return
+        if not isinstance(result, SocialPostPackResult):
+            raise AppError(
+                "INVALID_SOCIAL_POST_RESULT",
+                "Пакет публикаций не соответствует ожидаемому контракту.",
+                422,
+            )
         campaign = await session.get(Campaign, task.campaign_id)
         strategy = (campaign.strategy if campaign else {}) or {}
         social = strategy.get("social_strategy", {})
