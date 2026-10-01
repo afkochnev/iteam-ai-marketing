@@ -4,8 +4,9 @@
 
 `/health` only proves that the process is alive. `/health/ready` additionally
 checks PostgreSQL, Redis, and that `alembic_version` is exactly
-`20260928_0018`. A schema mismatch is an operational stop condition; the
-application never runs migrations implicitly.
+the current Alembic head (`20260930_0020` for this release). A schema mismatch
+is an operational stop condition; the application never runs migrations
+implicitly.
 
 Deploy in this order:
 

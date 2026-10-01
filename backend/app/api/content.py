@@ -424,7 +424,7 @@ async def _resolve_content(
         approval_id=approval.id,
     )
     await session.commit()
-    return _response(await ContentService(session).get(content_id))
+    return await get_content(content_id, user, session)
 
 
 @router.post("/{content_id}/approve", response_model=ContentResponse)
