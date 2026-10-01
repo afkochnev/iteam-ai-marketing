@@ -16,7 +16,7 @@ from app.models.publication import Publication, PublicationStatus
 from app.models.task import Task, TaskStatus
 from app.services.reconciliation_integrity import reconciliation_integrity_report
 
-EXPECTED_MIGRATION_HEAD = "20260929_0019"
+EXPECTED_MIGRATION_HEAD = "20260930_0020"
 
 router = APIRouter(prefix="/system", tags=["system"])
 
