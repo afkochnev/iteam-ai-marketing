@@ -165,19 +165,23 @@ async def list_content(
     )
     content_ids = {item.id for item in items}
     parent_ids = {item.parent_content_item_id for item in items if item.parent_content_item_id}
-    approval_rows = list(
-        (
-            await session.scalars(
-                select(Approval)
-                .where(
-                    Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
-                    Approval.object_id.in_(content_ids | parent_ids),
-                    Approval.status == ApprovalStatus.APPROVED,
+    approval_rows = (
+        list(
+            (
+                await session.scalars(
+                    select(Approval)
+                    .where(
+                        Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
+                        Approval.object_id.in_(content_ids | parent_ids),
+                        Approval.status == ApprovalStatus.APPROVED,
+                    )
+                    .order_by(Approval.created_at.desc())
                 )
-                .order_by(Approval.created_at.desc())
-            )
-        ).all()
-    ) if content_ids or parent_ids else []
+            ).all()
+        )
+        if content_ids or parent_ids
+        else []
+    )
     approved_versions: dict[UUID, UUID] = {}
     for approval in approval_rows:
         raw_version_id = approval.subject_snapshot.get("content_version_id")
@@ -196,15 +200,12 @@ async def list_content(
                 approved_versions.setdefault(post_id, version_id)
     approved_version_numbers: dict[UUID, int] = {}
     if approved_versions:
-        approved_version_numbers = dict(
-            (
-                await session.execute(
-                    select(ContentVersion.id, ContentVersion.version_number).where(
-                        ContentVersion.id.in_(set(approved_versions.values()))
-                    )
-                )
-            ).all()
+        version_rows = await session.execute(
+            select(ContentVersion.id, ContentVersion.version_number).where(
+                ContentVersion.id.in_(set(approved_versions.values()))
+            )
         )
+        approved_version_numbers = dict(version_rows.tuples().all())
 
     def approved_version_number(item_id: UUID) -> int | None:
         version_id = approved_versions.get(item_id)
@@ -230,9 +231,7 @@ async def list_content(
             )
         ).all()
         for derived_version_id, source_item_id, source_title in source_rows:
-            source_by_derived_version.setdefault(
-                derived_version_id, (source_item_id, source_title)
-            )
+            source_by_derived_version.setdefault(derived_version_id, (source_item_id, source_title))
     return [
         ContentListItem(
             id=item.id,
@@ -297,22 +296,26 @@ async def get_content(
         if parent_approval is not None:
             approvals.append(parent_approval)
     derivation_rows = (
-        await session.execute(
-            select(
-                ContentDerivation,
-                ContentVersion.version_number,
-                ContentVersion.content_item_id,
-                ContentItem.title,
+        (
+            await session.execute(
+                select(
+                    ContentDerivation,
+                    ContentVersion.version_number,
+                    ContentVersion.content_item_id,
+                    ContentItem.title,
+                )
+                .join(
+                    ContentVersion,
+                    ContentVersion.id == ContentDerivation.source_content_version_id,
+                )
+                .join(ContentItem, ContentItem.id == ContentVersion.content_item_id)
+                .where(ContentDerivation.derived_content_version_id == item.current_version_id)
+                .order_by(ContentDerivation.source_section_key)
             )
-            .join(
-                ContentVersion,
-                ContentVersion.id == ContentDerivation.source_content_version_id,
-            )
-            .join(ContentItem, ContentItem.id == ContentVersion.content_item_id)
-            .where(ContentDerivation.derived_content_version_id == item.current_version_id)
-            .order_by(ContentDerivation.source_section_key)
-        )
-    ).all() if item.current_version_id else []
+        ).all()
+        if item.current_version_id
+        else []
+    )
     derivations = [
         ContentDerivationResponse(
             source_content_item_id=content_item_id,
