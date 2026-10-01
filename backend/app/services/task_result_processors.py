@@ -797,6 +797,12 @@ class SocialPostResultProcessor:
                 },
             )
             return
+        if not isinstance(result, SocialPostPackResult):
+            raise AppError(
+                "INVALID_SOCIAL_POST_RESULT",
+                "Пакет публикаций не соответствует ожидаемому контракту.",
+                422,
+            )
         campaign = await session.get(Campaign, task.campaign_id)
         strategy = (campaign.strategy if campaign else {}) or {}
         social = strategy.get("social_strategy", {})
