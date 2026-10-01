@@ -14,7 +14,20 @@ const task = { id: "task-1", campaign_id: "campaign-1", campaign: { id: "campaig
 describe("Tasks UI", () => {
   beforeEach(() => { vi.clearAllMocks(); mocks.list.mockResolvedValue([task]); mocks.get.mockResolvedValue(task); mocks.runList.mockResolvedValue([]); mocks.packList.mockResolvedValue([]); mocks.campaignList.mockResolvedValue([{ id: "campaign-1", name: "Кампания" }]); mocks.agentList.mockResolvedValue([]); });
 
-  it("renders list, filters and empty state", async () => { const view = render(<TasksPage />); expect(await screen.findByText("Первая задача")).toBeInTheDocument(); fireEvent.change(screen.getByLabelText("Статус"), { target: { value: "READY" } }); await waitFor(() => expect(mocks.list).toHaveBeenCalledWith(expect.objectContaining({ status: "READY" }))); view.unmount(); mocks.list.mockResolvedValue([]); render(<TasksPage />); expect(await screen.findByText("Задач пока нет")).toBeInTheDocument(); });
+  it("renders list, filters locally and shows the empty state", async () => { const view = render(<TasksPage />); expect(await screen.findByText("Первая задача")).toBeInTheDocument(); fireEvent.change(screen.getByLabelText("Статус"), { target: { value: "FAILED" } }); expect(screen.queryByText("Первая задача")).not.toBeInTheDocument(); view.unmount(); mocks.list.mockResolvedValue([]); render(<TasksPage />); expect(await screen.findByText("Задач пока нет")).toBeInTheDocument(); });
+
+  it("explains the task dashboard counts and separates urgent work from history", async () => {
+    mocks.list.mockResolvedValue([
+      { ...task, id: "failed", title: "Ошибка", status: "FAILED" },
+      { ...task, id: "ready", title: "Следующий шаг", status: "READY" },
+      { ...task, id: "done", title: "Готово", status: "COMPLETED" },
+    ]);
+    render(<TasksPage />);
+    expect(await screen.findByText("Ошибка")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Требуют внимания/ })).toHaveAttribute("title", "Ошибки и задачи, ожидающие зависимость");
+    expect(screen.getByRole("link", { name: /Готовы к выполнению/ })).toHaveAttribute("title", "Можно запустить следующим шагом");
+    expect(screen.getByText("Показать завершённые задачи и историю · 1")).toBeInTheDocument();
+  });
 
   it("creates task and redirects", async () => { mocks.create.mockResolvedValue(task); render(<NewTaskPage />); await screen.findByText("Кампания"); fireEvent.change(screen.getByLabelText("Кампания *"), { target: { value: "campaign-1" } }); fireEvent.change(screen.getByLabelText("Название *"), { target: { value: "Первая задача" } }); fireEvent.click(screen.getByRole("button", { name: "Создать задачу" })); await waitFor(() => expect(mocks.create).toHaveBeenCalled()); expect(mocks.push).toHaveBeenCalledWith("/tasks/task-1"); });
 

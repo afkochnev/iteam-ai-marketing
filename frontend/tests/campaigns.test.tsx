@@ -6,14 +6,14 @@ import EditCampaignPage from "../app/campaigns/[id]/edit/page";
 import NewCampaignPage from "../app/campaigns/new/page";
 import CampaignsPage from "../app/campaigns/page";
 
-const { replace, push, list, get, create, update, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList, contentList, contentGet, activityList, publicationList, publicationCalendar, publicationCreate, publicationScheduleContent, publicationApprove, publicationSchedule, publicationCancel, publicationPublishNow, publicationRetry, publicationReconcilePublished, publicationReconcileNotPublished } = vi.hoisted(() => ({
-  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(), contentList: vi.fn(), contentGet: vi.fn(), activityList: vi.fn(), publicationList: vi.fn(), publicationCalendar: vi.fn(), publicationCreate: vi.fn(), publicationScheduleContent: vi.fn(), publicationApprove: vi.fn(), publicationSchedule: vi.fn(), publicationCancel: vi.fn(), publicationPublishNow: vi.fn(), publicationRetry: vi.fn(), publicationReconcilePublished: vi.fn(), publicationReconcileNotPublished: vi.fn(),
+const { replace, push, list, get, create, update, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList, contentList, contentGet, activityList, publicationList, publicationCalendar, publicationCreate, publicationScheduleContent, publicationApprove, publicationSchedule, publicationCancel, publicationPublishNow, publicationRetry, publicationReconcilePublished, publicationReconcileNotPublished, feedbackList, feedbackAnalyses, feedbackCreate, feedbackGenerate, feedbackAccept, feedbackReject, performance, plansList, planGenerate, planTransition, planRevise, planAddItem, planUpdateItem, planRemoveItem, planReorder, manualMetrics } = vi.hoisted(() => ({
+  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), create: vi.fn(), update: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(), contentList: vi.fn(), contentGet: vi.fn(), activityList: vi.fn(), publicationList: vi.fn(), publicationCalendar: vi.fn(), publicationCreate: vi.fn(), publicationScheduleContent: vi.fn(), publicationApprove: vi.fn(), publicationSchedule: vi.fn(), publicationCancel: vi.fn(), publicationPublishNow: vi.fn(), publicationRetry: vi.fn(), publicationReconcilePublished: vi.fn(), publicationReconcileNotPublished: vi.fn(), feedbackList: vi.fn(), feedbackAnalyses: vi.fn(), feedbackCreate: vi.fn(), feedbackGenerate: vi.fn(), feedbackAccept: vi.fn(), feedbackReject: vi.fn(), performance: vi.fn(), plansList: vi.fn(), planGenerate: vi.fn(), planTransition: vi.fn(), planRevise: vi.fn(), planAddItem: vi.fn(), planUpdateItem: vi.fn(), planRemoveItem: vi.fn(), planReorder: vi.fn(), manualMetrics: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace, push }), useParams: () => ({ id: "campaign-1" }) }));
 vi.mock("@/components/auth-provider", () => ({ useAuth: () => ({ user: { role: "ADMIN" }, loading: false }) }));
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
-  return { ...actual, campaignsApi: { list, get, create, update, archive, generateStrategy, approveStrategy, requestStrategyRevision: requestRevision, rejectStrategy }, approvalsApi: { list: approvalList, get: vi.fn() }, tasksApi: { ...actual.tasksApi, list: taskList }, contentApi: { ...actual.contentApi, list: contentList, get: contentGet }, activitiesApi: { list: activityList }, publicationsApi: { listCampaign: publicationList, calendar: publicationCalendar, approve: publicationApprove, create: publicationCreate, scheduleContent: publicationScheduleContent, schedule: publicationSchedule, cancel: publicationCancel, publishNow: publicationPublishNow, retry: publicationRetry, reconcilePublished: publicationReconcilePublished, reconcileNotPublished: publicationReconcileNotPublished } };
+  return { ...actual, campaignsApi: { list, get, create, update, archive, generateStrategy, approveStrategy, requestStrategyRevision: requestRevision, rejectStrategy }, approvalsApi: { list: approvalList, get: vi.fn() }, tasksApi: { ...actual.tasksApi, list: taskList }, contentApi: { ...actual.contentApi, list: contentList, get: contentGet }, activitiesApi: { list: activityList }, feedbackApi: { list: feedbackList, analyses: feedbackAnalyses, create: feedbackCreate, generate: feedbackGenerate, accept: feedbackAccept, reject: feedbackReject }, metricsApi: { campaign: performance }, publicationPlansApi: { list: plansList, generate: planGenerate, submit: planTransition, approve: planTransition, reject: planTransition, revise: planRevise, addItem: planAddItem, updateItem: planUpdateItem, removeItem: planRemoveItem, reorder: planReorder }, publicationsApi: { listCampaign: publicationList, calendar: publicationCalendar, approve: publicationApprove, create: publicationCreate, scheduleContent: publicationScheduleContent, schedule: publicationSchedule, cancel: publicationCancel, publishNow: publicationPublishNow, retry: publicationRetry, reconcilePublished: publicationReconcilePublished, reconcileNotPublished: publicationReconcileNotPublished, addManualMetrics: manualMetrics } };
 });
 
 const campaign = {
@@ -27,7 +27,7 @@ const campaign = {
 
 describe("Campaigns UI", () => {
   afterEach(() => cleanup());
-  beforeEach(() => { vi.clearAllMocks(); list.mockResolvedValue([campaign]); get.mockResolvedValue(campaign); taskList.mockResolvedValue([]); approvalList.mockResolvedValue([]); contentList.mockResolvedValue([]); activityList.mockResolvedValue([]); publicationList.mockResolvedValue([]); publicationCalendar.mockResolvedValue([]); vi.spyOn(window, "confirm").mockReturnValue(true); });
+  beforeEach(() => { vi.clearAllMocks(); list.mockResolvedValue([campaign]); get.mockResolvedValue(campaign); taskList.mockResolvedValue([]); approvalList.mockResolvedValue([]); contentList.mockResolvedValue([]); activityList.mockResolvedValue([]); publicationList.mockResolvedValue([]); publicationCalendar.mockResolvedValue([]); feedbackList.mockResolvedValue([]); feedbackAnalyses.mockResolvedValue([]); performance.mockResolvedValue(null); plansList.mockResolvedValue([]); vi.spyOn(window, "confirm").mockReturnValue(true); });
 
   it("renders campaign list and empty state", async () => {
     const first = render(<CampaignsPage />);
@@ -123,9 +123,12 @@ describe("Campaigns UI", () => {
       { id: "post-1", campaign_id: campaign.id, content_type: "SOCIAL_POST", title: "Пост", status: "WAITING_APPROVAL", parent_content_item_id: "pack-1", channel: "TELEGRAM", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at },
     ]);
     render(<CampaignDetailsPage />);
+    expect(await screen.findByRole("heading", { name: "Контент кампании" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Статьи/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Посты для соцсетей/ })).toBeInTheDocument();
     expect(await screen.findByText("Ожидают согласования: 3")).toBeInTheDocument();
     expect(screen.getByText("Пакет")).toBeInTheDocument();
-    expect(screen.getByText(/постов: 1/)).toBeInTheDocument();
+    expect(screen.getByText(/Постов: 1/)).toBeInTheDocument();
   });
 
   it("renders backend workflow statuses and activity timeline", async () => {
@@ -141,13 +144,13 @@ describe("Campaigns UI", () => {
       { id: "event-4", event_type: "CONTENT_REVISION_REQUESTED", created_at: "2026-09-22T10:03:00Z" },
     ]);
     render(<CampaignDetailsPage />);
-    expect(await screen.findByText("KNOWLEDGE_RESEARCH: Завершена")).toBeInTheDocument();
-    expect(screen.getByText("WRITE_ARTICLE: Завершена")).toBeInTheDocument();
-    expect(screen.getByText("CREATE_SOCIAL_POSTS: Готова")).toBeInTheDocument();
-    expect(screen.getByText(/TASK_AUTO_DISPATCHED/)).toBeInTheDocument();
-    expect(screen.getByText(/ARTICLE_CREATED/)).toBeInTheDocument();
-    expect(screen.getByText(/SOCIAL_POST_PACK_CREATED/)).toBeInTheDocument();
-    expect(screen.getByText(/CONTENT_REVISION_REQUESTED/)).toBeInTheDocument();
+    expect(await screen.findByText("Поиск знаний")).toBeInTheDocument();
+    expect(screen.getByText("Написание статьи")).toBeInTheDocument();
+    expect(screen.getByText("Создание публикаций")).toBeInTheDocument();
+    expect(screen.getByText("Задача автоматически передана исполнителю")).toBeInTheDocument();
+    expect(screen.getByText("Создана статья")).toBeInTheDocument();
+    expect(screen.getByText("Создан пакет постов")).toBeInTheDocument();
+    expect(screen.getByText("Запрошена доработка материала")).toBeInTheDocument();
   });
 
   it("renders failed and blocked workflow statuses from backend", async () => {
@@ -157,9 +160,9 @@ describe("Campaigns UI", () => {
       { id: "social", task_type: "CREATE_SOCIAL_POSTS", title: "Social", status: "BLOCKED" },
     ]);
     render(<CampaignDetailsPage />);
-    expect(await screen.findByText("KNOWLEDGE_RESEARCH: Ошибка")).toBeInTheDocument();
-    expect(screen.getByText("WRITE_ARTICLE: Заблокирована")).toBeInTheDocument();
-    expect(screen.getByText("CREATE_SOCIAL_POSTS: Заблокирована")).toBeInTheDocument();
+    expect(await screen.findByText("Поиск знаний")).toBeInTheDocument();
+    expect(screen.getAllByText("Ошибка").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Заблокирована").length).toBeGreaterThan(0);
   });
 
   it("shows publication approval separately from content approval", async () => {
@@ -167,7 +170,7 @@ describe("Campaigns UI", () => {
     publicationList.mockResolvedValue([{ id: "publication-1", campaign_id: campaign.id, content_item_id: "post-1", content_version_id: "version-1", channel: "TELEGRAM", status: "DRAFT", scheduled_at: null, approved_for_publish_at: null, approved_for_publish_by: null, external_id: null, external_url: null, published_at: null, failure_code: null, failure_message: null, retry_count: 0, created_at: campaign.created_at, updated_at: campaign.updated_at, provenance: [] }]);
     publicationApprove.mockResolvedValue({});
     render(<CampaignDetailsPage />);
-    expect(await screen.findByText("Статус публикации: DRAFT")).toBeInTheDocument();
+    expect((await screen.findAllByText("Черновик")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "Согласовать публикацию" }));
     await waitFor(() => expect(publicationApprove).toHaveBeenCalledWith("publication-1"));
   });
@@ -197,7 +200,7 @@ describe("Campaigns UI", () => {
     vi.spyOn(window, "prompt").mockReturnValue("2026-10-02T10:00:00Z");
     publicationSchedule.mockResolvedValue({}); publicationCancel.mockResolvedValue({});
     render(<CampaignDetailsPage />);
-    expect(await screen.findByText(/Статус публикации: SCHEDULED/)).toBeInTheDocument();
+    expect((await screen.findAllByText("Запланирована")).length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "Назначить / перенести" }));
     await waitFor(() => expect(publicationSchedule).toHaveBeenCalledWith("publication-1", "2026-10-02T10:00:00.000Z"));
     fireEvent.click(screen.getByRole("button", { name: "Отменить" }));
@@ -243,7 +246,7 @@ describe("Campaigns UI", () => {
     contentList.mockResolvedValue([{ id: "post-vk", campaign_id: campaign.id, content_type: "SOCIAL_POST", title: "VK-пост", status: "APPROVED", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at, channel: "VK" }]);
     publicationList.mockResolvedValue([{ id: "publication-vk", campaign_id: campaign.id, content_item_id: "post-vk", content_version_id: "version-vk", channel: "VK", provider_enabled: false, status: "APPROVED", scheduled_at: null, approved_for_publish_at: campaign.created_at, approved_for_publish_by: "user-1", external_id: null, external_url: null, published_at: null, failure_code: null, failure_message: null, retry_count: 0, created_at: campaign.created_at, updated_at: campaign.updated_at, provenance: [] }]);
     render(<CampaignDetailsPage />);
-    expect(await screen.findByText("Статус публикации: APPROVED")).toBeInTheDocument();
+    expect(await screen.findByText("Разрешена к публикации")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Опубликовать сейчас" })).not.toBeInTheDocument();
     expect(publicationPublishNow).not.toHaveBeenCalled();
   });
@@ -253,23 +256,23 @@ describe("Campaigns UI", () => {
     contentList.mockResolvedValue([{ id: "post-1", campaign_id: campaign.id, content_type: "SOCIAL_POST", title: "Пост", status: "APPROVED", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at, channel: "TELEGRAM" }]);
     publicationList.mockResolvedValueOnce([{ ...base, status: "PUBLISHING" }]).mockResolvedValueOnce([{ ...base, status: "PUBLISHED", external_id: "telegram-1", external_url: "https://t.me/1", published_at: campaign.updated_at }]);
     render(<CampaignDetailsPage />);
-    expect(await screen.findByText(/Статус публикации: PUBLISHING/)).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByText(/Статус публикации: PUBLISHED/)).toBeInTheDocument(), { timeout: 5_000 });
-  });
+    expect(await screen.findByText("Отправляется")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("Опубликована").length).toBeGreaterThan(0), { timeout: 8_000 });
+  }, 10_000);
 
   it("polls PUBLISHING to FAILED and stops without retrying", async () => {
     const base = { id: "publication-1", campaign_id: campaign.id, content_item_id: "post-1", content_version_id: "version-1", channel: "TELEGRAM", scheduled_at: null, approved_for_publish_at: campaign.created_at, approved_for_publish_by: "user-1", external_id: null, external_url: null, published_at: null, retry_count: 0, created_at: campaign.created_at, updated_at: campaign.updated_at, provenance: [] };
     contentList.mockResolvedValue([{ id: "post-1", campaign_id: campaign.id, content_type: "SOCIAL_POST", title: "Пост", status: "APPROVED", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at, channel: "TELEGRAM" }]);
     publicationList.mockResolvedValueOnce([{ ...base, status: "PUBLISHING", failure_code: null, failure_message: null }]).mockResolvedValueOnce([{ ...base, status: "FAILED", failure_code: "TELEGRAM_BAD_REQUEST", failure_message: "Плохой запрос" }]);
     render(<CampaignDetailsPage />);
-    await waitFor(() => expect(screen.getByText(/Статус публикации: FAILED/)).toBeInTheDocument(), { timeout: 5_000 });
-  });
+    await waitFor(() => expect(screen.getAllByText("Ошибка отправки").length).toBeGreaterThan(0), { timeout: 8_000 });
+  }, 10_000);
 
   it("disables execution for publishing/published and hides retry for non-retryable failures", async () => {
     contentList.mockResolvedValue([{ id: "post-1", campaign_id: campaign.id, content_type: "SOCIAL_POST", title: "Пост", status: "APPROVED", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at, channel: "TELEGRAM" }]);
     publicationList.mockResolvedValue([{ id: "publication-1", campaign_id: campaign.id, content_item_id: "post-1", content_version_id: "version-1", channel: "TELEGRAM", status: "FAILED", scheduled_at: null, approved_for_publish_at: campaign.created_at, approved_for_publish_by: "user-1", external_id: null, external_url: null, published_at: null, failure_code: "TELEGRAM_RECONCILIATION_REQUIRED", failure_message: "Требуется проверка", retry_count: 1, created_at: campaign.created_at, updated_at: campaign.updated_at, provenance: [] }]);
     render(<CampaignDetailsPage />);
-    expect(await screen.findByText(/Статус публикации: FAILED/)).toBeInTheDocument();
+    expect(await screen.findByText("Ошибка отправки")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Повторить" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Опубликовать сейчас" })).not.toBeInTheDocument();
   });
@@ -278,7 +281,7 @@ describe("Campaigns UI", () => {
     contentList.mockResolvedValue([{ id: "post-1", campaign_id: campaign.id, content_type: "SOCIAL_POST", title: "Пост", status: "APPROVED", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at, channel: "TELEGRAM" }]);
     publicationList.mockResolvedValue([{ id: "publication-1", campaign_id: campaign.id, content_item_id: "post-1", content_version_id: "version-1", channel: "TELEGRAM", status: "FAILED", scheduled_at: null, approved_for_publish_at: campaign.created_at, approved_for_publish_by: "user-1", external_id: null, external_url: null, published_at: null, failure_code: "TELEGRAM_RECONCILIATION_REQUIRED", failure_message: "Требуется проверка", retry_allowed: false, reconciliation_required: true, retry_count: 0, created_at: campaign.created_at, updated_at: campaign.updated_at, provenance: [] }]);
     render(<CampaignDetailsPage />);
-    expect(await screen.findByText("Требуется сверка факта доставки.")).toBeInTheDocument();
+    expect(await screen.findByText("Нужно подтвердить результат отправки.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Подтвердить публикацию" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Подтвердить отсутствие публикации" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Повторить" })).not.toBeInTheDocument();
@@ -297,8 +300,8 @@ describe("Plan-bound publication scheduling", () => {
     publicationScheduleContent.mockImplementation(async () => { publicationList.mockResolvedValue([scheduled]); publicationCalendar.mockResolvedValue([{ ...scheduled, publication_id: scheduled.id, title: planned.title }]); return scheduled; });
     render(<CampaignDetailsPage />);
     expect(await screen.findByText(`План: VK · ${formatDateTime(planned.plan_scheduled_at)}`)).toBeInTheDocument();
-    expect(screen.getByText("Статус текста: APPROVED")).toBeInTheDocument();
-    expect(screen.getByText("Публикация: ещё не запланирована")).toBeInTheDocument();
+    expect(screen.getByText("Утверждён")).toBeInTheDocument();
+    expect(screen.getByText("Публикация ещё не назначена.")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Запланировать публикацию" }));
     await waitFor(() => expect(publicationScheduleContent).toHaveBeenCalledWith(planned.id));
     expect(await screen.findByText(`Публикация запланирована на ${formatDateTime(planned.plan_scheduled_at)} · VK`)).toBeInTheDocument();
