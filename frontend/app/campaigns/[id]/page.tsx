@@ -88,7 +88,14 @@ export default function CampaignDetailsPage() {
     (groups[date] ??= []).push(item);
     return groups;
   }, {});
-  const currentPlan = publicationPlans.find((plan) => !["ARCHIVED"].includes(plan.status));
+  const activePlans = publicationPlans.filter((plan) => plan.status !== "ARCHIVED");
+  const currentPlan =
+    activePlans.find((plan) => plan.status === "APPROVED") ??
+    activePlans.find((plan) => plan.status === "WAITING_APPROVAL") ??
+    activePlans.find((plan) => plan.status === "DRAFT") ??
+    activePlans.find((plan) => plan.status === "REJECTED") ??
+    publicationPlans[0];
+  const otherPlans = publicationPlans.filter((plan) => plan.id !== currentPlan?.id);
   const needsAttention = attentionTasks.length;
 
   const renderPublication = (item: ContentListItem) => {
@@ -116,6 +123,33 @@ export default function CampaignDetailsPage() {
       </>}
     </article>;
   };
+
+  const renderPlanCard = (plan: PublicationPlan) => (
+    <article className="plan-card" key={plan.id}>
+      <div className="card-heading"><div><h3>План · {formatDate(plan.planning_horizon_start)} — {formatDate(plan.planning_horizon_end)}</h3><p>{plan.items.filter((item) => item.status === "PLANNED").length} активных пунктов · часовой пояс: {plan.timezone_policy}</p></div><StatusBadge label={PLAN_STATUS_LABELS[plan.status]} tone={plan.status === "APPROVED" ? "success" : "neutral"} /></div>
+      <ol className="plan-list">{plan.items.filter((item) => item.status === "PLANNED").map((item, index) => {
+        const source = articles.find((article) => article.id === item.source_content_item_id);
+        const childPost = socialPosts.find((post) => post.publication_plan_item_id === item.id);
+        const downstreamPublication = publications.find((publication) => publication.publication_plan_item_id === item.id) ?? (childPost ? getPublication(childPost) : undefined);
+        return <li key={item.id} className="plan-item">
+          <div className="plan-item-main"><strong>{formatDateTime(item.scheduled_at)}</strong><StatusBadge label={item.channel} /><h4>{item.topic}</h4>
+            <p>{item.purpose} · {item.format}</p><p className="muted">{item.message_brief}</p>
+            <p>Исходная статья: {source ? <Link href={`/content/${source.id}`}>{source.title}</Link> : item.source_content_item_id}</p>
+            {item.source_support_summary && <p className="muted">Основание: {item.source_support_summary}</p>}
+            {childPost ? <p>Пост: <Link href={`/content/${childPost.id}`}>{childPost.title}</Link></p> : <p className="muted">Пост для этого пункта ещё не создан.</p>}
+            {downstreamPublication ? <p>Дальше: {PUBLICATION_STATUS_LABELS[downstreamPublication.status]}{downstreamPublication.scheduled_at ? ` · ${formatDateTime(downstreamPublication.scheduled_at)}` : ""}</p> :
+              childPost?.status === "APPROVED" && !archived ? <button disabled={publicationBusy === childPost.id} onClick={() => preparePublication(childPost)}>Запланировать публикацию</button> :
+                childPost && <p className="muted">Публикация станет доступна после утверждения поста.</p>}
+          </div>
+          {plan.status === "DRAFT" && !archived && <div className="plan-edit-actions"><button className="secondary" onClick={() => editPlanItem(plan, item.id)}>Изменить</button><button className="secondary" onClick={() => removePlanItem(plan, item.id)}>Убрать</button><button className="secondary" aria-label="Поднять пункт" disabled={index === 0} onClick={() => movePlanItem(plan, index, -1)}>↑</button><button className="secondary" aria-label="Опустить пункт" disabled={index === plan.items.filter((entry) => entry.status === "PLANNED").length - 1} onClick={() => movePlanItem(plan, index, 1)}>↓</button></div>}
+        </li>;
+      })}</ol>
+      {plan.status === "DRAFT" && <div className="actions"><button onClick={() => transitionPlan(plan.id, "submit")}>Отправить план на согласование</button><button className="secondary" onClick={() => addPlanItem(plan)}>Добавить пункт</button></div>}
+      {plan.status === "REJECTED" && <button onClick={() => publicationPlansApi.revise(plan.id).then(loadPlans).catch((reason: Error) => setError(reason.message))}>Вернуть в редактуру</button>}
+      {plan.status === "WAITING_APPROVAL" && <div className="actions"><button onClick={() => transitionPlan(plan.id, "approve")}>Утвердить план</button><button className="secondary" onClick={() => transitionPlan(plan.id, "reject")}>Вернуть на доработку</button></div>}
+      <p className="muted">Утверждение плана не создаёт посты и не отправляет публикации автоматически.</p>
+    </article>
+  );
 
   return <main className="wide">
     <PageBreadcrumbs items={[{ label: "Кампании", href: "/campaigns" }, { label: campaign.name }]} />
@@ -160,30 +194,11 @@ export default function CampaignDetailsPage() {
       <div className="section-heading"><div><p className="eyebrow">Планирование</p><h2 id="plan-heading">План публикаций</h2><p className="muted">Утверждённый план задаёт канал и время. Это основной источник расписания.</p></div>
         <div className="section-actions"><Link className="button-link secondary" href="/publications">К календарю</Link>{!archived && <button onClick={generatePublicationPlan}>Создать план публикаций</button>}</div>
       </div>
-      {publicationPlans.length ? publicationPlans.map((plan) => <article className="plan-card" key={plan.id}>
-        <div className="card-heading"><div><h3>План · {formatDate(plan.planning_horizon_start)} — {formatDate(plan.planning_horizon_end)}</h3><p>{plan.items.filter((item) => item.status === "PLANNED").length} активных пунктов · часовой пояс: {plan.timezone_policy}</p></div><StatusBadge label={PLAN_STATUS_LABELS[plan.status]} tone={plan.status === "APPROVED" ? "success" : "neutral"} /></div>
-        <ol className="plan-list">{plan.items.filter((item) => item.status === "PLANNED").map((item, index) => {
-          const source = articles.find((article) => article.id === item.source_content_item_id);
-          const childPost = socialPosts.find((post) => post.publication_plan_item_id === item.id);
-          const downstreamPublication = publications.find((publication) => publication.publication_plan_item_id === item.id) ?? (childPost ? getPublication(childPost) : undefined);
-          return <li key={item.id} className="plan-item">
-            <div className="plan-item-main"><strong>{formatDateTime(item.scheduled_at)}</strong><StatusBadge label={item.channel} /><h4>{item.topic}</h4>
-              <p>{item.purpose} · {item.format}</p><p className="muted">{item.message_brief}</p>
-              <p>Исходная статья: {source ? <Link href={`/content/${source.id}`}>{source.title}</Link> : item.source_content_item_id}</p>
-              {item.source_support_summary && <p className="muted">Основание: {item.source_support_summary}</p>}
-              {childPost ? <p>Пост: <Link href={`/content/${childPost.id}`}>{childPost.title}</Link></p> : <p className="muted">Пост для этого пункта ещё не создан.</p>}
-              {downstreamPublication ? <p>Дальше: {PUBLICATION_STATUS_LABELS[downstreamPublication.status]}{downstreamPublication.scheduled_at ? ` · ${formatDateTime(downstreamPublication.scheduled_at)}` : ""}</p> :
-                childPost?.status === "APPROVED" && !archived ? <button disabled={publicationBusy === childPost.id} onClick={() => preparePublication(childPost)}>Запланировать публикацию</button> :
-                  childPost && <p className="muted">Публикация станет доступна после утверждения поста.</p>}
-            </div>
-            {plan.status === "DRAFT" && !archived && <div className="plan-edit-actions"><button className="secondary" onClick={() => editPlanItem(plan, item.id)}>Изменить</button><button className="secondary" onClick={() => removePlanItem(plan, item.id)}>Убрать</button><button className="secondary" aria-label="Поднять пункт" disabled={index === 0} onClick={() => movePlanItem(plan, index, -1)}>↑</button><button className="secondary" aria-label="Опустить пункт" disabled={index === plan.items.filter((entry) => entry.status === "PLANNED").length - 1} onClick={() => movePlanItem(plan, index, 1)}>↓</button></div>}
-          </li>;
-        })}</ol>
-        {plan.status === "DRAFT" && <div className="actions"><button onClick={() => transitionPlan(plan.id, "submit")}>Отправить план на согласование</button><button className="secondary" onClick={() => addPlanItem(plan)}>Добавить пункт</button></div>}
-        {plan.status === "REJECTED" && <button onClick={() => publicationPlansApi.revise(plan.id).then(loadPlans).catch((reason: Error) => setError(reason.message))}>Вернуть в редактуру</button>}
-        {plan.status === "WAITING_APPROVAL" && <div className="actions"><button onClick={() => transitionPlan(plan.id, "approve")}>Утвердить план</button><button className="secondary" onClick={() => transitionPlan(plan.id, "reject")}>Вернуть на доработку</button></div>}
-        <p className="muted">Утверждение плана не создаёт посты и не отправляет публикации автоматически.</p>
-      </article>) : <p className="empty-state">План публикаций ещё не создан.</p>}
+      {currentPlan ? renderPlanCard(currentPlan) : <p className="empty-state">План публикаций ещё не создан.</p>}
+      {otherPlans.length > 0 && <details className="disclosure">
+        <summary>Другие планы ({otherPlans.length})</summary>
+        <div className="disclosure-body">{otherPlans.map(renderPlanCard)}</div>
+      </details>}
       {publicationPlans.some((plan) => plan.items.some((item) => item.near_publication_warnings?.length)) && <p className="warning">В это время рядом запланирована другая публикация в том же канале.</p>}
     </section>
 
