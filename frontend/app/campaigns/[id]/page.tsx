@@ -84,7 +84,7 @@ export default function CampaignDetailsPage() {
   const calendarGroups = calendarItems.reduce<Record<string, PublicationCalendarItem[]>>((groups, item) => {
     const timestamp = item.scheduled_at ?? item.published_at;
     if (!timestamp) return groups;
-    const date = new Date(timestamp).toLocaleDateString("ru-RU");
+    const date = formatDate(timestamp);
     (groups[date] ??= []).push(item);
     return groups;
   }, {});
