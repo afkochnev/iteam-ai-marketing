@@ -1130,11 +1130,18 @@ async def test_current_version_approval_requires_exact_hash_and_approves(
         },
         task.assigned_agent_id,
     )
-    await approve_content(
+    response = await approve_content(
         post.id,
         ContentApprovalRequest(comment="Согласовано"),
         user,
         db_session,
+    )
+    assert response.approved_version_id == second.id
+    assert response.current_version is not None
+    assert response.current_version.id == second.id
+    assert any(
+        approval.status == "APPROVED" and approval.subject_version == 2
+        for approval in response.approval_history
     )
     await db_session.commit()
     await db_session.refresh(post)
@@ -1241,6 +1248,8 @@ async def test_article_approval_can_approve_and_reject_with_authenticated_user(
         article.id, ContentApprovalRequest(comment="Согласовано"), user, db_session
     )
     assert approved.status is ContentStatus.APPROVED
+    assert approved.current_version is not None
+    assert approved.approved_version_id == approved.current_version.id
     article, user = await create_article_approval(db_session)
     with pytest.raises(AppError):
         await reject_content(article.id, ContentRejectionRequest(comment=" "), user, db_session)
