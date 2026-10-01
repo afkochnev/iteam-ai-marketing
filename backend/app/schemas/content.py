@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.content import ContentStatus, ContentType
 
@@ -30,10 +30,19 @@ class ContentVersionSummary(BaseModel):
     created_at: datetime
 
 
+class ContentDerivationResponse(BaseModel):
+    source_content_item_id: UUID
+    source_content_item_title: str
+    source_content_version_id: UUID
+    source_version_number: int
+    section_key: str
+
+
 class ContentVersionResponse(ContentVersionSummary):
     content: str
     structured_content: dict[str, object]
     sources: list[ContentSourceResponse]
+    derivations: list[ContentDerivationResponse] = Field(default_factory=list)
 
 
 class ContentApprovalHistory(BaseModel):
@@ -58,7 +67,10 @@ class ContentListItem(BaseModel):
     parent_content_item_id: UUID | None = None
     channel: str | None = None
     approved_version_id: UUID | None = None
+    approved_version_number: int | None = None
     current_version_id: UUID | None = None
+    source_content_item_id: UUID | None = None
+    source_content_item_title: str | None = None
     publication_plan_item_id: UUID | None = None
     plan_channel: str | None = None
     plan_scheduled_at: datetime | None = None
@@ -69,4 +81,4 @@ class ContentResponse(ContentListItem):
     author_agent_id: UUID
     current_version: ContentVersionResponse | None
     versions: list[ContentVersionSummary]
-    approval_history: list[ContentApprovalHistory] = []
+    approval_history: list[ContentApprovalHistory] = Field(default_factory=list)

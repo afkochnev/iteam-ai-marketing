@@ -1,5 +1,33 @@
 "use client";
+
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { approvalsApi, Approval } from "@/lib/api";
-export default function ApprovalsPage(){const [items,setItems]=useState<Approval[]>([]);const [error,setError]=useState("");useEffect(()=>{approvalsApi.list().then(setItems).catch(e=>setError(e.message));},[]);return <main className="page"><div className="page-header"><div><p className="eyebrow">Human-in-the-loop</p><h1>Согласования</h1></div><Link href="/">На главную</Link></div>{error&&<p className="error">{error}</p>}{!error&&!items.length?<p>Согласований пока нет.</p>:<div className="table-wrap"><table><thead><tr><th>Тип</th><th>Версия</th><th>Статус</th><th>Создано</th></tr></thead><tbody>{items.map(item=><tr key={item.id}><td><Link href={item.object_type === "CONTENT_ITEM" ? `/content/${item.object_id}` : `/campaigns/${item.object_id}`}>{item.object_type}</Link></td><td>{item.subject_version}</td><td>{item.status}</td><td>{new Date(item.created_at).toLocaleString("ru-RU")}</td></tr>)}</tbody></table></div>}</main>}
+
+import { PageBreadcrumbs } from "@/components/page-breadcrumbs";
+import { StatusBadge } from "@/components/status-badge";
+import { approvalsApi, type Approval } from "@/lib/api";
+import { formatDateTime } from "@/lib/campaigns";
+
+const approvalStatus: Record<Approval["status"], string> = {
+  PENDING: "Ожидает решения",
+  APPROVED: "Утверждено",
+  REJECTED: "Отклонено",
+  REVISION_REQUESTED: "Нужна доработка",
+};
+
+export default function ApprovalsPage() {
+  const [items, setItems] = useState<Approval[]>([]);
+  const [error, setError] = useState("");
+  useEffect(() => { void approvalsApi.list().then(setItems).catch((reason: Error) => setError(reason.message)); }, []);
+
+  return <main className="page">
+    <PageBreadcrumbs items={[{ label: "Согласования" }]} />
+    <header className="page-header"><div><p className="eyebrow">Решения человека</p><h1>Согласования</h1><p className="page-subtitle">Проверяйте стратегию кампании и версии материалов до следующего этапа.</p></div><Link className="button-link secondary" href="/campaigns">К кампаниям</Link></header>
+    {error && <div className="empty-state" role="alert"><h2>Не удалось загрузить согласования</h2><p>{error}</p></div>}
+    {!error && !items.length && <p className="empty-state">Согласований пока нет.</p>}
+    {!error && items.length > 0 && <div className="content-stack">{items.map((item) => {
+      const isContent = item.object_type === "CONTENT_ITEM";
+      return <article className="content-card" key={item.id}><div className="card-heading"><div><p className="eyebrow">{isContent ? "Материал" : "Стратегия кампании"} · версия {item.subject_version}</p><h2><Link href={isContent ? `/content/${item.object_id}` : `/campaigns/${item.object_id}`}>{isContent ? "Открыть материал" : "Открыть кампанию"}</Link></h2><p className="muted">Создано {formatDateTime(item.created_at)}</p></div><StatusBadge status={item.status} label={approvalStatus[item.status]} /></div>{item.comment && <p>{item.comment}</p>}</article>;
+    })}</div>}
+  </main>;
+}
