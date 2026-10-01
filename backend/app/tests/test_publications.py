@@ -762,6 +762,8 @@ async def test_retry_after_reconciliation_gets_fresh_execution_token(
     await service.reconcile_not_published(publication.id, user, note="absent")
     row = await db_session.get(Publication, publication.id)
     assert row is not None
+    row.approved_for_publish_at = datetime.now(UTC)
+    row.approved_for_publish_by = user.id
     row.status = PublicationStatus.APPROVED
     row.failure_code = None
     row.failure_message = None

@@ -58,6 +58,10 @@ class ContentListItem(BaseModel):
     parent_content_item_id: UUID | None = None
     channel: str | None = None
     approved_version_id: UUID | None = None
+    current_version_id: UUID | None = None
+    publication_plan_item_id: UUID | None = None
+    plan_channel: str | None = None
+    plan_scheduled_at: datetime | None = None
 
 
 class ContentResponse(ContentListItem):

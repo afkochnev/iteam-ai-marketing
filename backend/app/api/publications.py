@@ -33,6 +33,17 @@ async def create_publication(
     return await PublicationService(session).create(payload, user)
 
 
+@router.post(
+    "/plan-content/{content_id}/schedule",
+    response_model=PublicationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def schedule_plan_content(
+    content_id: UUID, user: CurrentUser, session: SessionDependency
+) -> PublicationResponse:
+    return await PublicationService(session).schedule_content(content_id, user)
+
+
 @router.get("/campaign/{campaign_id}", response_model=list[PublicationResponse])
 async def list_campaign_publications(
     campaign_id: UUID, _user: CurrentUser, session: SessionDependency

@@ -1,3 +1,4 @@
+import hashlib
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -29,6 +30,7 @@ from app.models.publication import (
     PublicationStatus,
     ReconciliationDecision,
 )
+from app.models.publication_plan import PublicationPlan, PublicationPlanItem, PublicationPlanStatus
 from app.models.user import User
 from app.schemas.publication import (
     PublicationCalendarItem,
@@ -48,6 +50,182 @@ def utc_now() -> datetime:
 class PublicationService:
     def __init__(self, session: AsyncSession):
         self.session = session
+
+    async def _plan_item(self, item: ContentItem) -> PublicationPlanItem | None:
+        metadata = item.metadata_ or {}
+        plan_bound = any(
+            key in metadata for key in ("publication_plan_id", "publication_plan_item_id")
+        )
+        if not plan_bound:
+            plan_bound = (
+                await self.session.scalar(
+                    select(ContentVersion.id)
+                    .where(
+                        ContentVersion.content_item_id == item.id,
+                        ContentVersion.generation_key.like("plan-item:%"),
+                    )
+                    .limit(1)
+                )
+                is not None
+            )
+        if not plan_bound:
+            plan_bound = (
+                await self.session.scalar(
+                    select(ContentDerivation.id)
+                    .join(
+                        ContentVersion,
+                        ContentVersion.id == ContentDerivation.derived_content_version_id,
+                    )
+                    .where(
+                        ContentVersion.content_item_id == item.id,
+                        ContentDerivation.source_section_key == "publication_plan_item",
+                    )
+                    .limit(1)
+                )
+                is not None
+            )
+        if not plan_bound:
+            return None
+        try:
+            item_id = UUID(str(metadata["publication_plan_item_id"]))
+            plan_id = UUID(str(metadata["publication_plan_id"]))
+            source_id = UUID(str(metadata["source_content_version_id"]))
+        except (KeyError, ValueError, TypeError) as error:
+            raise AppError(
+                "PUBLICATION_PLAN_LINK_INVALID",
+                "Связь поста с пунктом плана отсутствует или неоднозначна.",
+                409,
+            ) from error
+        plan_item = await self.session.get(PublicationPlanItem, item_id)
+        plan = await self.session.get(PublicationPlan, plan_id)
+        if (
+            plan_item is None
+            or plan is None
+            or plan.status is not PublicationPlanStatus.APPROVED
+            or plan.campaign_id != item.campaign_id
+            or plan_item.publication_plan_id != plan.id
+            or plan_item.source_content_version_id != source_id
+            or plan_item.status.value != "PLANNED"
+            or item.channel != plan_item.channel
+        ):
+            raise AppError(
+                "PUBLICATION_PLAN_LINK_INVALID",
+                "Пост не соответствует утверждённому пункту плана.",
+                409,
+            )
+        origin_keys = set(
+            await self.session.scalars(
+                select(ContentVersion.generation_key).where(
+                    ContentVersion.content_item_id == item.id,
+                    ContentVersion.generation_key.like("plan-item:%"),
+                )
+            )
+        )
+        if origin_keys and origin_keys != {f"plan-item:{plan_item.id}"}:
+            raise AppError(
+                "PUBLICATION_PLAN_LINK_INVALID",
+                "Связь пункта плана противоречит происхождению поста.",
+                409,
+            )
+        return plan_item
+
+    async def _ensure_plan_snapshot(self, publication: Publication, item: ContentItem) -> None:
+        plan_item = await self._plan_item(item)
+        if plan_item is not None and (
+            publication.scheduled_at is None
+            or publication.scheduled_at != plan_item.scheduled_at
+            or publication.channel != plan_item.channel
+        ):
+            raise AppError(
+                "PUBLICATION_PLAN_SCHEDULE_MISMATCH",
+                "Публикация не соответствует утверждённому расписанию.",
+                409,
+            )
+
+    @staticmethod
+    def _future_plan_schedule(plan_item: PublicationPlanItem) -> datetime:
+        scheduled = plan_item.scheduled_at
+        if scheduled.tzinfo is None or scheduled.utcoffset() is None:
+            raise AppError(
+                "PUBLICATION_TIMEZONE_REQUIRED", "Плановая дата должна содержать timezone.", 409
+            )
+        if scheduled <= utc_now():
+            raise AppError(
+                "PUBLICATION_PLAN_ITEM_SCHEDULE_IN_PAST",
+                (
+                    "Плановая дата уже прошла. Выберите отдельное действие "
+                    "для публикации сейчас или измените план."
+                ),
+                409,
+            )
+        return scheduled.astimezone(UTC)
+
+    async def schedule_content(self, content_id: UUID, user: User) -> PublicationResponse:
+        item = await self.session.scalar(
+            select(ContentItem).where(ContentItem.id == content_id).with_for_update()
+        )
+        if item is None:
+            raise AppError("CONTENT_NOT_FOUND", "Материал не найден.", 404)
+        plan_item = await self._plan_item(item)
+        if plan_item is None:
+            raise AppError(
+                "PUBLICATION_PLAN_LINK_REQUIRED", "Для этого действия требуется пункт плана.", 409
+            )
+        if item.current_version_id is None:
+            raise AppError(
+                "PUBLICATION_APPROVAL_REQUIRED", "Требуется точная согласованная версия.", 409
+            )
+        return await self.create(
+            PublicationCreate(
+                content_item_id=item.id,
+                content_version_id=item.current_version_id,
+                channel=plan_item.channel,
+            ),
+            user,
+            authorize=True,
+        )
+
+    async def _authorize(self, publication: Publication, user: User) -> None:
+        item = await self._ensure_content_version_approved(
+            publication.content_item_id, publication.content_version_id, publication.channel
+        )
+        plan_item = await self._plan_item(item)
+        if plan_item is not None:
+            planned = self._future_plan_schedule(plan_item)
+            if publication.scheduled_at != planned or publication.channel != plan_item.channel:
+                raise AppError(
+                    "PUBLICATION_PLAN_SCHEDULE_MISMATCH",
+                    "Публикация не соответствует расписанию плана; отмените и пересоздайте её.",
+                    409,
+                )
+        publication.status = PublicationStatus.APPROVED
+        publication.approved_for_publish_at = utc_now()
+        publication.approved_for_publish_by = user.id
+        await self.session.flush()
+        await ActivityLogService(self.session).record(
+            "PUBLICATION_APPROVED",
+            operation_key=f"publication-approved:{publication.id}",
+            campaign_id=publication.campaign_id,
+            user_id=user.id,
+            content_item_id=publication.content_item_id,
+            metadata={"publication_id": str(publication.id)},
+        )
+        if plan_item is not None:
+            assert publication.scheduled_at is not None
+            publication.status = PublicationStatus.SCHEDULED
+            await self.session.flush()
+            await ActivityLogService(self.session).record(
+                "PUBLICATION_SCHEDULED",
+                operation_key=f"publication-schedule:{publication.id}:{publication.scheduled_at.isoformat()}",
+                campaign_id=publication.campaign_id,
+                user_id=user.id,
+                content_item_id=publication.content_item_id,
+                metadata={
+                    "publication_id": str(publication.id),
+                    "publication_plan_item_id": str(plan_item.id),
+                    "scheduled_at": publication.scheduled_at.isoformat(),
+                },
+            )
 
     async def _provenance(self, version_id: UUID) -> list[PublicationProvenance]:
         rows = (
@@ -149,6 +327,22 @@ class PublicationService:
                 "Для публикации требуется согласованная версия Social Post.",
                 409,
             )
+        expected_hash = approval.subject_snapshot.get("content_hash")
+        if item.parent_content_item_id is not None and approval.object_id != item.id:
+            expected_hash = next(
+                (
+                    post.get("content_hash")
+                    for post in approval.subject_snapshot.get("posts", [])
+                    if str(post.get("content_version_id")) == str(version.id)
+                ),
+                None,
+            )
+        if expected_hash and expected_hash != hashlib.sha256(version.content.encode()).hexdigest():
+            raise AppError(
+                "PUBLICATION_VERSION_INTEGRITY_INVALID",
+                "Содержимое версии изменилось после согласования.",
+                409,
+            )
         return item
 
     async def _response(self, publication: Publication) -> PublicationResponse:
@@ -184,6 +378,14 @@ class PublicationService:
             and provider_enabled
             and publication.retry_count < settings.publication_max_retries
         )
+        content_item = await self.session.get(ContentItem, publication.content_item_id)
+        raw_plan_item = (
+            (content_item.metadata_ or {}).get("publication_plan_item_id") if content_item else None
+        )
+        try:
+            plan_item_id = UUID(str(raw_plan_item)) if raw_plan_item else None
+        except ValueError:
+            plan_item_id = None
         return PublicationResponse(
             id=publication.id,
             campaign_id=publication.campaign_id,
@@ -191,6 +393,7 @@ class PublicationService:
             content_version_id=publication.content_version_id,
             channel=publication.channel,
             provider_enabled=provider_enabled,
+            publication_plan_item_id=plan_item_id,
             status=publication.status,
             scheduled_at=publication.scheduled_at,
             approved_for_publish_at=publication.approved_for_publish_at,
@@ -365,16 +568,46 @@ class PublicationService:
         await self.session.refresh(publication)
         return await self._response(publication)
 
-    async def create(self, payload: PublicationCreate, user: User) -> PublicationResponse:
+    async def create(
+        self, payload: PublicationCreate, user: User, *, authorize: bool = False
+    ) -> PublicationResponse:
         item = await self._ensure_content_version_approved(
             payload.content_item_id, payload.content_version_id, payload.channel
         )
+        plan_item = await self._plan_item(item)
+        scheduled_at = None
+        if plan_item is not None:
+            if payload.content_version_id != item.current_version_id:
+                raise AppError(
+                    "PUBLICATION_VERSION_MISMATCH",
+                    "Требуется текущая точная согласованная версия поста.",
+                    409,
+                )
+            scheduled_at = self._future_plan_schedule(plan_item)
+        elif authorize:
+            raise AppError(
+                "PUBLICATION_PLAN_LINK_REQUIRED", "Для планирования требуется пункт плана.", 409
+            )
+        duplicate_status = or_(
+            Publication.status.in_(ACTIVE_PUBLICATION_STATUSES),
+            Publication.failure_code.in_(
+                ["TELEGRAM_RECONCILIATION_REQUIRED", "VK_RECONCILIATION_REQUIRED"]
+            ),
+        )
+        if plan_item is not None:
+            duplicate_status = or_(
+                duplicate_status, Publication.status == PublicationStatus.PUBLISHED
+            )
         existing = await self.session.scalar(
             select(Publication)
             .where(
-                Publication.content_version_id == payload.content_version_id,
+                (
+                    Publication.content_item_id == item.id
+                    if plan_item is not None
+                    else Publication.content_version_id == payload.content_version_id
+                ),
                 Publication.channel == payload.channel,
-                Publication.status.in_(ACTIVE_PUBLICATION_STATUSES),
+                duplicate_status,
             )
             .with_for_update()
         )
@@ -390,6 +623,7 @@ class PublicationService:
             content_version_id=payload.content_version_id,
             channel=payload.channel,
             status=PublicationStatus.DRAFT,
+            scheduled_at=scheduled_at,
         )
         self.session.add(publication)
         await self.session.flush()
@@ -404,6 +638,8 @@ class PublicationService:
                 "content_version_id": str(payload.content_version_id),
             },
         )
+        if authorize:
+            await self._authorize(publication, user)
         await self.session.commit()
         await self.session.refresh(publication)
         return await self._response(publication)
@@ -518,18 +754,7 @@ class PublicationService:
                 "Публикацию нельзя согласовать в текущем состоянии.",
                 409,
             )
-        publication.status = PublicationStatus.APPROVED
-        publication.approved_for_publish_at = datetime.now(UTC)
-        publication.approved_for_publish_by = user.id
-        await self.session.flush()
-        await ActivityLogService(self.session).record(
-            "PUBLICATION_APPROVED",
-            operation_key=f"publication-approved:{publication.id}",
-            campaign_id=publication.campaign_id,
-            user_id=user.id,
-            content_item_id=publication.content_item_id,
-            metadata={"publication_id": str(publication.id)},
-        )
+        await self._authorize(publication, user)
         await self.session.commit()
         await self.session.refresh(publication)
         return await self._response(publication)
@@ -556,6 +781,15 @@ class PublicationService:
         await self._ensure_content_version_approved(
             publication.content_item_id, publication.content_version_id, publication.channel
         )
+        item = await self.session.get(ContentItem, publication.content_item_id)
+        assert item is not None
+        plan_item = await self._plan_item(item)
+        if plan_item is not None and scheduled_at.astimezone(UTC) != publication.scheduled_at:
+            raise AppError(
+                "PUBLICATION_PLAN_SCHEDULE_MISMATCH",
+                "Дата принадлежит утверждённому плану; отмените публикацию и измените план.",
+                409,
+            )
         previous_scheduled_at = publication.scheduled_at
         event = (
             "PUBLICATION_RESCHEDULED"
@@ -616,6 +850,20 @@ class PublicationService:
             and publication.scheduled_at is not None
             and publication.scheduled_at <= now
         )
+        eligible = (
+            eligible
+            and publication.approved_for_publish_at is not None
+            and publication.approved_for_publish_by is not None
+        )
+        eligible = eligible and (
+            publication.scheduled_at is None or publication.scheduled_at <= now
+        )
+        eligible = (
+            eligible
+            and publication.execution_token is None
+            and publication.failure_code
+            not in {"VK_RECONCILIATION_REQUIRED", "TELEGRAM_RECONCILIATION_REQUIRED"}
+        )
         if not eligible:
             raise AppError(
                 "PUBLICATION_INVALID_STATE", "Публикацию нельзя запустить в текущем состоянии.", 409
@@ -628,9 +876,10 @@ class PublicationService:
             )
         if publication.channel.value == "VK" and not settings.vk_publishing_enabled:
             raise AppError("VK_PUBLISHING_DISABLED", "VK publishing отключён.", 409)
-        await self._ensure_content_version_approved(
+        item = await self._ensure_content_version_approved(
             publication.content_item_id, publication.content_version_id, publication.channel
         )
+        await self._ensure_plan_snapshot(publication, item)
         publication.status = PublicationStatus.PUBLISHING
         # Bind the queue message to a durable, one-use attempt before commit.
         # Workers must present this token; an old message carrying only the
@@ -671,6 +920,12 @@ class PublicationService:
             return None
         if execution_token is not None and publication.execution_token != execution_token:
             return None
+        if (
+            publication.approved_for_publish_at is None
+            or publication.approved_for_publish_by is None
+            or (publication.scheduled_at is not None and publication.scheduled_at > utc_now())
+        ):
+            return None
         item = await self.session.scalar(
             select(ContentItem).where(ContentItem.id == publication.content_item_id)
         )
@@ -696,6 +951,7 @@ class PublicationService:
             await self._ensure_content_version_approved(
                 publication.content_item_id, publication.content_version_id, publication.channel
             )
+            await self._ensure_plan_snapshot(publication, item)
         except AppError:
             publication.status = PublicationStatus.FAILED
             publication.failure_code = "PUBLICATION_CONTENT_MISSING"
@@ -823,6 +1079,12 @@ class PublicationService:
             return None
         if execution_token is not None and publication.execution_token != execution_token:
             return None
+        if (
+            publication.approved_for_publish_at is None
+            or publication.approved_for_publish_by is None
+            or (publication.scheduled_at is not None and publication.scheduled_at > utc_now())
+        ):
+            return None
         item = await self.session.scalar(
             select(ContentItem).where(ContentItem.id == publication.content_item_id)
         )
@@ -845,6 +1107,7 @@ class PublicationService:
                 publication.content_version_id,
                 publication.channel,
             )
+            await self._ensure_plan_snapshot(publication, item)
         except AppError:
             publication.status = PublicationStatus.FAILED
             publication.failure_code = "PUBLICATION_CONTENT_MISSING"
