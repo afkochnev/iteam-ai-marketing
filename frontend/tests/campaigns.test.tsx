@@ -289,10 +289,77 @@ describe("Campaigns UI", () => {
 });
 
 
+describe("Campaign plan focus", () => {
+  afterEach(() => cleanup());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    get.mockResolvedValue(campaign);
+    taskList.mockResolvedValue([]);
+    approvalList.mockResolvedValue([]);
+    contentList.mockResolvedValue([{ id: "article-1", campaign_id: campaign.id, content_type: "ARTICLE", title: "Исходная статья", status: "APPROVED", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at }]);
+    activityList.mockResolvedValue([]);
+    publicationList.mockResolvedValue([]);
+    publicationCalendar.mockResolvedValue([]);
+    feedbackList.mockResolvedValue([]);
+    feedbackAnalyses.mockResolvedValue([]);
+    performance.mockResolvedValue(null);
+    plansList.mockResolvedValue([]);
+  });
+
+  it("prioritizes the approved plan and collapses other plans", async () => {
+    const makePlan = (id: string, status: "APPROVED" | "DRAFT", topic: string) => ({
+      id,
+      campaign_id: campaign.id,
+      status,
+      planning_horizon_start: "2026-10-01",
+      planning_horizon_end: "2026-10-14",
+      timezone_policy: "UTC",
+      created_by_user_id: "user-1",
+      generated_by_agent_run_id: null,
+      feedback_analysis_id: null,
+      approved_at: null,
+      approved_by_user_id: null,
+      items: [{
+        id: `item-${id}`,
+        position: 1,
+        scheduled_at: "2026-10-06T12:00:00Z",
+        channel: "VK",
+        source_content_item_id: "article-1",
+        source_content_version_id: "article-version-1",
+        topic,
+        angle: "Управленческий ракурс",
+        purpose: "Помочь выбрать следующий шаг",
+        format: "expert_observation",
+        message_brief: "Краткий редакционный бриф",
+        source_claim_ids: null,
+        source_support_summary: null,
+        status: "PLANNED",
+        near_publication_warnings: [],
+      }],
+    });
+    plansList.mockResolvedValue([
+      makePlan("draft-old", "DRAFT", "Черновой пункт A"),
+      makePlan("approved", "APPROVED", "Утверждённый пункт"),
+      makePlan("draft-new", "DRAFT", "Черновой пункт B"),
+    ]);
+
+    render(<CampaignDetailsPage />);
+
+    expect(await screen.findByRole("heading", { name: "Утверждённый пункт" })).toBeInTheDocument();
+    const otherPlansSummary = screen.getByText("Другие планы (2)");
+    const otherPlansDisclosure = otherPlansSummary.closest("details");
+    expect(otherPlansDisclosure).not.toHaveAttribute("open");
+    fireEvent.click(otherPlansSummary);
+    expect(otherPlansDisclosure).toHaveAttribute("open");
+    expect(await screen.findByRole("heading", { name: "Черновой пункт A" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Черновой пункт B" })).toBeInTheDocument();
+  });
+});
+
 describe("Plan-bound publication scheduling", () => {
   const planned = { id: "post-plan", campaign_id: campaign.id, content_type: "SOCIAL_POST", title: "Плановый пост", status: "APPROVED", current_version_number: 1, current_version_id: "exact-v1", channel: "VK", publication_plan_item_id: "plan-item-2", plan_channel: "VK", plan_scheduled_at: "2026-10-06T12:00:00Z", created_at: campaign.created_at, updated_at: campaign.updated_at };
   const scheduled = { id: "scheduled-1", content_item_id: planned.id, content_version_id: "exact-v1", channel: "VK", status: "SCHEDULED", scheduled_at: planned.plan_scheduled_at, publication_plan_item_id: "plan-item-2" };
-  beforeEach(() => { vi.clearAllMocks(); get.mockResolvedValue(campaign); taskList.mockResolvedValue([]); approvalList.mockResolvedValue([]); activityList.mockResolvedValue([]); contentList.mockResolvedValue([planned]); publicationList.mockResolvedValue([]); publicationCalendar.mockResolvedValue([]); });
+  beforeEach(() => { vi.clearAllMocks(); get.mockResolvedValue(campaign); taskList.mockResolvedValue([]); approvalList.mockResolvedValue([]); activityList.mockResolvedValue([]); contentList.mockResolvedValue([planned]); publicationList.mockResolvedValue([]); publicationCalendar.mockResolvedValue([]); plansList.mockResolvedValue([]); });
   afterEach(() => cleanup());
 
   it("shows browser-local plan context and sends only content ID; displays scheduled calendar", async () => {
