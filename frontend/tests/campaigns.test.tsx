@@ -306,13 +306,13 @@ describe("Campaign plan focus", () => {
     plansList.mockResolvedValue([]);
   });
 
-  it("prioritizes the approved plan and collapses other plans", async () => {
-    const makePlan = (id: string, status: "APPROVED" | "DRAFT", topic: string) => ({
+  it("renders campaign data and every collapsed plan with defensive date formatting", async () => {
+    const makePlan = (id: string, status: "APPROVED" | "DRAFT", topic: string, start: string, end = "2026-11-01T23:59:00Z") => ({
       id,
       campaign_id: campaign.id,
       status,
-      planning_horizon_start: "2026-10-01",
-      planning_horizon_end: "2026-10-14",
+      planning_horizon_start: start,
+      planning_horizon_end: end,
       timezone_policy: "UTC",
       created_by_user_id: "user-1",
       generated_by_agent_run_id: null,
@@ -337,22 +337,36 @@ describe("Campaign plan focus", () => {
         near_publication_warnings: [],
       }],
     });
+    contentList.mockResolvedValue([
+      ...[1, 2, 3].map((number) => ({ id: `article-${number}`, campaign_id: campaign.id, content_type: "ARTICLE", title: `Статья ${number}`, status: "APPROVED", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at })),
+      ...[1, 2].map((number) => ({ id: `post-${number}`, campaign_id: campaign.id, content_type: "SOCIAL_POST", title: `Пост ${number}`, status: "APPROVED", current_version_number: 1, created_at: campaign.created_at, updated_at: campaign.updated_at, channel: "VK" })),
+    ]);
+    taskList.mockResolvedValue([{ id: "task-1", campaign_id: campaign.id, campaign: { id: campaign.id, name: campaign.name }, task_type: "WRITE_ARTICLE", title: "Подготовить материал", assigned_agent: null, priority: "NORMAL", status: "FAILED", deadline: null, created_at: campaign.created_at, updated_at: campaign.updated_at }]);
+    publicationList.mockResolvedValue([{ id: "publication-1", campaign_id: campaign.id, content_item_id: "post-1", content_version_id: "post-version-1", channel: "VK", status: "SCHEDULED", scheduled_at: "2026-10-06T12:00:00Z", approved_for_publish_at: campaign.created_at, approved_for_publish_by: "user-1", external_id: null, external_url: null, published_at: null, failure_code: null, failure_message: null, retry_count: 0, created_at: campaign.created_at, updated_at: campaign.updated_at, provenance: [] }]);
     plansList.mockResolvedValue([
-      makePlan("draft-old", "DRAFT", "Черновой пункт A"),
-      makePlan("approved", "APPROVED", "Утверждённый пункт"),
-      makePlan("draft-new", "DRAFT", "Черновой пункт B"),
+      makePlan("draft-old", "DRAFT", "Черновой пункт A", "2026-10-05T00:00:00Z"),
+      makePlan("approved", "APPROVED", "Утверждённый пункт", "2026-10-05T00:00:00Z"),
+      makePlan("draft-invalid", "DRAFT", "Черновой пункт с датой", "исторически-некорректная-дата"),
+      makePlan("draft-new", "DRAFT", "Черновой пункт B", "2026-10-01"),
     ]);
 
     render(<CampaignDetailsPage />);
 
     expect(await screen.findByRole("heading", { name: "Утверждённый пункт" })).toBeInTheDocument();
-    const otherPlansSummary = screen.getByText("Другие планы (2)");
+    expect(screen.getByRole("heading", { name: /Статьи 3/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Посты для соцсетей 2/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Предстоящие публикации" })).toBeInTheDocument();
+    expect(await screen.findAllByText("Подготовить материал")).toHaveLength(2);
+    expect(screen.getByRole("list", { name: "Предстоящие публикации" })).toHaveTextContent("Пост 1");
+    const otherPlansSummary = screen.getByText("Другие планы (3)");
     const otherPlansDisclosure = otherPlansSummary.closest("details");
     expect(otherPlansDisclosure).not.toHaveAttribute("open");
+    expect(otherPlansDisclosure).toHaveTextContent("Некорректная дата");
     fireEvent.click(otherPlansSummary);
     expect(otherPlansDisclosure).toHaveAttribute("open");
     expect(await screen.findByRole("heading", { name: "Черновой пункт A" })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Черновой пункт B" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Черновой пункт с датой" })).toBeInTheDocument();
   });
 });
 
