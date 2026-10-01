@@ -219,7 +219,6 @@ async def test_runner_preserves_claimed_single_social_post_contract(
     usage = SimpleNamespace(requests=1, input_tokens=2, output_tokens=3, total_tokens=5)
     post = {
         "key": "diagnostic",
-        "channel": "TELEGRAM",
         "title": "Диагностика",
         "text_markdown": "Команда может спорить о выполнении курса или о самом направлении.",
         "cta": "",
@@ -246,6 +245,7 @@ async def test_runner_preserves_claimed_single_social_post_contract(
     )
 
     assert len(result.output_data["pack"]["posts"]) == 1  # type: ignore[index]
+    assert "channel" not in result.output_data["pack"]["posts"][0]  # type: ignore[index]
 
 
 async def test_campaign_plan_sdk_schema_error_enters_bounded_repair(
