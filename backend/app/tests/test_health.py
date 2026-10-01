@@ -1,8 +1,8 @@
 import pytest
-from alembic.config import Config
-from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from app.api import system
 from app.api.system import EXPECTED_MIGRATION_HEAD
 from app.core.errors import AppError
