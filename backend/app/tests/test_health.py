@@ -1,10 +1,18 @@
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 
 from app.api import system
+from app.api.system import EXPECTED_MIGRATION_HEAD
 from app.core.errors import AppError
 from app.core.redaction import redact
 from app.main import app
+
+
+def test_readiness_expected_head_matches_alembic_head() -> None:
+    script = ScriptDirectory.from_config(Config("alembic.ini"))
+    assert EXPECTED_MIGRATION_HEAD == script.get_current_head()
 
 
 def test_health() -> None:
