@@ -296,23 +296,21 @@ async def get_content(
         )
         if parent_approval is not None:
             approvals.append(parent_approval)
-    derivation_rows = list(
-        (
-            await session.execute(
-                select(
-                    ContentDerivation,
-                    ContentVersion.version_number,
-                    ContentVersion.content_item_id,
-                    ContentItem.title,
-                )
-                .join(
-                    ContentVersion,
-                    ContentVersion.id == ContentDerivation.source_content_version_id,
-                )
-                .join(ContentItem, ContentItem.id == ContentVersion.content_item_id)
-                .where(ContentDerivation.derived_content_version_id == item.current_version_id)
-                .order_by(ContentDerivation.source_section_key)
+    derivation_rows = (
+        await session.execute(
+            select(
+                ContentDerivation,
+                ContentVersion.version_number,
+                ContentVersion.content_item_id,
+                ContentItem.title,
             )
+            .join(
+                ContentVersion,
+                ContentVersion.id == ContentDerivation.source_content_version_id,
+            )
+            .join(ContentItem, ContentItem.id == ContentVersion.content_item_id)
+            .where(ContentDerivation.derived_content_version_id == item.current_version_id)
+            .order_by(ContentDerivation.source_section_key)
         )
     ).all() if item.current_version_id else []
     derivations = [
