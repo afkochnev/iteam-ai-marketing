@@ -886,12 +886,19 @@ class CampaignWorkspaceService:
             for action in post_actions.values()
             if action.allowed and action.existing_task_id is not None
         }
+        completed_plan_item_ids = {
+            str(item_id)
+            for item_id, action in post_actions.items()
+            if action.error_code == "SOCIAL_POST_ALREADY_EXISTS"
+        }
         issue = next(
             (
                 task
                 for task in tasks
                 if task.status in {TaskStatus.FAILED, TaskStatus.BLOCKED}
                 and task.id not in recoverable_task_ids
+                and str((task.input_data or {}).get("publication_plan_item_id"))
+                not in completed_plan_item_ids
             ),
             None,
         )

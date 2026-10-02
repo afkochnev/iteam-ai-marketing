@@ -429,6 +429,50 @@ async def test_director_prioritizes_failed_task_and_uses_safe_explanation(
     assert "raw technical text" not in str(workspace.model_dump())
 
 
+async def test_director_ignores_failed_plan_item_task_after_post_exists(
+    db_session: AsyncSession,
+) -> None:
+    fixture = await workspace_fixture(db_session, with_post=True)
+    campaign = fixture["campaign"]
+    plan = fixture["plan"]
+    completed_item = fixture["plan_item"]
+    article = fixture["article"]
+    article_version = fixture["article_version"]
+    stale_failure = Task(
+        campaign_id=campaign.id,
+        task_type=TaskType.CREATE_SOCIAL_POSTS,
+        title="Старая ошибка для уже созданного поста",
+        status=TaskStatus.FAILED,
+        priority=TaskPriority.NORMAL,
+        input_data={"publication_plan_item_id": str(completed_item.id)},
+    )
+    next_item = PublicationPlanItem(
+        publication_plan_id=plan.id,
+        position=2,
+        scheduled_at=datetime.now(UTC) + timedelta(days=3),
+        channel=ContentChannel.TELEGRAM,
+        source_content_item_id=article.id,
+        source_content_version_id=article_version.id,
+        topic="Следующий актуальный пост",
+        angle="Практический угол",
+        purpose="Продолжить кампанию",
+        format="post",
+        message_brief="Редакционный бриф",
+        source_claim_ids=["article_test_p01"],
+        source_support_summary="Подтверждённый тезис статьи.",
+        status=PublicationPlanItemStatus.PLANNED,
+    )
+    db_session.add_all([stale_failure, next_item])
+    await db_session.commit()
+
+    workspace = await CampaignWorkspaceService(db_session).get(campaign.id)
+
+    assert workspace.director.failed_task_count == 1
+    assert workspace.director.next_step.entity_type == "publication_plan_item"
+    assert workspace.director.next_step.entity_id == next_item.id
+    assert workspace.director.next_step.title == "Создать TELEGRAM-пост для пункта №2"
+
+
 async def test_director_links_to_the_first_missing_social_post_for_approved_plan(
     db_session: AsyncSession,
 ) -> None:
