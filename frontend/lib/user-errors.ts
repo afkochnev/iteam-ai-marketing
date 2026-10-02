@@ -28,6 +28,48 @@ const ERROR_HELP: Record<string, Omit<UserErrorPresentation, "code" | "technical
     nextStep: "Проверьте источник пункта медиаплана и его утверждённую версию.",
     retryable: false,
   },
+  PUBLICATION_PLAN_NOT_APPROVED: {
+    title: "Пост пока нельзя создать",
+    reason: "Медиаплан ещё не утверждён или относится к другой кампании.",
+    nextStep: "Откройте медиаплан и завершите его согласование.",
+    retryable: false,
+  },
+  PUBLICATION_PLAN_SOURCE_NOT_APPROVED: {
+    title: "Пост пока нельзя создать",
+    reason: "Версия статьи-источника больше не является утверждённой.",
+    nextStep: "Проверьте источник пункта медиаплана и согласуйте нужную версию статьи.",
+    retryable: false,
+  },
+  PUBLICATION_PLAN_PROVENANCE_REQUIRED: {
+    title: "Пост пока нельзя создать",
+    reason: "В пункте медиаплана не зафиксированы подтверждённые тезисы источника.",
+    nextStep: "Исправьте источник и provenance пункта медиаплана.",
+    retryable: false,
+  },
+  PUBLICATION_PLAN_ITEM_NOT_ACTIVE: {
+    title: "Пост пока нельзя создать",
+    reason: "Пункт медиаплана больше не является активным.",
+    nextStep: "Выберите активный пункт текущего утверждённого плана.",
+    retryable: false,
+  },
+  SOCIAL_POST_ALREADY_EXISTS: {
+    title: "Пост уже создан",
+    reason: "Для этого пункта медиаплана уже существует пост.",
+    nextStep: "Откройте существующий пост и продолжите согласование.",
+    retryable: false,
+  },
+  TASK_NOT_READY: {
+    title: "Пост пока нельзя создать",
+    reason: "Задача ещё не выполнила обязательные условия запуска.",
+    nextStep: "Проверьте указанную причину и состояние пункта медиаплана.",
+    retryable: false,
+  },
+  TASK_ALREADY_QUEUED_OR_RUNNING: {
+    title: "Пост уже создаётся",
+    reason: "Для этого пункта уже выполняется задача.",
+    nextStep: "Откройте существующую задачу и дождитесь результата.",
+    retryable: false,
+  },
   WORKER_INTERRUPTED: {
     title: "Выполнение остановилось",
     reason: "Задача прервалась до завершения.",

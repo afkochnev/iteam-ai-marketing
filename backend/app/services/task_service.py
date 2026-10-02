@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import cast
 from uuid import UUID
 
 from sqlalchemy import and_, select
@@ -12,6 +13,7 @@ from app.models.content import ContentItem, ContentStatus, ContentType, ContentV
 from app.models.task import Task, TaskPriority, TaskStatus, TaskType
 from app.repositories.tasks import TaskRepository
 from app.schemas.task import TaskCreate, TaskUpdate
+from app.services.plan_item_smm_service import PlanItemSmmContext, PlanItemSmmService
 
 
 class TaskService:
@@ -58,6 +60,26 @@ class TaskService:
                     "Родительская задача должна принадлежать той же кампании.",
                     409,
                 )
+        plan_context: PlanItemSmmContext | None = None
+        if payload.task_type is TaskType.CREATE_SOCIAL_POSTS and payload.input_data.get(
+            "publication_plan_item_id"
+        ):
+            plan_context = await PlanItemSmmService(self.session).validate(
+                payload.campaign_id,
+                payload.input_data,
+                assigned_agent_id=payload.assigned_agent_id,
+            )
+            existing = await self._active_plan_item_task(plan_context.item.id)
+            if existing is not None:
+                existing.input_data = {**existing.input_data, **plan_context.task_input()}
+                if existing.status is TaskStatus.BLOCKED:
+                    existing.status = TaskStatus.READY
+                    existing.error_message = None
+                if commit:
+                    await self.session.commit()
+                else:
+                    await self.session.flush()
+                return await self.get_task(existing.id)
         dependency_ids = list(dict.fromkeys(payload.dependency_ids))
         if len(dependency_ids) != len(payload.dependency_ids):
             raise AppError("TASK_DEPENDENCY_ALREADY_EXISTS", "Зависимость указана повторно.", 409)
@@ -69,6 +91,8 @@ class TaskService:
                 409,
             )
         values = payload.model_dump(exclude={"dependency_ids"})
+        if plan_context is not None:
+            values["input_data"] = {**payload.input_data, **plan_context.task_input()}
         values["status"] = (
             TaskStatus.READY
             if all(item.status is TaskStatus.COMPLETED for item in dependencies)
@@ -216,13 +240,26 @@ class TaskService:
         return await self.get_task(task.id)
 
     async def _resolve_status(self, task: Task) -> None:
-        dependency_ids = await self.repository.dependency_ids(task.id)
-        dependencies = [await self.get_task(item) for item in dependency_ids]
-        status = (
-            TaskStatus.READY
-            if all(item.status is TaskStatus.COMPLETED for item in dependencies)
-            else TaskStatus.BLOCKED
+        plan_bound = bool(
+            task.task_type is TaskType.CREATE_SOCIAL_POSTS
+            and task.input_data.get("publication_plan_item_id")
         )
+        if plan_bound:
+            context = await PlanItemSmmService(self.session).validate(
+                task.campaign_id,
+                task.input_data,
+                assigned_agent_id=task.assigned_agent_id,
+            )
+            task.input_data = {**task.input_data, **context.task_input()}
+            status = TaskStatus.READY
+        else:
+            dependency_ids = await self.repository.dependency_ids(task.id)
+            dependencies = [await self.get_task(item) for item in dependency_ids]
+            status = (
+                TaskStatus.READY
+                if all(item.status is TaskStatus.COMPLETED for item in dependencies)
+                else TaskStatus.BLOCKED
+            )
         if status is TaskStatus.READY and task.task_type is TaskType.CREATE_SOCIAL_POSTS:
             source_version_id = await self.approved_article_version_for_smm(task)
             if source_version_id is None:
@@ -239,6 +276,16 @@ class TaskService:
 
         if task.task_type is not TaskType.CREATE_SOCIAL_POSTS:
             return None
+        if task.input_data.get("publication_plan_item_id"):
+            try:
+                context = await PlanItemSmmService(self.session).validate(
+                    task.campaign_id,
+                    task.input_data,
+                    assigned_agent_id=task.assigned_agent_id,
+                )
+            except AppError:
+                return None
+            return context.version.id
         dependency_ids = await self.repository.dependency_ids(task.id)
         article_tasks = [
             item
@@ -280,6 +327,30 @@ class TaskService:
             )
         )
         return UUID(str(value)) if value is not None else None
+
+    async def _active_plan_item_task(self, plan_item_id: UUID) -> Task | None:
+        return cast(
+            Task | None,
+            await self.session.scalar(
+                select(Task)
+                .where(
+                    Task.task_type == TaskType.CREATE_SOCIAL_POSTS,
+                    Task.input_data["publication_plan_item_id"].astext == str(plan_item_id),
+                    Task.status.in_(
+                        {
+                            TaskStatus.NEW,
+                            TaskStatus.BLOCKED,
+                            TaskStatus.READY,
+                            TaskStatus.IN_PROGRESS,
+                            TaskStatus.WAITING_REVIEW,
+                            TaskStatus.WAITING_APPROVAL,
+                        }
+                    ),
+                )
+                .order_by(Task.created_at.desc())
+                .limit(1)
+            ),
+        )
 
     async def refresh_dependents_for_content(self, content_id: UUID) -> None:
         item = await self.session.get(ContentItem, content_id)

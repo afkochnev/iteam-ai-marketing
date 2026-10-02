@@ -177,6 +177,8 @@ async def workspace_fixture(
         purpose="Объяснить ценность",
         format="post",
         message_brief="Редакционный бриф",
+        source_claim_ids=["article_test_p01"],
+        source_support_summary="Подтверждённый тезис статьи.",
         status=PublicationPlanItemStatus.PLANNED,
     )
     session.add(plan_item)
@@ -399,6 +401,13 @@ async def test_workspace_does_not_claim_a_version_from_another_article_as_source
     assert item.pipeline[0].status == "unverified"
     assert item.pipeline[0].action_label == "Версия источника не подтверждена"
     assert item.pipeline[1].action_label is None
+    assert item.post_action.allowed is False
+    assert item.post_action.error_code in {
+        "PUBLICATION_PLAN_SOURCE_INVALID",
+        "PUBLICATION_PLAN_SOURCE_NOT_APPROVED",
+    }
+    assert workspace.director.next_step.entity_id == plan_item.id
+    assert workspace.director.next_step.title == "Проверить условия создания поста"
 
 
 async def test_director_prioritizes_failed_task_and_uses_safe_explanation(
@@ -429,8 +438,13 @@ async def test_director_links_to_the_first_missing_social_post_for_approved_plan
 
     workspace = await CampaignWorkspaceService(db_session).get(campaign.id)
 
+    assert workspace.publication_plan is not None
+    action = workspace.publication_plan.items[0].post_action
+    assert action.allowed is True
+    assert action.error_code is None
     assert workspace.director.next_step.entity_type == "publication_plan_item"
     assert workspace.director.next_step.entity_id == plan_item.id
+    assert workspace.director.next_step.title == "Создать VK-пост для пункта №1"
     assert workspace.director.next_step.href == (
         f"/campaigns/{campaign.id}#plan-item-{plan_item.id}"
     )
