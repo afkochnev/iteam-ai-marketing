@@ -25,7 +25,10 @@ export interface AgentRun { id: string; task_id: string; agent_id: string; campa
 export type ApprovalStatus = "PENDING" | "APPROVED" | "REJECTED" | "REVISION_REQUESTED";
 export interface Approval { id: string; object_type: "CAMPAIGN_STRATEGY" | "CONTENT_ITEM"; object_id: string; subject_version: number; status: ApprovalStatus; reviewed_by_user_id: string | null; comment: string | null; subject_snapshot: CampaignPlan; metadata: Record<string, unknown>; created_at: string; resolved_at: string | null; updated_at: string; }
 export type KnowledgeItemStatus = "UPLOADING" | "INDEXING" | "READY" | "FAILED" | "ARCHIVED";
+export type KnowledgeSourceStatus = "ACTIVE" | "ERROR" | "INACTIVE";
+export type KnowledgeSourceType = "FILE_UPLOAD" | "WEBSITE" | "GOOGLE_DRIVE" | "YOUTUBE";
 export interface KnowledgeStore { id: string; provider: "OPENAI"; name: string; external_store_id: string; status: "ACTIVE" | "ERROR" | "INACTIVE"; is_active: boolean; created_at: string; }
+export interface KnowledgeSource { id: string; name: string; source_type: KnowledgeSourceType; source_url: string | null; status: KnowledgeSourceStatus; }
 export interface KnowledgeItem { id: string; source_id: string; title: string; author: string | null; content_type: string; original_filename: string | null; mime_type: string | null; file_size_bytes: number | null; source_url: string | null; openai_file_id: string | null; vector_store_file_id: string | null; status: KnowledgeItemStatus; metadata: Record<string, unknown>; error_code: string | null; error_message: string | null; created_by: string; created_at: string; updated_at: string; indexed_at: string | null; archived_at: string | null; }
 export interface KnowledgeSearchResult { result_key: string; knowledge_item_id: string; source_id: string; source_title: string; filename: string; file_id: string; excerpt: string; score: number | null; metadata: Record<string, unknown>; }
 export type KnowledgePackStatus = "READY" | "INSUFFICIENT";
@@ -148,6 +151,7 @@ export const agentRunsApi = {
 export const knowledgeApi = {
   getStore: () => request<KnowledgeStore | null>("/knowledge/store"),
   initializeStore: () => request<KnowledgeStore>("/knowledge/store/initialize", { method: "POST" }),
+  listSources: () => request<KnowledgeSource[]>("/knowledge/sources"),
   listItems: () => request<KnowledgeItem[]>("/knowledge/items"),
   upload: (file: File, title: string, author: string) => { const body = new FormData(); body.append("file", file); if (title) body.append("title", title); if (author) body.append("author", author); return uploadRequest<KnowledgeItem>("/knowledge/upload", body); },
   retry: (id: string) => request<KnowledgeItem>(`/knowledge/items/${id}/retry`, { method: "POST" }),
