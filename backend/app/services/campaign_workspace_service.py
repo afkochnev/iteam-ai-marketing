@@ -971,6 +971,23 @@ class CampaignWorkspaceService:
                 entity_type="publication_plan",
                 entity_id=current_plan.id,
             )
+        waiting_post = next(
+            (
+                post
+                for item in active_items
+                for post in posts_by_item.get(item.id, [])
+                if post.status is ContentStatus.WAITING_APPROVAL
+            ),
+            None,
+        )
+        if waiting_post:
+            return WorkspaceNextStep(
+                title="Согласовать пост",
+                description=waiting_post.title,
+                href=f"/content/{waiting_post.id}#approval",
+                entity_type="social_post",
+                entity_id=waiting_post.id,
+            )
         if current_plan.status is PublicationPlanStatus.APPROVED:
             missing_post = next(
                 (item for item in active_items if not posts_by_item.get(item.id)),
@@ -1007,23 +1024,6 @@ class CampaignWorkspaceService:
                     entity_type="publication_plan_item",
                     entity_id=missing_post.id,
                 )
-        waiting_post = next(
-            (
-                post
-                for item in active_items
-                for post in posts_by_item.get(item.id, [])
-                if post.status is ContentStatus.WAITING_APPROVAL
-            ),
-            None,
-        )
-        if waiting_post:
-            return WorkspaceNextStep(
-                title="Согласовать пост",
-                description=waiting_post.title,
-                href=f"/content/{waiting_post.id}#approval",
-                entity_type="social_post",
-                entity_id=waiting_post.id,
-            )
         approved_post_without_publication = next(
             (
                 post
