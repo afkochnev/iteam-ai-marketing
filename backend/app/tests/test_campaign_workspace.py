@@ -365,6 +365,7 @@ async def test_workspace_does_not_claim_a_version_from_another_article_as_source
 
     unrelated_article = ContentItem(
         campaign_id=campaign.id,
+        source_task_id=article.source_task_id,
         content_type=ContentType.ARTICLE,
         title="Другая статья",
         status=ContentStatus.APPROVED,
