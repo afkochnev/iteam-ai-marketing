@@ -355,6 +355,47 @@ async def test_workspace_exposes_only_persisted_article_plan_post_and_publicatio
     ]
 
 
+async def test_workspace_does_not_claim_a_version_from_another_article_as_source(
+    db_session: AsyncSession,
+) -> None:
+    fixture = await workspace_fixture(db_session, with_post=False)
+    campaign = fixture["campaign"]
+    article = fixture["article"]
+    plan_item = fixture["plan_item"]
+
+    unrelated_article = ContentItem(
+        campaign_id=campaign.id,
+        content_type=ContentType.ARTICLE,
+        title="Другая статья",
+        status=ContentStatus.APPROVED,
+        author_agent_id=article.author_agent_id,
+    )
+    db_session.add(unrelated_article)
+    await db_session.flush()
+    unrelated_version = ContentVersion(
+        content_item_id=unrelated_article.id,
+        version_number=7,
+        content="Unrelated article body",
+        structured_content={"body": "Unrelated article body"},
+        created_by_agent_id=article.author_agent_id,
+    )
+    db_session.add(unrelated_version)
+    await db_session.flush()
+    plan_item.source_content_version_id = unrelated_version.id
+    await db_session.commit()
+
+    workspace = await CampaignWorkspaceService(db_session).get(campaign.id)
+    assert workspace.publication_plan is not None
+    item = workspace.publication_plan.items[0]
+
+    assert item.source_content_item_title == article.title
+    assert item.source_content_version_id is None
+    assert item.source_version_number is None
+    assert item.pipeline[0].status == "unverified"
+    assert item.pipeline[0].action_label == "Версия источника не подтверждена"
+    assert item.pipeline[1].action_label is None
+
+
 async def test_director_prioritizes_failed_task_and_uses_safe_explanation(
     db_session: AsyncSession,
 ) -> None:

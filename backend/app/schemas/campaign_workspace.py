@@ -59,7 +59,7 @@ class WorkspacePlanItem(BaseModel):
     message_brief: str
     source_content_item_id: UUID
     source_content_item_title: str | None
-    source_content_version_id: UUID
+    source_content_version_id: UUID | None
     source_version_number: int | None
     source_claim_ids: list[str] | None
     source_support_summary: str | None

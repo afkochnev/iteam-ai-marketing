@@ -384,15 +384,32 @@ class CampaignWorkspaceService:
             pubs = publications_by_item.get(item.id, [])
             source = item.source_content_item
             source_version = item.source_content_version
-            source_version_number = source_version.version_number if source_version else None
+            source_version_matches_article = bool(
+                source and source_version and source_version.content_item_id == source.id
+            )
+            source_version_number = (
+                source_version.version_number if source_version_matches_article else None
+            )
             post_refs = [content_refs[post.id] for post in posts if post.id in content_refs]
             publication_refs = [self._publication_reference(pub, item.id) for pub in pubs]
             item_anchor = f"/campaigns/{plan.campaign_id}#plan-item-{item.id}"
             article_stage = WorkspacePipelineStage(
                 label="Статья",
-                status="available" if source else "missing",
+                status=(
+                    "available"
+                    if source_version_matches_article
+                    else "unverified"
+                    if source
+                    else "missing"
+                ),
                 href=f"/content/{source.id}" if source else None,
-                action_label=(f"v{source_version_number}" if source else "Связь не зафиксирована"),
+                action_label=(
+                    f"v{source_version_number}"
+                    if source_version_matches_article
+                    else "Версия источника не подтверждена"
+                    if source
+                    else "Связь не зафиксирована"
+                ),
             )
             post_stage_status = self._post_stage_status(posts)
             post_stage = WorkspacePipelineStage(
@@ -401,7 +418,11 @@ class CampaignWorkspaceService:
                 href=f"/content/{posts[0].id}" if posts else item_anchor,
                 action_label=(
                     "Создать пост"
-                    if not posts and plan.status is PublicationPlanStatus.APPROVED
+                    if (
+                        not posts
+                        and plan.status is PublicationPlanStatus.APPROVED
+                        and source_version_matches_article
+                    )
                     else None
                 ),
             )
@@ -429,7 +450,9 @@ class CampaignWorkspaceService:
                     message_brief=item.message_brief,
                     source_content_item_id=item.source_content_item_id,
                     source_content_item_title=source.title if source else None,
-                    source_content_version_id=item.source_content_version_id,
+                    source_content_version_id=(
+                        item.source_content_version_id if source_version_matches_article else None
+                    ),
                     source_version_number=source_version_number,
                     source_claim_ids=item.source_claim_ids,
                     source_support_summary=item.source_support_summary,
