@@ -109,18 +109,23 @@ class CampaignWorkspaceService:
             ).all()
         )
         content_ids = [item.id for item in contents]
-        approvals = list(
-            (
-                await self.session.scalars(
-                    select(Approval)
-                    .where(
-                        Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
-                        Approval.object_id.in_(content_ids) if content_ids else False,
+        if content_ids:
+            approvals = list(
+                (
+                    await self.session.scalars(
+                        select(Approval)
+                        .where(
+                            Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
+                            Approval.object_id.in_(content_ids),
+                        )
+                        .order_by(
+                            Approval.resolved_at.desc().nullslast(), Approval.created_at.desc()
+                        )
                     )
-                    .order_by(Approval.resolved_at.desc().nullslast(), Approval.created_at.desc())
-                )
-            ).all()
-        )
+                ).all()
+            )
+        else:
+            approvals = []
         strategy_approvals = list(
             (
                 await self.session.scalars(
@@ -336,7 +341,9 @@ class CampaignWorkspaceService:
                 versions.get(item.current_version_id) if item.current_version_id else None
             ),
             approved_version_id=approved_version_id,
-            approved_version_number=versions.get(approved_version_id),
+            approved_version_number=(
+                versions.get(approved_version_id) if approved_version_id is not None else None
+            ),
             source_task_id=item.source_task_id,
             source_task_title=source_task.title if source_task else None,
             source_task_status=source_task.status if source_task else None,
@@ -544,7 +551,7 @@ class CampaignWorkspaceService:
             next_action = "Откройте задачу и проверьте её зависимости."
         elif task.status is TaskStatus.FAILED:
             error_summary, next_action = CampaignWorkspaceService._TASK_ERRORS.get(
-                error_code,
+                error_code or "",
                 (
                     "Задача не завершилась. Подробности доступны в карточке задачи.",
                     "Откройте задачу и проверьте технические сведения.",
