@@ -22,9 +22,10 @@ from app.models.user import User, UserRole
 from app.repositories.approvals import ApprovalRepository
 from app.repositories.users import UserRepository
 from app.schemas.agent_outputs import CampaignPlan
-from app.schemas.campaign import CampaignCreate
+from app.schemas.campaign import CampaignChangeRequest, CampaignCreate, CampaignUpdate
 from app.services.agent_run_service import AgentRunService, build_task_input
 from app.services.agent_runner_service import RuntimeResult
+from app.services.campaign_change_service import CampaignChangeService
 from app.services.campaign_planning_service import CampaignPlanningService
 from app.services.campaign_service import CampaignService
 from app.services.task_service import TaskService
@@ -219,6 +220,62 @@ async def test_revision_rejection_and_runtime_input(
     assert after.strategy_version == 2 and after.status is CampaignStatus.WAITING_APPROVAL
     await CampaignPlanningService(db_session).reject(after.id, user, "Не подходит")
     assert (await CampaignService(db_session).get_campaign(after.id)).status is CampaignStatus.DRAFT
+
+
+async def test_change_revision_keeps_approved_strategy_until_new_approval(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "app.workers.agent_worker.execute_agent_run.delay",
+        lambda _run_id: SimpleNamespace(id="job"),
+    )
+    user, campaign = await setup_campaign(db_session)
+    await complete_plan(db_session, campaign.id)
+    await CampaignPlanningService(db_session).approve(campaign.id, user, "v1 approved")
+    active = await CampaignService(db_session).get_campaign(campaign.id)
+    strategy_v1 = deepcopy(active.strategy)
+    changed, _ = await CampaignChangeService(db_session).apply(
+        campaign.id,
+        CampaignChangeRequest(
+            changes=CampaignUpdate(target_audience="Собственники компаний"),
+            confirmed_impact=True,
+            expected_updated_at=active.updated_at,
+        ),
+        user,
+    )
+    assert changed.strategy_version == 1
+    assert changed.strategy == strategy_v1
+
+    planning, task, run = await CampaignPlanningService(db_session).prepare_change_revision(
+        campaign.id, user
+    )
+    assert planning.status is CampaignStatus.PLANNING
+    assert planning.strategy == strategy_v1
+    assert task.input_data["preserve_active_strategy"] is True
+    assert await AgentRunService(db_session).claim(run.id)
+    strategy_v2 = plan_data()
+    strategy_v2["target_audience"] = "Собственники компаний"
+    await AgentRunService(db_session).finish_success(
+        run.id, RuntimeResult(strategy_v2, 1, 10, 10, 20, None)
+    )
+    waiting = await CampaignService(db_session).get_campaign(campaign.id)
+    assert waiting.status is CampaignStatus.WAITING_APPROVAL
+    assert waiting.strategy_version == 1
+    assert waiting.strategy == strategy_v1
+    pending = await ApprovalRepository(db_session).current_pending(campaign.id)
+    assert pending is not None
+    assert pending.subject_version == 2
+    assert pending.subject_snapshot == strategy_v2
+
+    await CampaignPlanningService(db_session).approve(campaign.id, user, "v2 approved")
+    approved = await CampaignService(db_session).get_campaign(campaign.id)
+    assert approved.status is CampaignStatus.ACTIVE
+    assert approved.strategy_version == 2
+    assert approved.strategy == strategy_v2
+    history = await ApprovalRepository(db_session).list_approvals(object_id=campaign.id)
+    v1 = next(item for item in history if item.subject_version == 1)
+    assert v1.status is ApprovalStatus.APPROVED
+    assert v1.subject_snapshot == strategy_v1
 
 
 async def test_inactive_agents_and_cancellation(

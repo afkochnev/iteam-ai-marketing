@@ -10,7 +10,7 @@ from app.models.knowledge_pack import KnowledgePackStatus
 from app.models.publication import PublicationStatus
 from app.models.publication_plan import PublicationPlanStatus
 from app.models.task import TaskPriority, TaskStatus, TaskType
-from app.schemas.campaign import CampaignResponse
+from app.schemas.campaign import CampaignChangeState, CampaignResponse
 
 
 class WorkspaceContentReference(BaseModel):
@@ -142,6 +142,7 @@ class WorkspaceNextStep(BaseModel):
     href: str
     entity_type: str | None = None
     entity_id: UUID | None = None
+    priority: str = "NORMAL"
 
 
 class WorkspaceFeedbackState(BaseModel):
@@ -177,3 +178,4 @@ class CampaignWorkspaceResponse(BaseModel):
     publications: list[WorkspacePublicationReference]
     attention_tasks: list[WorkspaceTask]
     feedback: WorkspaceFeedbackState
+    change_state: CampaignChangeState

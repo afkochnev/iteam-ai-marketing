@@ -17,6 +17,7 @@ from app.schemas.task import TaskCreate
 from app.services.activity_log_service import ActivityLogService
 from app.services.agent_run_service import AgentRunService
 from app.services.approval_service import ApprovalService
+from app.services.campaign_change_service import CampaignChangeService
 from app.services.task_service import TaskService
 
 
@@ -77,6 +78,68 @@ class CampaignPlanningService:
         run = await self._enqueue_planning(task)
         return campaign, task, run
 
+    async def prepare_change_revision(
+        self, campaign_id: UUID, user: User
+    ) -> tuple[Campaign, Task, AgentRun]:
+        campaign = await self._locked_campaign(campaign_id)
+        if campaign.status is CampaignStatus.PLANNING:
+            raise AppError("CAMPAIGN_ALREADY_PLANNING", "Стратегия уже формируется.", 409)
+        if campaign.strategy is None or campaign.strategy_version < 1:
+            raise AppError(
+                "CAMPAIGN_STRATEGY_NOT_APPROVED",
+                "Сначала утвердите исходную стратегию кампании.",
+                409,
+            )
+        change_state = await CampaignChangeService(self.session).state(campaign)
+        if not change_state.has_pending_strategic_changes:
+            raise AppError(
+                "CAMPAIGN_STRATEGY_IS_CURRENT",
+                "После текущей стратегии нет новых стратегических изменений.",
+                409,
+            )
+        agent = await self._marketing_director()
+        campaign.status = CampaignStatus.PLANNING
+        target_version = campaign.strategy_version + 1
+        task = await TaskService(self.session).create_task(
+            TaskCreate(
+                campaign_id=campaign.id,
+                task_type=TaskType.CAMPAIGN_PLANNING,
+                title=f"Подготовить стратегию v{target_version}",
+                description=(
+                    "Обновить стратегию с учётом подтверждённых изменений маркетинговых вводных."
+                ),
+                assigned_agent_id=agent.id,
+                priority="HIGH",
+                input_data={
+                    "strategy_version": target_version,
+                    "revision": True,
+                    "preserve_active_strategy": True,
+                    "previous_strategy": campaign.strategy,
+                    "campaign_change": {
+                        "changed_fields": change_state.changed_fields,
+                        "changed_at": (
+                            change_state.changed_at.isoformat() if change_state.changed_at else None
+                        ),
+                        "comment": change_state.comment,
+                        "baseline_strategy_version": (change_state.baseline_strategy_version),
+                    },
+                },
+            )
+        )
+        await ActivityLogService(self.session).record(
+            "STRATEGY_REVISION_PREPARATION_STARTED",
+            campaign_id=campaign.id,
+            task_id=task.id,
+            user_id=user.id,
+            metadata={
+                "active_strategy_version": campaign.strategy_version,
+                "target_strategy_version": target_version,
+                "changed_fields": change_state.changed_fields,
+            },
+        )
+        run = await self._enqueue_planning(task)
+        return campaign, task, run
+
     async def approve(
         self, campaign_id: UUID, reviewer: User, comment: str | None
     ) -> tuple[Campaign, Approval, list[Task]]:
@@ -100,12 +163,14 @@ class CampaignPlanningService:
                     if (task := await TaskService(self.session).get_task(task_id))
                 ]
                 return campaign, approved, tasks
-        if campaign.status is not CampaignStatus.WAITING_APPROVAL or not campaign.strategy:
+        if campaign.status is not CampaignStatus.WAITING_APPROVAL:
             raise AppError(
                 "CAMPAIGN_NOT_WAITING_APPROVAL", "Кампания не ожидает согласования.", 409
             )
         approval = await ApprovalService(self.session).get_pending(campaign.id, lock=True)
         plan = CampaignPlan.model_validate(approval.subject_snapshot)
+        strategy_snapshot = plan.model_dump(mode="json")
+        target_strategy_version = approval.subject_version
         agents: dict[str, Agent] = {}
         for planned in plan.tasks:
             if planned.agent_slug in agents:
@@ -137,19 +202,19 @@ class CampaignPlanningService:
                     assigned_agent_id=agents[planned.agent_slug].id,
                     priority=planned.priority,
                     input_data={
-                        "strategy_version": campaign.strategy_version,
+                        "strategy_version": target_strategy_version,
                         "plan_task_key": planned.key,
                         "brief": planned.brief,
                         "campaign_strategy_snapshot": {
-                            "objective": campaign.strategy.get("campaign_summary"),
-                            "audience": campaign.strategy.get("target_audience"),
-                            "positioning": campaign.strategy.get("positioning"),
-                            "key_message": campaign.strategy.get("key_message"),
-                            "social_strategy": campaign.strategy.get("social_strategy"),
+                            "objective": strategy_snapshot.get("campaign_summary"),
+                            "audience": strategy_snapshot.get("target_audience"),
+                            "positioning": strategy_snapshot.get("positioning"),
+                            "key_message": strategy_snapshot.get("main_message"),
+                            "social_strategy": strategy_snapshot.get("social_strategy"),
                         },
                         "campaign_strategy_reference": {
                             "campaign_id": str(campaign.id),
-                            "strategy_version": campaign.strategy_version,
+                            "strategy_version": target_strategy_version,
                         },
                     },
                     dependency_ids=dependencies,
@@ -164,6 +229,8 @@ class CampaignPlanningService:
             "generated_task_ids": [str(item.id) for item in created.values()],
             "generated_task_count": len(created),
         }
+        campaign.strategy = strategy_snapshot
+        campaign.strategy_version = target_strategy_version
         campaign.status = CampaignStatus.ACTIVE
         await ActivityLogService(self.session).record(
             "STRATEGY_APPROVED",
@@ -171,7 +238,10 @@ class CampaignPlanningService:
             campaign_id=campaign.id,
             user_id=reviewer.id,
             approval_id=approval.id,
-            metadata={"generated_task_count": len(created)},
+            metadata={
+                "generated_task_count": len(created),
+                "strategy_version": target_strategy_version,
+            },
         )
         await self.session.commit()
         return campaign, approval, list(created.values())
@@ -186,7 +256,12 @@ class CampaignPlanningService:
         await ApprovalService(self.session).resolve(
             approval, ApprovalStatus.REJECTED, reviewer, comment
         )
-        campaign.status = CampaignStatus.DRAFT
+        campaign.status = (
+            CampaignStatus.ACTIVE
+            if campaign.strategy is not None
+            and approval.subject_version > campaign.strategy_version
+            else CampaignStatus.DRAFT
+        )
         await self.session.commit()
         return campaign
 
@@ -199,6 +274,9 @@ class CampaignPlanningService:
                 "CAMPAIGN_NOT_WAITING_APPROVAL", "Кампания не ожидает согласования.", 409
             )
         approval = await ApprovalService(self.session).get_pending(campaign.id, lock=True)
+        preserve_active = bool(
+            campaign.strategy is not None and approval.subject_version > campaign.strategy_version
+        )
         agent = await self._marketing_director()
         await ApprovalService(self.session).resolve(
             approval, ApprovalStatus.REVISION_REQUESTED, reviewer, comment
@@ -214,8 +292,9 @@ class CampaignPlanningService:
                 input_data={
                     "strategy_version": campaign.strategy_version + 1,
                     "revision": True,
+                    "preserve_active_strategy": preserve_active,
                     "reviewer_feedback": comment,
-                    "previous_strategy": campaign.strategy,
+                    "previous_strategy": approval.subject_snapshot,
                 },
             )
         )

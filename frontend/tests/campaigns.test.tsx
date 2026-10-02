@@ -6,14 +6,14 @@ import EditCampaignPage from "../app/campaigns/[id]/edit/page";
 import NewCampaignPage from "../app/campaigns/new/page";
 import CampaignsPage from "../app/campaigns/page";
 
-const { replace, push, list, get, workspace, agentsList, agentRunGet, create, taskCreate, taskGet, taskRun, update, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList, contentList, contentGet, activityList, publicationList, publicationCalendar, publicationCreate, publicationScheduleContent, publicationApprove, publicationSchedule, publicationCancel, publicationPublishNow, publicationRetry, publicationReconcilePublished, publicationReconcileNotPublished, feedbackList, feedbackAnalyses, feedbackCreate, feedbackGenerate, feedbackAccept, feedbackReject, performance, plansList, planGenerate, planTransition, planRevise, planAddItem, planUpdateItem, planRemoveItem, planReorder, manualMetrics } = vi.hoisted(() => ({
-  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), workspace: vi.fn(), agentsList: vi.fn(), agentRunGet: vi.fn(), create: vi.fn(), taskCreate: vi.fn(), taskGet: vi.fn(), taskRun: vi.fn(), update: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(), contentList: vi.fn(), contentGet: vi.fn(), activityList: vi.fn(), publicationList: vi.fn(), publicationCalendar: vi.fn(), publicationCreate: vi.fn(), publicationScheduleContent: vi.fn(), publicationApprove: vi.fn(), publicationSchedule: vi.fn(), publicationCancel: vi.fn(), publicationPublishNow: vi.fn(), publicationRetry: vi.fn(), publicationReconcilePublished: vi.fn(), publicationReconcileNotPublished: vi.fn(), feedbackList: vi.fn(), feedbackAnalyses: vi.fn(), feedbackCreate: vi.fn(), feedbackGenerate: vi.fn(), feedbackAccept: vi.fn(), feedbackReject: vi.fn(), performance: vi.fn(), plansList: vi.fn(), planGenerate: vi.fn(), planTransition: vi.fn(), planRevise: vi.fn(), planAddItem: vi.fn(), planUpdateItem: vi.fn(), planRemoveItem: vi.fn(), planReorder: vi.fn(), manualMetrics: vi.fn(),
+const { replace, push, list, get, workspace, agentsList, agentRunGet, create, taskCreate, taskGet, taskRun, update, previewChange, applyChange, prepareStrategyRevision, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList, contentList, contentGet, activityList, publicationList, publicationCalendar, publicationCreate, publicationScheduleContent, publicationApprove, publicationSchedule, publicationCancel, publicationPublishNow, publicationRetry, publicationReconcilePublished, publicationReconcileNotPublished, feedbackList, feedbackAnalyses, feedbackCreate, feedbackGenerate, feedbackAccept, feedbackReject, performance, plansList, planGenerate, planTransition, planRevise, planAddItem, planUpdateItem, planRemoveItem, planReorder, manualMetrics } = vi.hoisted(() => ({
+  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), workspace: vi.fn(), agentsList: vi.fn(), agentRunGet: vi.fn(), create: vi.fn(), taskCreate: vi.fn(), taskGet: vi.fn(), taskRun: vi.fn(), update: vi.fn(), previewChange: vi.fn(), applyChange: vi.fn(), prepareStrategyRevision: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(), contentList: vi.fn(), contentGet: vi.fn(), activityList: vi.fn(), publicationList: vi.fn(), publicationCalendar: vi.fn(), publicationCreate: vi.fn(), publicationScheduleContent: vi.fn(), publicationApprove: vi.fn(), publicationSchedule: vi.fn(), publicationCancel: vi.fn(), publicationPublishNow: vi.fn(), publicationRetry: vi.fn(), publicationReconcilePublished: vi.fn(), publicationReconcileNotPublished: vi.fn(), feedbackList: vi.fn(), feedbackAnalyses: vi.fn(), feedbackCreate: vi.fn(), feedbackGenerate: vi.fn(), feedbackAccept: vi.fn(), feedbackReject: vi.fn(), performance: vi.fn(), plansList: vi.fn(), planGenerate: vi.fn(), planTransition: vi.fn(), planRevise: vi.fn(), planAddItem: vi.fn(), planUpdateItem: vi.fn(), planRemoveItem: vi.fn(), planReorder: vi.fn(), manualMetrics: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace, push }), useParams: () => ({ id: "campaign-1" }) }));
 vi.mock("@/components/auth-provider", () => ({ useAuth: () => ({ user: { role: "ADMIN" }, loading: false }) }));
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
-  return { ...actual, campaignsApi: { list, get, workspace, create, update, archive, generateStrategy, approveStrategy, requestStrategyRevision: requestRevision, rejectStrategy }, agentsApi: { list: agentsList }, agentRunsApi: { ...actual.agentRunsApi, get: agentRunGet }, approvalsApi: { list: approvalList, get: vi.fn() }, tasksApi: { ...actual.tasksApi, list: taskList, get: taskGet, create: taskCreate, run: taskRun }, contentApi: { ...actual.contentApi, list: contentList, get: contentGet }, activitiesApi: { list: activityList }, feedbackApi: { list: feedbackList, analyses: feedbackAnalyses, create: feedbackCreate, generate: feedbackGenerate, accept: feedbackAccept, reject: feedbackReject }, metricsApi: { campaign: performance }, publicationPlansApi: { list: plansList, generate: planGenerate, submit: planTransition, approve: planTransition, reject: planTransition, revise: planRevise, addItem: planAddItem, updateItem: planUpdateItem, removeItem: planRemoveItem, reorder: planReorder }, publicationsApi: { listCampaign: publicationList, calendar: publicationCalendar, approve: publicationApprove, create: publicationCreate, scheduleContent: publicationScheduleContent, schedule: publicationSchedule, cancel: publicationCancel, publishNow: publicationPublishNow, retry: publicationRetry, reconcilePublished: publicationReconcilePublished, reconcileNotPublished: publicationReconcileNotPublished, addManualMetrics: manualMetrics } };
+  return { ...actual, campaignsApi: { list, get, workspace, create, update, previewChange, applyChange, prepareStrategyRevision, archive, generateStrategy, approveStrategy, requestStrategyRevision: requestRevision, rejectStrategy }, agentsApi: { list: agentsList }, agentRunsApi: { ...actual.agentRunsApi, get: agentRunGet }, approvalsApi: { list: approvalList, get: vi.fn() }, tasksApi: { ...actual.tasksApi, list: taskList, get: taskGet, create: taskCreate, run: taskRun }, contentApi: { ...actual.contentApi, list: contentList, get: contentGet }, activitiesApi: { list: activityList }, feedbackApi: { list: feedbackList, analyses: feedbackAnalyses, create: feedbackCreate, generate: feedbackGenerate, accept: feedbackAccept, reject: feedbackReject }, metricsApi: { campaign: performance }, publicationPlansApi: { list: plansList, generate: planGenerate, submit: planTransition, approve: planTransition, reject: planTransition, revise: planRevise, addItem: planAddItem, updateItem: planUpdateItem, removeItem: planRemoveItem, reorder: planReorder }, publicationsApi: { listCampaign: publicationList, calendar: publicationCalendar, approve: publicationApprove, create: publicationCreate, scheduleContent: publicationScheduleContent, schedule: publicationSchedule, cancel: publicationCancel, publishNow: publicationPublishNow, retry: publicationRetry, reconcilePublished: publicationReconcilePublished, reconcileNotPublished: publicationReconcileNotPublished, addManualMetrics: manualMetrics } };
 });
 
 const campaign = {
@@ -57,7 +57,7 @@ describe("Campaigns UI", () => {
     expect(await screen.findByRole("heading", { name: "AI-диагностика" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Архивировать" }));
     await waitFor(() => expect(archive).toHaveBeenCalledWith("campaign-1"));
-    expect(screen.queryByText("Редактировать")).not.toBeInTheDocument();
+    expect(screen.queryByText("Внести изменения")).not.toBeInTheDocument();
   });
 
   it("shows a director brief, article provenance, and the five-step plan pipeline", async () => {
@@ -132,17 +132,51 @@ describe("Campaigns UI", () => {
   it("keeps archived campaign read-only", async () => {
     get.mockResolvedValue({ ...campaign, status: "ARCHIVED" }); render(<CampaignDetailsPage />);
     expect(await screen.findByText("Архив")).toBeInTheDocument();
-    expect(screen.queryByText("Редактировать")).not.toBeInTheDocument();
+    expect(screen.queryByText("Внести изменения")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Архивировать" })).not.toBeInTheDocument();
   });
 
-  it("edits campaign and redirects", async () => {
-    update.mockResolvedValue({ ...campaign, desired_result: "40 заявок" }); render(<EditCampaignPage />);
-    const result = await screen.findByLabelText("Желаемый результат");
-    fireEvent.change(result, { target: { value: "40 заявок" } });
-    fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
-    await waitFor(() => expect(update).toHaveBeenCalledWith("campaign-1", expect.objectContaining({ desired_result: "40 заявок" })));
+  it("saves an administrative title change without a strategy revision", async () => {
+    previewChange.mockResolvedValue({ kind: "ADMINISTRATIVE", changes: [{ field: "name", label: "Название", old_value: "AI-диагностика", new_value: "Новое название", kind: "ADMINISTRATIVE" }], impact: { strategy_version: 0, strategy_status: "DRAFT", publication_plan_id: null, publication_plan_status: null, publication_plan_item_count: 0, future_plan_item_count: 0, approved_social_post_count: 0, scheduled_publication_count: 0, published_publication_count: 0, scheduled_publications: [] }, requires_confirmation: false, warning: null, guarantees: ["Стратегия не изменится"] });
+    applyChange.mockResolvedValue({ campaign: { ...campaign, name: "Новое название" } });
+    render(<EditCampaignPage />);
+    fireEvent.change(await screen.findByLabelText("Название *"), { target: { value: "Новое название" } });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить изменения" }));
+    expect(await screen.findByRole("heading", { name: "Вы меняете" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить изменения" }));
+    await waitFor(() => expect(applyChange).toHaveBeenCalledWith("campaign-1", expect.objectContaining({ confirmed_impact: false })));
     expect(push).toHaveBeenCalledWith("/campaigns/campaign-1");
+  });
+
+  it("shows strategic impact before saving target audience changes", async () => {
+    previewChange.mockResolvedValue({ kind: "STRATEGIC", changes: [{ field: "target_audience", label: "Целевая аудитория", old_value: "CEO", new_value: "Собственники компаний", kind: "STRATEGIC" }], impact: { strategy_version: 1, strategy_status: "APPROVED", publication_plan_id: "plan-1", publication_plan_status: "APPROVED", publication_plan_item_count: 16, future_plan_item_count: 12, approved_social_post_count: 2, scheduled_publication_count: 1, published_publication_count: 3, scheduled_publications: [{ id: "publication-1", channel: "TELEGRAM", scheduled_at: "2026-10-10T10:00:00Z" }] }, requires_confirmation: true, warning: "Эти изменения могут повлиять на утверждённую стратегию и медиаплан.", guarantees: ["Текущая утверждённая стратегия не будет изменена автоматически.", "Запланированные Publications не будут изменены."] });
+    applyChange.mockResolvedValue({ campaign: { ...campaign, target_audience: "Собственники компаний" } });
+    get.mockResolvedValue({ ...campaign, status: "ACTIVE", strategy_version: 1 });
+    render(<EditCampaignPage />);
+    fireEvent.change(await screen.findByLabelText("Целевая аудитория"), { target: { value: "Собственники компаний" } });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить изменения" }));
+    expect(await screen.findByText("Эти изменения могут повлиять на утверждённую стратегию и медиаплан.")).toBeInTheDocument();
+    expect(screen.getByText("12")).toBeInTheDocument();
+    expect(screen.getByText(/Утверждён · 16 активных/)).toBeInTheDocument();
+    expect(screen.getByText("TELEGRAM")).toBeInTheDocument();
+    expect(screen.getByText("Текущая утверждённая стратегия не будет изменена автоматически.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Предложение / оффер"), { target: { value: "Новый оффер" } });
+    expect(screen.queryByRole("button", { name: "Сохранить изменения" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Проверить изменения" }));
+    expect(await screen.findByRole("button", { name: "Сохранить изменения" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить изменения" }));
+    await waitFor(() => expect(applyChange).toHaveBeenCalledWith("campaign-1", expect.objectContaining({ confirmed_impact: true, comment: null })));
+  });
+
+  it("prioritizes strategy review after a strategic campaign change", async () => {
+    get.mockResolvedValue({ ...campaign, status: "ACTIVE", strategy_version: 1 });
+    workspace.mockResolvedValue({ campaign, director: { strategy_status: "APPROVED", article_count: 3, approved_article_count: 3, plan_status: "APPROVED", plan_item_count: 16, plan_items_with_posts: 2, plan_items_without_posts: 14, social_post_count: 2, posts_waiting_approval: 0, scheduled_publication_count: 1, published_count: 3, failed_task_count: 0, blocked_task_count: 0, next_step: { title: "Обновить стратегию кампании", description: "Маркетинговые вводные изменились после утверждения стратегии v1.", href: "#campaign-change", entity_type: "campaign_change", entity_id: campaign.id, priority: "HIGH" } }, knowledge: { store_ready: true, source_count: 0, item_count: 0, ready_item_count: 0, processing_item_count: 0, failed_item_count: 0, campaign_packs: [], has_current_strategy_pack: true }, articles: [], social_posts: [], publication_plan: null, other_plans: [], publications: [], attention_tasks: [], feedback: { new_feedback_count: 0, new_metrics_count: 0 }, change_state: { has_pending_strategic_changes: true, changed_fields: ["target_audience"], changed_at: "2026-10-02T10:00:00Z", changed_by_user_id: "user-1", comment: null, baseline_strategy_version: 1, active_strategy_version: 1, plan_requires_review: true, affected_article_count: 3, affected_social_post_count: 2 } });
+    prepareStrategyRevision.mockResolvedValue({ status: "PLANNING" });
+    render(<CampaignDetailsPage />);
+    expect(await screen.findByRole("heading", { name: "Обновить стратегию кампании" })).toBeInTheDocument();
+    expect(screen.getByText(/Текущая стратегия остаётся source of truth/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Подготовить новую версию стратегии" }));
+    await waitFor(() => expect(prepareStrategyRevision).toHaveBeenCalledWith("campaign-1"));
   });
 
   it("shows readable invalid date error", async () => {

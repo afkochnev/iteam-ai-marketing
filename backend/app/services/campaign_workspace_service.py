@@ -32,7 +32,7 @@ from app.repositories.content import ContentRepository
 from app.repositories.knowledge import KnowledgeRepository
 from app.repositories.knowledge_packs import KnowledgePackRepository
 from app.repositories.tasks import TaskRepository
-from app.schemas.campaign import CampaignResponse
+from app.schemas.campaign import CampaignChangeState, CampaignResponse
 from app.schemas.campaign_workspace import (
     CampaignDirectorBrief,
     CampaignWorkspaceResponse,
@@ -49,6 +49,7 @@ from app.schemas.campaign_workspace import (
     WorkspacePublicationReference,
     WorkspaceTask,
 )
+from app.services.campaign_change_service import CampaignChangeService
 from app.services.plan_item_smm_service import PlanItemSmmService
 
 
@@ -135,14 +136,34 @@ class CampaignWorkspaceService:
                     .where(
                         Approval.object_type == ApprovalObjectType.CAMPAIGN_STRATEGY,
                         Approval.object_id == campaign_id,
-                        Approval.subject_version == campaign.strategy_version,
                     )
-                    .order_by(Approval.created_at.desc())
+                    .order_by(
+                        (Approval.status != ApprovalStatus.PENDING),
+                        Approval.subject_version.desc(),
+                        Approval.created_at.desc(),
+                    )
                 )
             ).all()
         )
         latest_runs = await self._latest_runs([task.id for task in tasks])
-        strategy_status = strategy_approvals[0].status if strategy_approvals else campaign.status
+        pending_strategy = next(
+            (item for item in strategy_approvals if item.status is ApprovalStatus.PENDING), None
+        )
+        current_strategy = next(
+            (
+                item
+                for item in strategy_approvals
+                if item.subject_version == campaign.strategy_version
+            ),
+            None,
+        )
+        strategy_status = (
+            pending_strategy.status
+            if pending_strategy
+            else current_strategy.status
+            if current_strategy
+            else campaign.status
+        )
         approved_versions = self._approved_versions(approvals)
         task_by_id = {task.id: task for task in tasks}
         plan_items = [item for plan in plans for item in plan.items]
@@ -324,6 +345,9 @@ class CampaignWorkspaceService:
         ]
         knowledge = await self._knowledge_state(campaign, task_by_id)
         feedback = await self._feedback_state(campaign_id)
+        change_state = await CampaignChangeService(self.session).state(
+            campaign, current_plan=current_plan, contents=contents
+        )
         director = self._director(
             campaign,
             strategy_status,
@@ -336,6 +360,7 @@ class CampaignWorkspaceService:
             tasks,
             feedback,
             post_actions,
+            change_state,
         )
 
         return CampaignWorkspaceResponse(
@@ -349,6 +374,7 @@ class CampaignWorkspaceService:
             publications=publication_refs,
             attention_tasks=issue_tasks,
             feedback=feedback,
+            change_state=change_state,
         )
 
     async def _latest_runs(self, task_ids: list[UUID]) -> dict[UUID, AgentRun]:
@@ -808,6 +834,7 @@ class CampaignWorkspaceService:
         tasks: list[Task],
         feedback: WorkspaceFeedbackState,
         post_actions: dict[UUID, WorkspacePostAction],
+        change_state: CampaignChangeState,
     ) -> CampaignDirectorBrief:
         active_items = (
             [
@@ -846,6 +873,7 @@ class CampaignWorkspaceService:
             tasks,
             feedback,
             post_actions,
+            change_state,
         )
         return CampaignDirectorBrief(
             strategy_status=strategy_status,
@@ -879,8 +907,33 @@ class CampaignWorkspaceService:
         tasks: list[Task],
         feedback: WorkspaceFeedbackState,
         post_actions: dict[UUID, WorkspacePostAction],
+        change_state: CampaignChangeState,
     ) -> WorkspaceNextStep:
         campaign_url = f"/campaigns/{campaign.id}"
+        if change_state.has_pending_strategic_changes:
+            return WorkspaceNextStep(
+                title="Обновить стратегию кампании",
+                description=(
+                    "Маркетинговые вводные изменились после утверждения стратегии "
+                    f"v{change_state.baseline_strategy_version}."
+                ),
+                href=f"{campaign_url}#campaign-change",
+                entity_type="campaign_change",
+                entity_id=campaign.id,
+                priority="HIGH",
+            )
+        if change_state.plan_requires_review:
+            return WorkspaceNextStep(
+                title="Пересмотреть медиаплан",
+                description=(
+                    "Активный медиаплан создан до последней редакции маркетинговых вводных "
+                    "и новой утверждённой стратегии."
+                ),
+                href=f"{campaign_url}#publication-plan",
+                entity_type="publication_plan",
+                entity_id=current_plan.id if current_plan else None,
+                priority="HIGH",
+            )
         recoverable_task_ids = {
             action.existing_task_id
             for action in post_actions.values()

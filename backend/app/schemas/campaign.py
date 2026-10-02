@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from enum import StrEnum
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -76,6 +77,76 @@ class CampaignUpdate(BaseModel):
         return value.strip() or None
 
 
+class CampaignChangeKind(StrEnum):
+    ADMINISTRATIVE = "ADMINISTRATIVE"
+    STRATEGIC = "STRATEGIC"
+
+
+class CampaignChangeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    changes: CampaignUpdate
+    comment: str | None = Field(default=None, max_length=2_000)
+    confirmed_impact: bool = False
+    expected_updated_at: datetime | None = None
+
+    @field_validator("comment")
+    @classmethod
+    def normalize_comment(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
+
+class CampaignFieldChange(BaseModel):
+    field: str
+    label: str
+    old_value: str | None
+    new_value: str | None
+    kind: CampaignChangeKind
+
+
+class CampaignAffectedPublication(BaseModel):
+    id: UUID
+    channel: str
+    scheduled_at: datetime | None
+
+
+class CampaignChangeImpact(BaseModel):
+    strategy_version: int
+    strategy_status: str
+    publication_plan_id: UUID | None
+    publication_plan_status: str | None
+    publication_plan_item_count: int
+    future_plan_item_count: int
+    approved_social_post_count: int
+    scheduled_publication_count: int
+    published_publication_count: int
+    scheduled_publications: list[CampaignAffectedPublication]
+
+
+class CampaignChangePreview(BaseModel):
+    kind: CampaignChangeKind
+    changes: list[CampaignFieldChange]
+    impact: CampaignChangeImpact
+    requires_confirmation: bool
+    warning: str | None
+    guarantees: list[str]
+
+
+class CampaignChangeState(BaseModel):
+    has_pending_strategic_changes: bool
+    changed_fields: list[str]
+    changed_at: datetime | None
+    changed_by_user_id: UUID | None
+    comment: str | None
+    baseline_strategy_version: int | None
+    active_strategy_version: int
+    plan_requires_review: bool
+    affected_article_count: int
+    affected_social_post_count: int
+
+
 class CampaignCreator(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     id: UUID
@@ -105,6 +176,11 @@ class CampaignResponse(CampaignListItem):
     strategy_version: int
     created_by: UUID
     creator: CampaignCreator
+
+
+class CampaignChangeApplyResponse(BaseModel):
+    campaign: CampaignResponse
+    preview: CampaignChangePreview
 
 
 class StrategyGenerationResponse(BaseModel):

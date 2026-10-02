@@ -165,10 +165,15 @@ async def test_authenticated_user_can_create_and_edit_campaign(
     assert (await client.get("/api/v1/campaigns")).status_code == 200
     assert (await client.get(f"/api/v1/campaigns/{campaign_id}")).status_code == 200
     updated = await client.patch(
-        f"/api/v1/campaigns/{campaign_id}", json={"desired_result": "40 заявок"}
+        f"/api/v1/campaigns/{campaign_id}", json={"name": "Updated campaign"}
     )
     assert updated.status_code == 200
-    assert updated.json()["desired_result"] == "40 заявок"
+    assert updated.json()["name"] == "Updated campaign"
+    strategic = await client.patch(
+        f"/api/v1/campaigns/{campaign_id}", json={"desired_result": "40 заявок"}
+    )
+    assert strategic.status_code == 409
+    assert strategic.json()["error"]["code"] == "CAMPAIGN_STRATEGIC_CHANGE_REQUIRES_PREVIEW"
 
     archived = await client.post(f"/api/v1/campaigns/{campaign_id}/archive")
     assert archived.status_code == 200

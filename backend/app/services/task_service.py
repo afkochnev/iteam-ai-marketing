@@ -235,7 +235,11 @@ class TaskService:
             and task.campaign.status is CampaignStatus.PLANNING
             and task.input_data.get("strategy_version") == task.campaign.strategy_version + 1
         ):
-            task.campaign.status = CampaignStatus.DRAFT
+            task.campaign.status = (
+                CampaignStatus.ACTIVE
+                if task.input_data.get("preserve_active_strategy")
+                else CampaignStatus.DRAFT
+            )
         await self.session.commit()
         return await self.get_task(task.id)
 
