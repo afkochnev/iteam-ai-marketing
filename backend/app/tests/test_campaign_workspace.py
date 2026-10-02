@@ -383,6 +383,8 @@ async def test_workspace_does_not_claim_a_version_from_another_article_as_source
     db_session.add(unrelated_version)
     await db_session.flush()
     plan_item.source_content_version_id = unrelated_version.id
+    plan_item.source_claim_ids = ["claim-from-unrelated-version"]
+    plan_item.source_support_summary = "Основание другой версии"
     await db_session.commit()
 
     workspace = await CampaignWorkspaceService(db_session).get(campaign.id)
@@ -392,6 +394,8 @@ async def test_workspace_does_not_claim_a_version_from_another_article_as_source
     assert item.source_content_item_title == article.title
     assert item.source_content_version_id is None
     assert item.source_version_number is None
+    assert item.source_claim_ids is None
+    assert item.source_support_summary is None
     assert item.pipeline[0].status == "unverified"
     assert item.pipeline[0].action_label == "Версия источника не подтверждена"
     assert item.pipeline[1].action_label is None

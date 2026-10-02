@@ -454,8 +454,12 @@ class CampaignWorkspaceService:
                         item.source_content_version_id if source_version_matches_article else None
                     ),
                     source_version_number=source_version_number,
-                    source_claim_ids=item.source_claim_ids,
-                    source_support_summary=item.source_support_summary,
+                    source_claim_ids=(
+                        item.source_claim_ids if source_version_matches_article else None
+                    ),
+                    source_support_summary=(
+                        item.source_support_summary if source_version_matches_article else None
+                    ),
                     status=item.status.value,
                     social_posts=post_refs,
                     publications=publication_refs,
