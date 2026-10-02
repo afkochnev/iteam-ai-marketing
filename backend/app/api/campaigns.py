@@ -7,6 +7,9 @@ from app.api.dependencies import CurrentUser, SessionDependency
 from app.models.campaign import CampaignStatus
 from app.schemas.approval import ApprovalActionRequest, RequiredApprovalComment
 from app.schemas.campaign import (
+    CampaignChangeApplyResponse,
+    CampaignChangePreview,
+    CampaignChangeRequest,
     CampaignCreate,
     CampaignListItem,
     CampaignResponse,
@@ -15,6 +18,7 @@ from app.schemas.campaign import (
     StrategyGenerationResponse,
 )
 from app.schemas.campaign_workspace import CampaignWorkspaceResponse
+from app.services.campaign_change_service import CampaignChangeService
 from app.services.campaign_planning_service import CampaignPlanningService
 from app.services.campaign_service import CampaignService
 from app.services.campaign_workspace_service import CampaignWorkspaceService
@@ -66,11 +70,38 @@ async def get_campaign_workspace(
 async def update_campaign(
     campaign_id: UUID,
     payload: CampaignUpdate,
-    _current_user: CurrentUser,
+    current_user: CurrentUser,
     session: SessionDependency,
 ) -> CampaignResponse:
-    campaign = await CampaignService(session).update_campaign(campaign_id, payload)
+    campaign = await CampaignChangeService(session).apply_administrative_patch(
+        campaign_id, payload, current_user
+    )
     return CampaignResponse.model_validate(campaign)
+
+
+@router.post("/{campaign_id}/changes/preview", response_model=CampaignChangePreview)
+async def preview_campaign_change(
+    campaign_id: UUID,
+    payload: CampaignChangeRequest,
+    _current_user: CurrentUser,
+    session: SessionDependency,
+) -> CampaignChangePreview:
+    return await CampaignChangeService(session).preview(campaign_id, payload.changes)
+
+
+@router.post("/{campaign_id}/changes", response_model=CampaignChangeApplyResponse)
+async def apply_campaign_change(
+    campaign_id: UUID,
+    payload: CampaignChangeRequest,
+    current_user: CurrentUser,
+    session: SessionDependency,
+) -> CampaignChangeApplyResponse:
+    campaign, preview = await CampaignChangeService(session).apply(
+        campaign_id, payload, current_user
+    )
+    return CampaignChangeApplyResponse(
+        campaign=CampaignResponse.model_validate(campaign), preview=preview
+    )
 
 
 @router.post("/{campaign_id}/archive", response_model=CampaignResponse)
@@ -144,6 +175,25 @@ async def request_strategy_revision(
 ) -> StrategyGenerationResponse:
     campaign, task, run = await CampaignPlanningService(session).request_revision(
         campaign_id, current_user, payload.comment
+    )
+    return StrategyGenerationResponse(
+        campaign_id=campaign.id,
+        planning_task_id=task.id,
+        agent_run_id=run.id,
+        status=campaign.status,
+    )
+
+
+@router.post(
+    "/{campaign_id}/prepare-strategy-revision",
+    response_model=StrategyGenerationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def prepare_strategy_revision(
+    campaign_id: UUID, current_user: CurrentUser, session: SessionDependency
+) -> StrategyGenerationResponse:
+    campaign, task, run = await CampaignPlanningService(session).prepare_change_revision(
+        campaign_id, current_user
     )
     return StrategyGenerationResponse(
         campaign_id=campaign.id,

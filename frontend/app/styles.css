@@ -147,7 +147,17 @@ details.disclosure[open] > summary { border-bottom: 1px solid var(--line); }
 .timeline-item { display: grid; grid-template-columns: minmax(120px, .4fr) 1fr; gap: .75rem; padding: .7rem 0; border-bottom: 1px solid #e7ece8; }
 .timeline-item:last-child { border-bottom: 0; }
 .date-grid, .campaign-form { display: grid; gap: .9rem; }
-.campaign-form { max-width: 760px; }
+.campaign-form { max-width: 980px; margin: 1rem 0; }
+.form-section { display: grid; gap: .8rem; margin: 0; padding: 1.15rem; border: 1px solid var(--line); border-radius: 14px; background: white; }
+.form-section legend { padding: 0 .35rem; color: #1c2a21; font-size: 1.15rem; font-weight: 800; }
+.form-section p { margin: 0 0 .25rem; }
+.change-context-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1rem; }
+.change-context-grid .page-section { margin: 0; }
+.impact-preview { max-width: 1100px; }
+.change-list { display: grid; gap: .6rem; }
+.change-list > div { padding: .8rem; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+.change-list dd { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: .75rem; align-items: center; margin: 0; overflow-wrap: anywhere; }
+.change-list dd strong { color: var(--green); }
 form { display: grid; gap: .75rem; }
 .wide { max-width: 1500px; }
 .campaign-hero { align-items: flex-start; margin-bottom: 1.2rem; padding: 1.15rem 1.3rem; border: 1px solid var(--line); border-radius: 15px; background: white; box-shadow: var(--shadow); }
@@ -273,6 +283,7 @@ form { display: grid; gap: .75rem; }
   .dashboard-content-grid { grid-template-columns: 1fr; }
   .director-main { grid-template-columns: 1fr; }
   .workflow-pipeline { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .change-context-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 620px) {
   main { padding: 1rem .8rem 2.5rem; }
@@ -295,5 +306,6 @@ form { display: grid; gap: .75rem; }
   .dashboard-shortcuts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .dashboard-alert { align-items: flex-start; flex-direction: column; }
   .workflow-pipeline { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .change-list dd { grid-template-columns: 1fr; gap: .25rem; }
   th, td { padding: .6rem; }
 }

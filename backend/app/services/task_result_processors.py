@@ -93,8 +93,9 @@ class CampaignPlanningResultProcessor:
         ):
             raise AppError("INVALID_CAMPAIGN_PLAN", "Версия стратегии больше не актуальна.", 409)
         snapshot = plan.model_dump(mode="json")
-        campaign.strategy = snapshot
-        campaign.strategy_version = target_version
+        if not task.input_data.get("preserve_active_strategy"):
+            campaign.strategy = snapshot
+            campaign.strategy_version = target_version
         campaign.status = CampaignStatus.WAITING_APPROVAL
         await ApprovalService(session).create_strategy_approval(
             campaign.id, target_version, snapshot, run.agent_id
