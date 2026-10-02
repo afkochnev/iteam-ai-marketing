@@ -311,9 +311,7 @@ async def test_campaign_plan_schema_repair_exhaustion_is_invalid_plan(
         raise AssertionError("unreachable")
 
     monkeypatch.setattr("app.services.agent_runner_service.Runner.run", always_invalid)
-    monkeypatch.setattr(
-        AgentRunnerService, "_record_generation_attempt", record_generation_attempt
-    )
+    monkeypatch.setattr(AgentRunnerService, "_record_generation_attempt", record_generation_attempt)
     context = AgentRuntimeContext(uuid4(), uuid4(), uuid4(), uuid4(), TaskType.CAMPAIGN_PLANNING)
     with pytest.raises(AgentRuntimeError) as error:
         await AgentRunnerService().run(
@@ -660,9 +658,7 @@ def test_plan_item_smm_repair_uses_single_post_contract() -> None:
                     "title": "Диагностика",
                     "text_markdown": "Команде важно различать проблему и симптом.",
                     "channel": "VK",
-                    "sources": [
-                        {"content_version_id": str(uuid4()), "section_key": "diagnosis"}
-                    ],
+                    "sources": [{"content_version_id": str(uuid4()), "section_key": "diagnosis"}],
                     "suggested_publish_order": 1,
                 }
             ],
@@ -726,12 +722,8 @@ async def test_plan_item_invalid_output_is_repaired_with_plan_item_schema(
         generation_limits.append(max_logical_generations)
 
     monkeypatch.setattr("app.services.agent_runner_service.Runner.run", fake_run)
-    monkeypatch.setattr(
-        AgentRunnerService, "_record_generation_attempt", record_generation_attempt
-    )
-    context = AgentRuntimeContext(
-        uuid4(), uuid4(), uuid4(), uuid4(), TaskType.CREATE_SOCIAL_POSTS
-    )
+    monkeypatch.setattr(AgentRunnerService, "_record_generation_attempt", record_generation_attempt)
+    context = AgentRuntimeContext(uuid4(), uuid4(), uuid4(), uuid4(), TaskType.CREATE_SOCIAL_POSTS)
     result = await AgentRunnerService().run(
         AgentSnapshot("SMM", "Prompt", "model", [], SingleSocialPostResult),
         "publication_plan_item_id=plan-item; plan_channel=VK",

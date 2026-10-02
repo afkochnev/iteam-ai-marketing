@@ -135,9 +135,7 @@ class CampaignWorkspaceService:
             ).all()
         )
         latest_runs = await self._latest_runs([task.id for task in tasks])
-        strategy_status = (
-            strategy_approvals[0].status if strategy_approvals else campaign.status
-        )
+        strategy_status = strategy_approvals[0].status if strategy_approvals else campaign.status
         approved_versions = self._approved_versions(approvals)
         task_by_id = {task.id: task for task in tasks}
         plan_items = [item for plan in plans for item in plan.items]
@@ -508,8 +506,7 @@ class CampaignWorkspaceService:
         ]
         recommended_article = (campaign.strategy or {}).get("recommended_article")
         recommended = (
-            isinstance(recommended_article, dict)
-            and recommended_article.get("title") == item.title
+            isinstance(recommended_article, dict) and recommended_article.get("title") == item.title
         )
         return WorkspaceArticle(
             **reference.model_dump(),
@@ -570,8 +567,7 @@ class CampaignWorkspaceService:
             error_summary=error_summary,
             next_action=next_action,
             retry_allowed=(
-                task.status is TaskStatus.FAILED
-                and task.retry_count < settings.agent_max_retries
+                task.status is TaskStatus.FAILED and task.retry_count < settings.agent_max_retries
             ),
         )
 
@@ -588,9 +584,7 @@ class CampaignWorkspaceService:
                 )
             ).all()
         }
-        source_count = int(
-            await self.session.scalar(select(func.count(KnowledgeSource.id))) or 0
-        )
+        source_count = int(await self.session.scalar(select(func.count(KnowledgeSource.id))) or 0)
         store = await KnowledgeRepository(self.session).active_store()
         packs = await KnowledgePackRepository(self.session).list_packs(campaign_id=campaign.id)
         current_pack = next(
@@ -672,7 +666,7 @@ class CampaignWorkspaceService:
         publications: list[Publication],
         tasks: list[Task],
         feedback: WorkspaceFeedbackState,
-        ) -> CampaignDirectorBrief:
+    ) -> CampaignDirectorBrief:
         active_items = (
             [
                 item

@@ -196,15 +196,11 @@ def _repair_input(
                 "Текст поста должен быть plain text без Markdown-разметки и внутренних меток."
             )
         else:
-            expected_count_match = re.search(
-                r"['\"]post_count['\"]\s*:\s*(\d+)", original_input
-            )
+            expected_count_match = re.search(r"['\"]post_count['\"]\s*:\s*(\d+)", original_input)
             expected_count = (
                 expected_count_match.group(1) if expected_count_match else "из снимка стратегии"
             )
-            channels_match = re.search(
-                r"['\"]channels['\"]\s*:\s*\[([^\]]*)\]", original_input
-            )
+            channels_match = re.search(r"['\"]channels['\"]\s*:\s*\[([^\]]*)\]", original_input)
             allowed_channels = channels_match.group(1) if channels_match else "TELEGRAM, VK"
             actual_count = "не определён"
             actual_orders = "не определены"
