@@ -980,12 +980,14 @@ Brief статьи: {task.input_data.get("brief", "Не указан")}
         pack_strategy_instruction = (
             "Соблюдай social_strategy из снимка: точное число постов и разрешённые каналы. "
             "Для этого пакета publish_order глобален для всего пакета: значения должны быть "
-            f"ровно 1..{expected_count}, уникальны и не должны начинаться заново для каждого канала. "
+            f"ровно 1..{expected_count}, уникальны и не должны начинаться "
+            "заново для каждого канала. "
             "Все каналы из снимка должны быть представлены, недопустимые каналы запрещены. "
             f"Компактная форма ожидаемого порядка: [{order_example}]"
             if not plan_item_mode
             else "Соблюдай тему, угол, цель, формат и канал из утверждённого plan item. "
-            "Для единственного поста suggested_publish_order должен быть равен 1; не включай channel."
+            "Для единственного поста suggested_publish_order должен быть равен 1; "
+            "не включай channel."
         )
         result_schema = "SingleSocialPostResult" if plan_item_mode else "SocialPostPackResult"
         revision_context = f"""

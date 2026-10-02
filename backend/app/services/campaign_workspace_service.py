@@ -185,7 +185,11 @@ class CampaignWorkspaceService:
         ]
 
         selected_plan_items = (
-            [item for item in current_plan.items if item.status is PublicationPlanItemStatus.PLANNED]
+            [
+                item
+                for item in current_plan.items
+                if item.status is PublicationPlanItemStatus.PLANNED
+            ]
             if current_plan
             else []
         )
@@ -390,7 +394,11 @@ class CampaignWorkspaceService:
                 label="Пост",
                 status=post_stage_status,
                 href=f"/content/{posts[0].id}" if posts else item_anchor,
-                action_label="Создать пост" if not posts and plan.status is PublicationPlanStatus.APPROVED else None,
+                action_label=(
+                    "Создать пост"
+                    if not posts and plan.status is PublicationPlanStatus.APPROVED
+                    else None
+                ),
             )
             approval_stage = WorkspacePipelineStage(
                 label="Согласование",
@@ -664,9 +672,13 @@ class CampaignWorkspaceService:
         publications: list[Publication],
         tasks: list[Task],
         feedback: WorkspaceFeedbackState,
-    ) -> CampaignDirectorBrief:
+        ) -> CampaignDirectorBrief:
         active_items = (
-            [item for item in current_plan.items if item.status is PublicationPlanItemStatus.PLANNED]
+            [
+                item
+                for item in current_plan.items
+                if item.status is PublicationPlanItemStatus.PLANNED
+            ]
             if current_plan
             else []
         )
@@ -701,7 +713,9 @@ class CampaignWorkspaceService:
         return CampaignDirectorBrief(
             strategy_status=strategy_status,
             article_count=len(articles),
-            approved_article_count=sum(article.status is ContentStatus.APPROVED for article in articles),
+            approved_article_count=sum(
+                article.status is ContentStatus.APPROVED for article in articles
+            ),
             plan_status=current_plan.status if current_plan else None,
             plan_item_count=len(active_items),
             plan_items_with_posts=items_with_posts,
@@ -735,7 +749,11 @@ class CampaignWorkspaceService:
         )
         if issue:
             return WorkspaceNextStep(
-                title=("Разобрать ошибку задачи" if issue.status is TaskStatus.FAILED else "Снять блокировку задачи"),
+                title=(
+                    "Разобрать ошибку задачи"
+                    if issue.status is TaskStatus.FAILED
+                    else "Снять блокировку задачи"
+                ),
                 description=issue.title,
                 href=f"/tasks/{issue.id}",
                 entity_type="task",
@@ -749,7 +767,10 @@ class CampaignWorkspaceService:
                 entity_type="campaign",
                 entity_id=campaign.id,
             )
-        if strategy_status is ApprovalStatus.PENDING or campaign.status is CampaignStatus.WAITING_APPROVAL:
+        if (
+            strategy_status is ApprovalStatus.PENDING
+            or campaign.status is CampaignStatus.WAITING_APPROVAL
+        ):
             return WorkspaceNextStep(
                 title="Проверить стратегию",
                 description="Стратегия ожидает решения человека.",
@@ -779,7 +800,10 @@ class CampaignWorkspaceService:
         if current_plan is None:
             return WorkspaceNextStep(
                 title="Создать медиаплан",
-                description="Система предложит расписание по утверждённым статьям; план нужно проверить и утвердить.",
+                description=(
+                    "Система предложит расписание по утверждённым статьям; "
+                    "план нужно проверить и утвердить."
+                ),
                 href=f"{campaign_url}#publication-plan",
                 entity_type="campaign",
                 entity_id=campaign.id,
@@ -793,10 +817,16 @@ class CampaignWorkspaceService:
                 entity_id=current_plan.id,
             )
         if current_plan.status is PublicationPlanStatus.APPROVED:
-            missing_post = next((item for item in active_items if not posts_by_item.get(item.id)), None)
+            missing_post = next(
+                (item for item in active_items if not posts_by_item.get(item.id)),
+                None,
+            )
             if missing_post:
                 return WorkspaceNextStep(
-                    title=f"Создать {missing_post.channel.value}-пост для пункта №{missing_post.position}",
+                    title=(
+                        f"Создать {missing_post.channel.value}-пост "
+                        f"для пункта №{missing_post.position}"
+                    ),
                     description=f"{missing_post.topic} · {missing_post.scheduled_at:%d.%m.%Y}",
                     href=f"{campaign_url}#plan-item-{missing_post.id}",
                     entity_type="publication_plan_item",
@@ -848,7 +878,8 @@ class CampaignWorkspaceService:
             return WorkspaceNextStep(
                 title="Разобрать новые результаты",
                 description=(
-                    f"Новые отзывы: {feedback.new_feedback_count}; новых наблюдений метрик: {feedback.new_metrics_count}."
+                    f"Новые отзывы: {feedback.new_feedback_count}; "
+                    f"новых наблюдений метрик: {feedback.new_metrics_count}."
                 ),
                 href=f"{campaign_url}#feedback",
                 entity_type="feedback",
