@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import { PageBreadcrumbs } from "@/components/page-breadcrumbs";
 import { StatusBadge } from "@/components/status-badge";
-import { agentRunsApi, feedbackApi, knowledgePacksApi, tasksApi, type AgentRun, type FeedbackAnalysis, type KnowledgePack, type Task, type TaskListItem, type TaskPriority } from "@/lib/api";
+import { FriendlyError } from "@/components/friendly-error";
+import { agentRunsApi, ApiError, feedbackApi, knowledgePacksApi, tasksApi, type AgentRun, type FeedbackAnalysis, type KnowledgePack, type Task, type TaskListItem, type TaskPriority } from "@/lib/api";
 import { formatDate } from "@/lib/campaigns";
 import { TASK_PRIORITIES, TASK_PRIORITY_LABELS, TASK_STATUS_LABELS, TASK_TYPE_LABELS, taskDate } from "@/lib/tasks";
 
@@ -15,27 +16,65 @@ export default function TaskDetailsPage() {
   const [runs, setRuns] = useState<AgentRun[]>([]); const [notice, setNotice] = useState("");
   const [packs, setPacks] = useState<KnowledgePack[]>([]);
   const [analyses, setAnalyses] = useState<FeedbackAnalysis[]>([]); const [analysisId, setAnalysisId] = useState("");
-  const load = useCallback(() => Promise.all([tasksApi.get(id), agentRunsApi.list({ task_id: id }), knowledgePacksApi.list({ task_id: id })]).then(([value, runRows, packRows]) => { setTask(value); setRuns(runRows); setPacks(packRows); setTitle(value.title); setPriority(value.priority); void feedbackApi.analyses(value.campaign_id).then(setAnalyses).catch(() => setAnalyses([])); return tasksApi.list({ campaign_id: value.campaign_id }); }).then((rows) => setAvailable(rows.filter((item) => item.id !== id))).catch((reason: Error) => setError(reason.message)), [id]);
-  useEffect(() => { load(); }, [load]);
+  const [loading, setLoading] = useState(true); const [loadError, setLoadError] = useState<unknown>(""); const [partialLoadError, setPartialLoadError] = useState("");
+  const loadSequence = useRef(0);
+  const load = useCallback(async () => {
+    const sequence = ++loadSequence.current;
+    let value: Task;
+    try {
+      value = await tasksApi.get(id);
+      if (sequence !== loadSequence.current) return;
+      setLoadError(""); setPartialLoadError("");
+      setTask(value); setTitle(value.title); setPriority(value.priority);
+    } catch (reason) {
+      if (sequence !== loadSequence.current) return;
+      setLoadError(reason);
+      setLoading(false);
+      return;
+    }
+
+    const [runResult, packResult, analysisResult, availableResult] = await Promise.allSettled([
+      agentRunsApi.list({ task_id: id }),
+      knowledgePacksApi.list({ task_id: id }),
+      feedbackApi.analyses(value.campaign_id),
+      tasksApi.list({ campaign_id: value.campaign_id }),
+    ]);
+    if (sequence !== loadSequence.current) return;
+    setRuns(runResult.status === "fulfilled" ? runResult.value : []);
+    setPacks(packResult.status === "fulfilled" ? packResult.value : []);
+    setAnalyses(analysisResult.status === "fulfilled" ? analysisResult.value : []);
+    setAvailable(availableResult.status === "fulfilled"
+      ? availableResult.value.filter((item) => item.id !== id)
+      : []);
+    if ([runResult, packResult, analysisResult, availableResult].some((result) => result.status === "rejected")) {
+      setPartialLoadError("Задача открыта, но часть связанных сведений не загрузилась. Повторите загрузку.");
+    }
+    setLoading(false);
+  }, [id]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => { void load(); }, 0);
+    return () => { window.clearTimeout(timer); loadSequence.current += 1; };
+  }, [load]);
   useEffect(() => { if (!runs.some((run) => ["QUEUED", "RUNNING", "WAITING_APPROVAL"].includes(run.status))) return; const timer = window.setInterval(load, 3000); return () => window.clearInterval(timer); }, [runs, load]);
   async function action(operation: "start" | "complete" | "cancel") { try { const value = operation === "start" ? await tasksApi.start(id) : operation === "complete" ? await tasksApi.complete(id, { result: "Manual task completed" }) : await tasksApi.cancel(id); setTask(value); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось изменить задачу."); } }
   async function save() { try { setTask(await tasksApi.update(id, { title, priority })); setEditing(false); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось сохранить задачу."); } }
   async function addDependency() { if (!dependency) return; try { setTask(await tasksApi.addDependency(id, dependency)); setDependency(""); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось добавить зависимость."); } }
   async function removeDependency(dependencyId: string) { try { setTask(await tasksApi.removeDependency(id, dependencyId)); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось удалить зависимость."); } }
   async function runAI(retry = false) { try { await (retry ? tasksApi.retry(id) : analysisId ? tasksApi.run(id, analysisId) : tasksApi.run(id)); setNotice("AI-запуск поставлен в очередь."); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось запустить AI."); } }
-  if (!task && !error) return <main><p>Загружаем задачу…</p></main>;
-  if (!task) return <main><p role="alert" className="error">{error}</p></main>;
+  if (!task && loading) return <main><p role="status">Загружаем задачу…</p></main>;
+  if (!task) return <main><div className="empty-state"><FriendlyError error={loadError || "Не удалось загрузить задачу."} fallback="Не удалось загрузить задачу" onRetry={() => void load()} retryLabel="Повторить загрузку" /></div></main>;
   const editable = !["IN_PROGRESS", "COMPLETED", "CANCELLED"].includes(task.status);
-  return <main className="wide"><PageBreadcrumbs items={[{ label: "Кампании", href: "/campaigns" }, { label: task.campaign.name, href: `/campaigns/${task.campaign_id}` }, { label: "Задачи", href: "/tasks" }, { label: task.title }]} /><section className="page-section"><header className="page-header"><div><p className="eyebrow">{TASK_TYPE_LABELS[task.task_type]} · {TASK_PRIORITY_LABELS[task.priority]} приоритет</p>{editing ? <input aria-label="Название" value={title} onChange={(e) => setTitle(e.target.value)} /> : <h1>{task.title}</h1>}<StatusBadge label={TASK_STATUS_LABELS[task.status]} tone={task.status === "COMPLETED" ? "success" : task.status === "FAILED" ? "danger" : "neutral"} /></div><Link className="button-link secondary" href="/tasks">К списку задач</Link></header>{error && <p role="alert" className="error">{error}</p>}
+  return <main className="wide"><PageBreadcrumbs items={[{ label: "Кампании", href: "/campaigns" }, { label: task.campaign.name, href: `/campaigns/${task.campaign_id}` }, { label: "Задачи", href: "/tasks" }, { label: task.title }]} /><section className="page-section"><header className="page-header"><div><p className="eyebrow">{TASK_TYPE_LABELS[task.task_type]} · {TASK_PRIORITY_LABELS[task.priority]} приоритет</p>{editing ? <input aria-label="Название" value={title} onChange={(e) => setTitle(e.target.value)} /> : <h1>{task.title}</h1>}<StatusBadge label={TASK_STATUS_LABELS[task.status]} tone={task.status === "COMPLETED" ? "success" : task.status === "FAILED" ? "danger" : "neutral"} /></div><Link className="button-link secondary" href="/tasks">К списку задач</Link></header>{Boolean(error) && <FriendlyError error={error} fallback="Не удалось изменить задачу" />}{Boolean(loadError) && <div className="empty-state"><FriendlyError error={loadError} fallback="Не удалось загрузить задачу" onRetry={() => void load()} retryLabel="Повторить загрузку" /></div>}{partialLoadError && <p role="alert" className="notice">{partialLoadError} <button className="link-button" onClick={() => void load()}>Обновить сведения</button></p>}
     {editing && <div className="actions"><select aria-label="Приоритет" value={priority} onChange={(e) => setPriority(e.target.value as TaskPriority)}>{TASK_PRIORITIES.map((item) => <option key={item} value={item}>{TASK_PRIORITY_LABELS[item]}</option>)}</select><button onClick={save}>Сохранить</button><button className="secondary" onClick={() => setEditing(false)}>Отмена</button></div>}
     <dl className="campaign-facts"><div><dt>Кампания</dt><dd><Link href={`/campaigns/${task.campaign_id}`}>{task.campaign.name}</Link></dd></div><div><dt>Тип работы</dt><dd>{TASK_TYPE_LABELS[task.task_type]}</dd></div><div><dt>Ответственный агент</dt><dd>{task.assigned_agent?.name ?? "Не назначен"}</dd></div><div><dt>Приоритет</dt><dd>{TASK_PRIORITY_LABELS[task.priority]}</dd></div><div><dt>Срок</dt><dd>{taskDate(task.deadline)}</dd></div><div><dt>Родительская задача</dt><dd>{task.parent_task ? <Link href={`/tasks/${task.parent_task.id}`}>{task.parent_task.title}</Link> : "Нет"}</dd></div><div><dt>Создана</dt><dd>{taskDate(task.created_at)}</dd></div><div><dt>Начата</dt><dd>{taskDate(task.started_at)}</dd></div><div><dt>Завершена</dt><dd>{taskDate(task.completed_at)}</dd></div><div><dt>Описание</dt><dd>{task.description ?? "Нет описания"}</dd></div></dl>
-    {task.error_message && <p role="alert" className="error">Причина остановки: {task.error_message}</p>}
+    {task.status === "FAILED" && runs.find((run) => run.status === "FAILED")?.error_code && <FriendlyError error={new ApiError(runs.find((run) => run.status === "FAILED")?.error_message ?? "", 500, runs.find((run) => run.status === "FAILED")?.error_code ?? undefined)} fallback="Задача не завершилась" />}
+    {task.error_message && !runs.some((run) => run.status === "FAILED" && run.error_code) && <details className="disclosure"><summary>Технические сведения об остановке</summary><p>{task.error_message}</p></details>}
     <details className="disclosure"><summary>Технические входные данные</summary><pre>{JSON.stringify(task.input_data, null, 2)}</pre></details><details className="disclosure"><summary>Технические выходные данные</summary><pre>{JSON.stringify(task.output_data, null, 2)}</pre></details>
     <div className="details-grid"><div><h2>Зависимости</h2>{task.dependencies.length ? <ul>{task.dependencies.map((item) => <li key={item.id}><Link href={`/tasks/${item.id}`}>{item.title}</Link> — {TASK_STATUS_LABELS[item.status]} {editable && <button className="link-button" onClick={() => removeDependency(item.id)}>Удалить</button>}</li>)}</ul> : <p>Нет зависимостей</p>}{editable && <div className="actions"><select aria-label="Добавить зависимость" value={dependency} onChange={(e) => setDependency(e.target.value)}><option value="">Выберите задачу</option>{available.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}</select><button onClick={addDependency}>Добавить</button></div>}</div><div><h2>Зависимые задачи</h2>{task.dependents.length ? <ul>{task.dependents.map((item) => <li key={item.id}><Link href={`/tasks/${item.id}`}>{item.title}</Link> — {TASK_STATUS_LABELS[item.status]}</li>)}</ul> : <p>Нет зависимых задач</p>}</div></div>
     {notice && <p className="notice">{notice}</p>}<div className="actions">{editable && <button className="secondary" onClick={() => setEditing(true)}>Редактировать</button>}{task.status === "READY" && ((task.task_type === "MANUAL" && task.assigned_agent) || (task.task_type === "CAMPAIGN_PLANNING" && task.assigned_agent?.slug === "marketing_director") || (task.task_type === "KNOWLEDGE_RESEARCH" && task.assigned_agent?.slug === "knowledge_keeper") || (task.task_type === "WRITE_ARTICLE" && task.assigned_agent?.slug === "writer") || (task.task_type === "CREATE_SOCIAL_POSTS" && task.assigned_agent?.slug === "smm_manager")) && <button onClick={() => runAI()}>Запустить AI</button>}{typeof task.output_data.content_item_id === "string" && <Link className="button-link" href={`/content/${task.output_data.content_item_id}`}>Открыть контент</Link>}{task.status === "READY" && task.task_type === "MANUAL" && <button onClick={() => action("start")}>Начать</button>}{task.status === "IN_PROGRESS" && task.task_type === "MANUAL" && <button onClick={() => action("complete")}>Завершить</button>}{["READY", "BLOCKED", "IN_PROGRESS"].includes(task.status) && <button className="secondary" onClick={() => action("cancel")}>Отменить</button>}{task.status === "FAILED" && task.task_type === "KNOWLEDGE_RESEARCH" && <button onClick={() => runAI(true)}>Повторить исследование</button>}{task.status === "FAILED" && task.task_type !== "KNOWLEDGE_RESEARCH" && <button onClick={() => runAI(true)}>Повторить</button>}</div>
     {(["CAMPAIGN_PLANNING", "CREATE_SOCIAL_POSTS"].includes(task.task_type) && task.status === "READY") && <label>Использовать анализ обратной связи <select aria-label="Использовать анализ обратной связи" value={analysisId} onChange={(event) => setAnalysisId(event.target.value)}><option value="">Без анализа обратной связи</option>{analyses.filter((item) => item.status === "ACCEPTED").map((item) => <option key={item.id} value={item.id}>{item.generated_at ? formatDate(item.generated_at) : "Принятый анализ"} — {item.summary.slice(0, 80)}</option>)}</select></label>}
     {typeof task.output_data.text === "string" && <div><h2>Результат AI</h2><p>{task.output_data.text}</p></div>}
     {packs.map((pack) => <article className="knowledge-pack" key={pack.id}><h2>Пакет знаний</h2>{pack.status === "INSUFFICIENT" && <p className="error">Недостаточно материалов в базе знаний</p>}<dl><div><dt>Запрос исследования</dt><dd>{pack.research_query}</dd></div><div><dt>Резюме</dt><dd>{pack.summary}</dd></div></dl>{pack.gaps.length > 0 && <><h3>Пробелы в знаниях</h3><ul>{pack.gaps.map((gap) => <li key={gap}>{gap}</li>)}</ul></>}<h3>Использованные источники</h3>{pack.items.length === 0 ? <p>Источники не выбраны.</p> : pack.items.map((item) => <div className="agent-card" key={item.result_key}><strong>{item.source_title}</strong><p>Файл: {item.filename ?? "—"}</p><p>Релевантность: {item.relevance_score == null ? "—" : item.relevance_score.toFixed(3)}</p><p>{item.excerpt}</p><p><em>Почему выбран:</em> {item.selection_reason ?? "—"}</p></div>)}{pack.status === "INSUFFICIENT" && <p className="notice">Перед повтором можно добавить новые материалы в базу знаний.</p>}</article>)}
-    <h2>История запусков</h2>{runs.length === 0 ? <p>Запусков пока нет.</p> : <div className="card-stack">{runs.map((run, index) => <article className="content-card" key={run.id}><div className="card-heading"><div><h3>Попытка {runs.length - index} · {run.agent?.name ?? task.assigned_agent?.name ?? "Агент"}</h3><p className="muted"><span>{run.model}</span> · {taskDate(run.started_at ?? run.created_at)}{run.completed_at ? ` — ${taskDate(run.completed_at)}` : ""}</p></div><StatusBadge label={({ QUEUED: "В очереди", RUNNING: "Выполняется", WAITING_APPROVAL: "Ждёт согласования", COMPLETED: "Завершён", FAILED: "Ошибка", CANCELLED: "Отменён" } as const)[run.status]} tone={run.status === "COMPLETED" ? "success" : run.status === "FAILED" ? "danger" : "neutral"} /></div>{(run.input_tokens != null || run.output_tokens != null) && <p>Токены: вход {run.input_tokens ?? "—"}, выход {run.output_tokens ?? "—"}</p>}{run.tool_calls && run.tool_calls.length > 0 && <p>Использованные инструменты: {run.tool_calls.map((tool) => tool.tool_name ?? tool.name).filter(Boolean).join(", ")}</p>}{run.error_message && <p role="alert" className="error">{run.error_message}</p>}</article>)}</div>}
+    <h2>История запусков</h2>{runs.length === 0 ? <p>Запусков пока нет.</p> : <div className="card-stack">{runs.map((run, index) => <article className="content-card" key={run.id}><div className="card-heading"><div><h3>Попытка {runs.length - index} · {run.agent?.name ?? task.assigned_agent?.name ?? "Агент"}</h3><p className="muted"><span>{run.model}</span> · {taskDate(run.started_at ?? run.created_at)}{run.completed_at ? ` — ${taskDate(run.completed_at)}` : ""}</p></div><StatusBadge label={({ QUEUED: "В очереди", RUNNING: "Выполняется", WAITING_APPROVAL: "Ждёт согласования", COMPLETED: "Завершён", FAILED: "Ошибка", CANCELLED: "Отменён" } as const)[run.status]} tone={run.status === "COMPLETED" ? "success" : run.status === "FAILED" ? "danger" : "neutral"} /></div>{(run.input_tokens != null || run.output_tokens != null) && <p>Токены: вход {run.input_tokens ?? "—"}, выход {run.output_tokens ?? "—"}</p>}{run.tool_calls && run.tool_calls.length > 0 && <p>Использованные инструменты: {run.tool_calls.map((tool) => tool.tool_name ?? tool.name).filter(Boolean).join(", ")}</p>}{run.error_message && <details className="disclosure"><summary>Технические сведения</summary>{run.error_code && <p>Код: <code>{run.error_code}</code></p>}<p>{run.error_message}</p></details>}</article>)}</div>}
   </section></main>;
 }

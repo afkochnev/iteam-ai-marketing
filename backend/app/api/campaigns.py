@@ -14,8 +14,10 @@ from app.schemas.campaign import (
     StrategyApprovalResponse,
     StrategyGenerationResponse,
 )
+from app.schemas.campaign_workspace import CampaignWorkspaceResponse
 from app.services.campaign_planning_service import CampaignPlanningService
 from app.services.campaign_service import CampaignService
+from app.services.campaign_workspace_service import CampaignWorkspaceService
 from app.services.task_dispatcher_service import TaskDispatcherService
 
 router = APIRouter(prefix="/campaigns", tags=["campaigns"])
@@ -49,6 +51,15 @@ async def get_campaign(
 ) -> CampaignResponse:
     campaign = await CampaignService(session).get_campaign(campaign_id)
     return CampaignResponse.model_validate(campaign)
+
+
+@router.get("/{campaign_id}/workspace", response_model=CampaignWorkspaceResponse)
+async def get_campaign_workspace(
+    campaign_id: UUID,
+    _current_user: CurrentUser,
+    session: SessionDependency,
+) -> CampaignWorkspaceResponse:
+    return await CampaignWorkspaceService(session).get(campaign_id)
 
 
 @router.patch("/{campaign_id}", response_model=CampaignResponse)

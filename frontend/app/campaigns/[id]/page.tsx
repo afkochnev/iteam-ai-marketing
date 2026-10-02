@@ -7,7 +7,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { PageBreadcrumbs } from "@/components/page-breadcrumbs";
 import { StatusBadge } from "@/components/status-badge";
-import { activitiesApi, approvalsApi, campaignsApi, contentApi, feedbackApi, metricsApi, publicationPlansApi, publicationsApi, tasksApi, type Activity, type Approval, type Campaign, type CampaignPerformance, type ContentListItem, type FeedbackAnalysis, type MarketingFeedback, type Publication, type PublicationCalendarItem, type PublicationPlan, type TaskListItem } from "@/lib/api";
+import { activitiesApi, agentRunsApi, agentsApi, approvalsApi, campaignsApi, contentApi, feedbackApi, metricsApi, publicationPlansApi, publicationsApi, tasksApi, type Activity, type AgentListItem, type AgentRun, type Approval, type Campaign, type CampaignPerformance, type CampaignWorkspace, type ContentListItem, type FeedbackAnalysis, type MarketingFeedback, type Publication, type PublicationCalendarItem, type PublicationPlan, type TaskListItem, type WorkspacePlanItem } from "@/lib/api";
+import { FriendlyError } from "@/components/friendly-error";
+import { ApiError } from "@/lib/api";
 import { CAMPAIGN_STATUS_LABELS, formatDate, formatDateTime } from "@/lib/campaigns";
 import { activityLabel, CONTENT_STATUS_LABELS, PLAN_STATUS_LABELS, PUBLICATION_STATUS_LABELS } from "@/lib/presentation";
 import { TASK_STATUS_LABELS, TASK_TYPE_LABELS } from "@/lib/tasks";
@@ -15,6 +17,15 @@ import { TASK_STATUS_LABELS, TASK_TYPE_LABELS } from "@/lib/tasks";
 export default function CampaignDetailsPage() {
   const { id } = useParams<{ id: string }>(); const router = useRouter(); const { user, loading: authLoading } = useAuth();
   const [campaign, setCampaign] = useState<Campaign | null>(null); const [error, setError] = useState("");
+  const [workspace, setWorkspace] = useState<CampaignWorkspace | null>(null);
+  const [agents, setAgents] = useState<AgentListItem[]>([]);
+  const [planGenerationState, setPlanGenerationState] = useState<"idle" | "queued" | "complete" | "failed">("idle");
+  const [planGenerationError, setPlanGenerationError] = useState<unknown>(null);
+  const [planGenerationRun, setPlanGenerationRun] = useState<AgentRun | null>(null);
+  const [generatedPlanId, setGeneratedPlanId] = useState<string | null>(null);
+  const [postBusyItemId, setPostBusyItemId] = useState<string | null>(null);
+  const [postJobs, setPostJobs] = useState<Record<string, { taskId: string; runId?: string; status: string }>>({});
+  const [actionNotice, setActionNotice] = useState("");
   const [tasks, setTasks] = useState<TaskListItem[]>([]); const [approvals, setApprovals] = useState<Approval[]>([]); const [contents, setContents] = useState<ContentListItem[]>([]); const [publications, setPublications] = useState<Publication[]>([]); const [calendarItems, setCalendarItems] = useState<PublicationCalendarItem[]>([]); const [activities, setActivities] = useState<Activity[]>([]); const [action, setAction] = useState<"revision" | "reject" | null>(null); const [comment, setComment] = useState(""); const [publicationPollingMessage, setPublicationPollingMessage] = useState("");
   const [performance, setPerformance] = useState<CampaignPerformance | null>(null);
   const [feedback, setFeedback] = useState<MarketingFeedback[]>([]); const [analyses, setAnalyses] = useState<FeedbackAnalysis[]>([]);
@@ -22,7 +33,7 @@ export default function CampaignDetailsPage() {
   const [publicationBusy, setPublicationBusy] = useState<string | null>(null);
   const [metricsBusy, setMetricsBusy] = useState<string | null>(null);
   const publicationPollingStartedAt = useRef<number | null>(null);
-  const load = useCallback(() => { void Promise.all([campaignsApi.get(id), tasksApi.list({ campaign_id: id }), approvalsApi.list({ object_type: "CAMPAIGN_STRATEGY", object_id: id }), contentApi.list({ campaign_id: id }), activitiesApi.list(id).catch(() => [])]).then(([campaignValue, taskRows, approvalRows, contentRows, activityRows]) => { setCampaign(campaignValue); setTasks(taskRows); setApprovals(approvalRows); setContents(contentRows); setActivities(activityRows); }).catch((reason: Error) => setError(reason.message)); void publicationsApi.listCampaign(id).then(setPublications).catch(() => setPublications([])); const to = new Date(); const from = new Date(to.getTime() - 180 * 24 * 60 * 60 * 1000); const calendarFrom = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000); const calendarTo = new Date(to.getTime() + 60 * 24 * 60 * 60 * 1000); const calendarRequest = publicationsApi.calendar?.(id, calendarFrom.toISOString(), calendarTo.toISOString()); if (calendarRequest) void calendarRequest.then(setCalendarItems).catch(() => setCalendarItems([])); void metricsApi.campaign(id, from.toISOString(), to.toISOString()).then(setPerformance).catch(() => setPerformance(null)); }, [id]);
+  const load = useCallback(() => { void Promise.all([campaignsApi.get(id), campaignsApi.workspace(id), tasksApi.list({ campaign_id: id }), approvalsApi.list({ object_type: "CAMPAIGN_STRATEGY", object_id: id }), contentApi.list({ campaign_id: id }), activitiesApi.list(id).catch(() => [])]).then(([campaignValue, workspaceValue, taskRows, approvalRows, contentRows, activityRows]) => { setCampaign(campaignValue); setWorkspace(workspaceValue); setTasks(taskRows); setApprovals(approvalRows); setContents(contentRows); setActivities(activityRows); }).catch((reason: Error) => setError(reason.message)); void agentsApi.list().then(setAgents).catch(() => setAgents([])); void publicationsApi.listCampaign(id).then(setPublications).catch(() => setPublications([])); const to = new Date(); const from = new Date(to.getTime() - 180 * 24 * 60 * 60 * 1000); const calendarFrom = new Date(to.getTime() - 7 * 24 * 60 * 60 * 1000); const calendarTo = new Date(to.getTime() + 60 * 24 * 60 * 60 * 1000); const calendarRequest = publicationsApi.calendar?.(id, calendarFrom.toISOString(), calendarTo.toISOString()); if (calendarRequest) void calendarRequest.then(setCalendarItems).catch(() => setCalendarItems([])); void metricsApi.campaign(id, from.toISOString(), to.toISOString()).then(setPerformance).catch(() => setPerformance(null)); }, [id]);
   const loadFeedback = useCallback(() => { void feedbackApi.list(id).then(setFeedback).catch(() => setFeedback([])); void feedbackApi.analyses(id).then(setAnalyses).catch(() => setAnalyses([])); }, [id]);
   const loadPlans = useCallback(() => { void publicationPlansApi.list(id).then(setPublicationPlans).catch(() => setPublicationPlans([])); }, [id]);
   useEffect(() => { if (!authLoading && !user) { router.replace("/login"); return; } if (user) { load(); loadFeedback(); loadPlans(); } }, [authLoading, user, router, load, loadFeedback, loadPlans]);
@@ -55,7 +66,49 @@ export default function CampaignDetailsPage() {
   async function addFeedback() { const comment = window.prompt("Обратная связь"); if (!comment?.trim()) return; try { await feedbackApi.create(id, { category: "OTHER", comment }); await loadFeedback(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось сохранить обратную связь."); } }
   async function generateFeedbackAnalysis() { try { await feedbackApi.generate(id); await loadFeedback(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось сформировать выводы."); } }
   async function reviewFeedbackAnalysis(analysisId: string, decision: "accept" | "reject") { try { if (decision === "accept") await feedbackApi.accept(analysisId); else await feedbackApi.reject(analysisId); await loadFeedback(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось сохранить решение."); } }
-  async function generatePublicationPlan() { const start = new Date(); start.setHours(9, 0, 0, 0); const end = new Date(start); end.setDate(end.getDate() + 13); end.setHours(18, 0, 0, 0); try { await publicationPlansApi.generate(id, { planning_horizon_start: start.toISOString(), planning_horizon_end: end.toISOString(), channels: ["TELEGRAM", "VK"], total_items: 6 }); await loadPlans(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось сформировать план публикаций."); } }
+  async function generatePublicationPlan() {
+    const start = new Date();
+    start.setHours(9, 0, 0, 0);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 13);
+    end.setHours(18, 0, 0, 0);
+    setPlanGenerationState("queued");
+    setPlanGenerationError(null);
+    setActionNotice("");
+    try {
+      const plan = await publicationPlansApi.generate(id, {
+        planning_horizon_start: start.toISOString(),
+        planning_horizon_end: end.toISOString(),
+        channels: ["TELEGRAM", "VK"],
+        total_items: 6,
+      });
+      setGeneratedPlanId(plan.id);
+      setPublicationPlans(await publicationPlansApi.list(id));
+      if (plan.generated_by_agent_run_id) {
+        const run = await agentRunsApi.get(plan.generated_by_agent_run_id);
+        setPlanGenerationRun(run);
+        if (run.status === "COMPLETED") setPlanGenerationState("complete");
+        if (run.status === "FAILED" || run.status === "CANCELLED") {
+          setPlanGenerationState("failed");
+          setPlanGenerationError(new ApiError(
+            run.error_message ?? "Генерация медиаплана остановилась.",
+            500,
+            run.error_code ?? undefined,
+          ));
+        }
+      } else {
+        setPlanGenerationState("complete");
+      }
+      void load();
+    } catch (reason) {
+      setPlanGenerationState("failed");
+      setPlanGenerationError(reason);
+      setActionNotice("");
+    }
+  }
+  useEffect(() => { if (!planGenerationRun || !["QUEUED", "RUNNING"].includes(planGenerationRun.status)) return; const timer = window.setInterval(() => { void agentRunsApi.get(planGenerationRun.id).then((run) => { setPlanGenerationRun(run); if (run.status === "COMPLETED") { setPlanGenerationState("complete"); void load(); void loadPlans(); } else if (run.status === "FAILED" || run.status === "CANCELLED") { setPlanGenerationState("failed"); setPlanGenerationError(new ApiError(run.error_message ?? "Генерация медиаплана остановилась.", 500, run.error_code ?? undefined)); setActionNotice(""); } }).catch(() => undefined); }, 2500); return () => window.clearInterval(timer); }, [planGenerationRun, load, loadPlans]);
+  useEffect(() => { const active = Object.entries(postJobs).filter(([, job]) => ["QUEUED", "RUNNING"].includes(job.status)); if (!active.length) return; const timer = window.setInterval(() => { for (const [itemId, job] of active) void agentRunsApi.get(job.runId!).then((run) => { setPostJobs((current) => ({ ...current, [itemId]: { ...job, status: run.status } })); if (run.status === "COMPLETED") { setActionNotice("Пост создан и ожидает согласования."); void load(); void loadPlans(); } else if (run.status === "FAILED" || run.status === "CANCELLED") { setPostJobs((current) => ({ ...current, [itemId]: { ...job, status: "FAILED" } })); setPlanGenerationError(new ApiError(run.error_message ?? "Создание поста остановилось.", 500, run.error_code ?? undefined)); } }).catch(() => undefined); }, 3000); return () => window.clearInterval(timer); }, [postJobs, load, loadPlans]);
+  async function createPostForPlanItem(item: WorkspacePlanItem, planId: string) { const manager = agents.find((agent) => agent.slug === "smm_manager" && agent.status === "ACTIVE"); if (!manager) { setPlanGenerationError(new ApiError("SMM Manager не найден или неактивен.", 409, "AGENT_INACTIVE")); return; } setPostBusyItemId(item.id); setPlanGenerationError(null); setActionNotice(""); try { const task = await tasksApi.create({ campaign_id: id, task_type: "CREATE_SOCIAL_POSTS", title: `Создать ${item.channel}-пост: «${item.topic}»`, description: `Создать один пост по утверждённому пункту медиаплана №${item.position}. Источник: ${item.source_content_item_title ?? "связь не зафиксирована"}, утверждённая версия v${item.source_version_number ?? "—"}.`, assigned_agent_id: manager.id, priority: "NORMAL", requires_approval: true, input_data: { publication_plan_id: planId, publication_plan_item_id: item.id, source_content_item_id: item.source_content_item_id, source_content_version_id: item.source_content_version_id } }); setPostJobs((current) => ({ ...current, [item.id]: { taskId: task.id, status: "CREATED" } })); try { const run = await tasksApi.run(task.id); setPostJobs((current) => ({ ...current, [item.id]: { taskId: task.id, runId: run.id, status: run.status } })); setActionNotice("Создаётся пост… Задача поставлена в очередь."); } catch (reason) { setPlanGenerationError(reason); setActionNotice("Задача создана, но запуск не подтверждён. Откройте её, чтобы проверить состояние."); } await load(); } catch (reason) { setPlanGenerationError(reason); } finally { setPostBusyItemId(null); } }
   async function transitionPlan(planId: string, actionName: "submit" | "approve" | "reject") { try { await publicationPlansApi[actionName](planId); await loadPlans(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось изменить план публикаций."); } }
   async function editPlanItem(plan: PublicationPlan, itemId: string) { const item = plan.items.find((candidate) => candidate.id === itemId); if (!item) return; const topic = window.prompt("Тема", item.topic); if (topic === null) return; const angle = window.prompt("Угол", item.angle); if (angle === null) return; const purpose = window.prompt("Цель", item.purpose); if (purpose === null) return; const format = window.prompt("Формат", item.format); if (format === null) return; const brief = window.prompt("Бриф", item.message_brief); if (brief === null) return; try { await publicationPlansApi.updateItem(plan.id, item.id, { topic, angle, purpose, format, message_brief: brief }); await loadPlans(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось сохранить пункт плана."); } }
   async function removePlanItem(plan: PublicationPlan, itemId: string) { if (!window.confirm("Удалить пункт плана?")) return; try { await publicationPlansApi.removeItem(plan.id, itemId); await loadPlans(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось удалить пункт плана."); } }
@@ -73,6 +126,7 @@ export default function CampaignDetailsPage() {
     const priority = (status: string) => ["FAILED", "BLOCKED", "READY", "IN_PROGRESS", "WAITING_REVIEW", "WAITING_APPROVAL"].indexOf(status);
     return priority(a.status) - priority(b.status) || new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
   });
+  const displayAttentionTasks = workspace?.attention_tasks ?? [];
   const getPublication = (item: ContentListItem) => publications.find((row) => row.content_item_id === item.id && row.status !== "CANCELLED" &&
     (item.approved_version_id ? row.content_version_id === item.approved_version_id : !item.current_version_id || row.content_version_id === item.current_version_id));
   const upcomingPublications = publications.filter((item) => item.status === "SCHEDULED" && item.scheduled_at)
@@ -89,13 +143,20 @@ export default function CampaignDetailsPage() {
     return groups;
   }, {});
   const activePlans = publicationPlans.filter((plan) => plan.status !== "ARCHIVED");
-  const currentPlan =
+  const currentPlan = publicationPlans.find((plan) => plan.id === generatedPlanId) ??
     activePlans.find((plan) => plan.status === "APPROVED") ??
     activePlans.find((plan) => plan.status === "WAITING_APPROVAL") ??
     activePlans.find((plan) => plan.status === "DRAFT") ??
     activePlans.find((plan) => plan.status === "REJECTED") ??
     publicationPlans[0];
   const otherPlans = publicationPlans.filter((plan) => plan.id !== currentPlan?.id);
+  const currentWorkspacePlan = currentPlan?.id === workspace?.publication_plan?.id
+    ? workspace.publication_plan
+    : workspace?.other_plans.find((plan) => plan.id === currentPlan?.id) ?? workspace?.publication_plan ?? null;
+  const planWorkspaceById = new Map<string, CampaignWorkspace["publication_plan"]>([
+    ...(workspace?.publication_plan ? [[workspace.publication_plan.id, workspace.publication_plan] as const] : []),
+    ...(workspace?.other_plans.map((plan) => [plan.id, plan] as const) ?? []),
+  ]);
   const needsAttention = attentionTasks.length;
 
   const renderPublication = (item: ContentListItem) => {
@@ -128,15 +189,21 @@ export default function CampaignDetailsPage() {
     <article className="plan-card" key={plan.id}>
       <div className="card-heading"><div><h3>План · {formatDate(plan.planning_horizon_start)} — {formatDate(plan.planning_horizon_end)}</h3><p>{plan.items.filter((item) => item.status === "PLANNED").length} активных пунктов · часовой пояс: {plan.timezone_policy}</p></div><StatusBadge label={PLAN_STATUS_LABELS[plan.status]} tone={plan.status === "APPROVED" ? "success" : "neutral"} /></div>
       <ol className="plan-list">{plan.items.filter((item) => item.status === "PLANNED").map((item, index) => {
+        const planWorkspace = planWorkspaceById.get(plan.id);
+        const workspaceItem = planWorkspace?.items.find((planned) => planned.id === item.id);
         const source = articles.find((article) => article.id === item.source_content_item_id);
-        const childPost = socialPosts.find((post) => post.publication_plan_item_id === item.id);
-        const downstreamPublication = publications.find((publication) => publication.publication_plan_item_id === item.id) ?? (childPost ? getPublication(childPost) : undefined);
+        const childPostRef = workspaceItem?.social_posts[0];
+        const childPost = childPostRef ? socialPosts.find((post) => post.id === childPostRef.id) : socialPosts.find((post) => post.publication_plan_item_id === item.id);
+        const downstreamPublication = workspaceItem?.publications[0] ? publications.find((publication) => publication.id === workspaceItem.publications[0].id) : publications.find((publication) => publication.publication_plan_item_id === item.id) ?? (childPost ? getPublication(childPost) : undefined);
         return <li key={item.id} className="plan-item">
           <div className="plan-item-main"><strong>{formatDateTime(item.scheduled_at)}</strong><StatusBadge label={item.channel} /><h4>{item.topic}</h4>
             <p>{item.purpose} · {item.format}</p><p className="muted">{item.message_brief}</p>
-            <p>Исходная статья: {source ? <Link href={`/content/${source.id}`}>{source.title}</Link> : item.source_content_item_id}</p>
-            {item.source_support_summary && <p className="muted">Основание: {item.source_support_summary}</p>}
+            <p>Исходная статья: {source ? <Link href={`/content/${source.id}`}>{workspaceItem?.source_content_item_title ?? source.title}</Link> : "Связь не зафиксирована"} · версия {workspaceItem?.source_version_number ? `v${workspaceItem.source_version_number}` : "не определена"}</p>
+            <p className="muted">Точная версия источника: {workspaceItem?.source_version_number ? `v${workspaceItem.source_version_number}` : "связь не подтверждена"} · {workspaceItem?.source_claim_ids?.length ? `подтверждений: ${workspaceItem.source_claim_ids.length}` : "claim-связи не зафиксированы"}</p>
+            {(workspaceItem?.source_support_summary ?? item.source_support_summary) && <p className="muted">Основание: {workspaceItem?.source_support_summary ?? item.source_support_summary}</p>}
             {childPost ? <p>Пост: <Link href={`/content/${childPost.id}`}>{childPost.title}</Link></p> : <p className="muted">Пост для этого пункта ещё не создан.</p>}
+            {workspaceItem && <ol className="workflow-pipeline" aria-label={`Цепочка пункта ${item.position}`}>{workspaceItem.pipeline.map((stage) => <li key={stage.label} className={`pipeline-stage pipeline-${stage.status}`}><span>{stage.href ? <Link href={stage.href}>{stage.label}</Link> : stage.label}</span><small>{stage.action_label ?? stage.status}</small></li>)}</ol>}
+            {plan.status === "APPROVED" && workspaceItem && !workspaceItem.social_posts.length && !archived && <div>{postJobs[item.id] ? <p role="status">{postJobs[item.id].status === "QUEUED" || postJobs[item.id].status === "RUNNING" ? "Создаётся пост…" : postJobs[item.id].status === "COMPLETED" ? "Пост создан. Ожидает согласования." : "Задача на создание поста подготовлена."} <Link href={`/tasks/${postJobs[item.id].taskId}`}>Открыть задачу</Link></p> : <button disabled={postBusyItemId === item.id} onClick={() => void createPostForPlanItem(workspaceItem, plan.id)}>{postBusyItemId === item.id ? "Создаём задачу…" : "Создать пост"}</button>}</div>}
             {downstreamPublication ? <p>Дальше: {PUBLICATION_STATUS_LABELS[downstreamPublication.status]}{downstreamPublication.scheduled_at ? ` · ${formatDateTime(downstreamPublication.scheduled_at)}` : ""}</p> :
               childPost?.status === "APPROVED" && !archived ? <button disabled={publicationBusy === childPost.id} onClick={() => preparePublication(childPost)}>Запланировать публикацию</button> :
                 childPost && <p className="muted">Публикация станет доступна после утверждения поста.</p>}
@@ -159,6 +226,22 @@ export default function CampaignDetailsPage() {
     </header>
     {error && <p role="alert" className="error">{error}</p>}
     {hasPublishingPublication && publicationPollingMessage && <p role="status">{publicationPollingMessage}</p>}
+    {actionNotice && <p className="notice" role="status">{actionNotice}</p>}
+    {Boolean(planGenerationError) && <FriendlyError error={planGenerationError} fallback="Не удалось выполнить действие" onRetry={planGenerationState === "failed" ? () => void generatePublicationPlan() : undefined} />}
+
+    {workspace && <section className="campaign-director page-section" aria-labelledby="director-heading">
+      <div className="director-main"><div><p className="eyebrow">Рекомендация системы</p><h2 id="director-heading">{workspace.director.next_step.title}</h2><p>{workspace.director.next_step.description}</p><Link className="button-link" href={workspace.director.next_step.href}>Перейти к следующему шагу</Link></div>
+        <aside className="director-role"><p className="eyebrow">Marketing Director</p><h3>Директор по маркетингу</h3><p>Объясняет состояние кампании, показывает блокеры и предлагает следующий шаг. Не утверждает контент и не публикует материалы.</p></aside></div>
+      <div className="summary-grid metric-cards">
+        <div className="metric-card"><strong>{workspace.director.approved_article_count}/{workspace.director.article_count}</strong><span>Статьи утверждены</span></div>
+        <a className="metric-card" href="#publication-plan"><strong>{workspace.director.plan_item_count}</strong><span>Пункты медиаплана</span><small>{workspace.director.plan_status ? PLAN_STATUS_LABELS[workspace.director.plan_status] : "Медиаплан ещё не создан"}</small></a>
+        <div className="metric-card"><strong>{workspace.director.plan_items_with_posts}/{workspace.director.plan_item_count}</strong><span>Посты созданы</span><small>{workspace.director.plan_items_without_posts} ещё не созданы</small></div>
+        <Link className="metric-card" href="/publications"><strong>{workspace.director.scheduled_publication_count}</strong><span>Запланировано</span><small>{workspace.director.published_count} опубликовано</small></Link>
+        <Link className="metric-card" href={`/tasks?campaign_id=${id}`}><strong>{workspace.director.failed_task_count + workspace.director.blocked_task_count}</strong><span>Блокеры</span><small>{workspace.director.failed_task_count} ошибок · {workspace.director.blocked_task_count} заблокировано</small></Link>
+        <Link className="metric-card" href={`/knowledge?campaign_id=${id}`}><strong>{workspace.knowledge.ready_item_count}</strong><span>Материалы базы знаний</span><small>{workspace.knowledge.has_current_strategy_pack ? "Исследование для версии стратегии готово" : "Нет актуального пакета исследования"}</small></Link>
+      </div>
+      <p className="muted">Хранитель знаний готовит источники для этой кампании. <Link href={`/knowledge?campaign_id=${id}`}>Открыть базу знаний и исследование</Link>.</p>
+    </section>}
 
     <section className="page-section" aria-labelledby="campaign-summary-heading">
       <div className="section-heading"><div><p className="eyebrow">Сейчас</p><h2 id="campaign-summary-heading">Сводка кампании</h2></div><p className="muted">Переходите к материалам и задачам из каждого показателя.</p></div>
@@ -180,7 +263,7 @@ export default function CampaignDetailsPage() {
       <div className="section-heading"><div><p className="eyebrow">Редакция</p><h2 id="content-heading">Контент кампании</h2><p className="muted">Статьи и посты показаны отдельно. Пакет постов — это источник, а не публикация.</p></div><Link className="button-link secondary" href={`/content?campaign_id=${id}`}>Открыть библиотеку</Link></div>
       <div className="content-columns">
         <section aria-labelledby="articles-heading"><h3 id="articles-heading">Статьи <span className="count">{articles.length}</span></h3>
-          {articles.length ? <ul className="simple-list">{articles.map((item) => <li key={item.id}><Link href={`/content/${item.id}`}>{item.title}</Link><span>{CONTENT_STATUS_LABELS[item.status]}</span>{item.current_version_number && <small>Версия {item.current_version_number}</small>}</li>)}</ul> : <p className="empty-state">Статей пока нет.</p>}
+          {workspace?.articles.length ? <div className="article-assets">{workspace.articles.map((item) => { const linkedPlanItems = currentWorkspacePlan?.items.filter((planItem) => planItem.source_content_item_id === item.id) ?? []; const postsToCreate = Math.max(0, linkedPlanItems.length - linkedPlanItems.filter((planItem) => planItem.social_posts.length > 0).length); return <article className="article-asset card" key={item.id}><div className="card-heading"><h4><Link href={`/content/${item.id}`}>{item.title}</Link></h4><StatusBadge label={CONTENT_STATUS_LABELS[item.status]} status={item.status} /></div><p>{item.approved_version_number ? `Утверждена версия v${item.approved_version_number}` : "Утверждённая версия не зафиксирована"} · {item.campaign_role}</p><p className="muted">Используется в {item.plan_item_count} пунктах медиаплана · постов создано: {item.social_post_count}{postsToCreate ? ` · не создано: ${postsToCreate}` : ""}</p><p className="muted">Задача-источник: {item.source_task_title ? <Link href={`/tasks/${item.source_task_id}`}>{item.source_task_title}</Link> : "Связь не зафиксирована"} · публикаций по этой статье: {item.scheduled_publication_count} запланировано, {item.published_count} опубликовано</p></article>; })}</div> : <p className="empty-state">Статей пока нет.</p>}
         </section>
         <section aria-labelledby="social-heading"><h3 id="social-heading">Посты для соцсетей <span className="count">{socialPosts.length}</span></h3>
           {socialPosts.length ? <div className="card-stack">{socialPosts.map(renderPublication)}</div> : <p className="empty-state">Посты ещё не созданы. После утверждения пакета они появятся здесь.</p>}
@@ -191,9 +274,11 @@ export default function CampaignDetailsPage() {
     </section>
 
     <section className="page-section" id="publication-plan" aria-labelledby="plan-heading">
-      <div className="section-heading"><div><p className="eyebrow">Планирование</p><h2 id="plan-heading">План публикаций</h2><p className="muted">Утверждённый план задаёт канал и время. Это основной источник расписания.</p></div>
-        <div className="section-actions"><Link className="button-link secondary" href="/publications">К календарю</Link>{!archived && <button onClick={generatePublicationPlan}>Создать план публикаций</button>}</div>
+      <div className="section-heading"><div><p className="eyebrow">Планирование</p><h2 id="plan-heading">Медиаплан</h2><p className="muted">AI предложит расписание на основе утверждённых статей. План потребуется отдельно проверить и утвердить.</p></div>
+        <div className="section-actions"><Link className="button-link secondary" href="/publications">К календарю</Link>{!archived && <button disabled={planGenerationState === "queued"} onClick={generatePublicationPlan}>{planGenerationState === "queued" ? "Создаём медиаплан…" : "Создать медиаплан"}</button>}</div>
       </div>
+      {planGenerationState === "queued" && <p role="status" className="notice">Создаём медиаплан… {planGenerationRun ? `Состояние задачи: ${planGenerationRun.status === "QUEUED" ? "в очереди" : "выполняется"}.` : "Задача передаётся исполнителю."}{planGenerationRun && <Link href={`/tasks/${planGenerationRun.task_id}`}>Открыть задачу</Link>}</p>}
+      {planGenerationState === "complete" && <p role="status" className="notice">Медиаплан создан{currentPlan ? `: ${currentPlan.items.filter((item) => item.status === "PLANNED").length} пунктов · статус: ${PLAN_STATUS_LABELS[currentPlan.status]}` : ""}. <a href="#publication-plan">Проверить медиаплан</a></p>}
       {currentPlan ? renderPlanCard(currentPlan) : <p className="empty-state">План публикаций ещё не создан.</p>}
       {otherPlans.length > 0 && <details className="disclosure">
         <summary>Другие планы ({otherPlans.length})</summary>
@@ -222,7 +307,7 @@ export default function CampaignDetailsPage() {
         <Link className="metric-card" href={`/tasks?campaign_id=${id}&status=READY`}><strong>{tasks.filter((item) => item.status === "READY").length}</strong><span>Готовы к запуску</span><small>Следующий шаг</small></Link>
         <Link className="metric-card" href={`/tasks?campaign_id=${id}&status=IN_PROGRESS`}><strong>{tasks.filter((item) => item.status === "IN_PROGRESS").length}</strong><span>В работе</span><small>Выполняются сейчас</small></Link>
       </div>
-      {attentionTasks.length ? <ul className="task-queue">{attentionTasks.slice(0, 8).map((task) => <li key={task.id}><Link href={`/tasks/${task.id}`}>{task.title}</Link><span>{TASK_TYPE_LABELS[task.task_type]} · {TASK_STATUS_LABELS[task.status]}</span></li>)}</ul> : <p className="empty-state">Нет задач, требующих внимания.</p>}
+      {displayAttentionTasks.length ? <ul className="task-queue">{displayAttentionTasks.slice(0, 8).map((task) => <li key={task.id}><Link href={`/tasks/${task.id}`}>{task.display_title}</Link><span>{TASK_TYPE_LABELS[task.task_type]} · {TASK_STATUS_LABELS[task.status]}</span>{task.error_summary && <div className="task-error-help"><p>{task.error_summary}</p>{task.next_action && <p>{task.next_action}</p>}{task.error_code && <details><summary>Технические сведения</summary><p>Код: <code>{task.error_code}</code></p></details>}</div>}</li>)}</ul> : <p className="empty-state">Нет задач, требующих внимания.</p>}
       <section className="workflow-stages" aria-label="Основные этапы кампании"><h3>Основные этапы</h3><ol>{(["KNOWLEDGE_RESEARCH", "WRITE_ARTICLE", "CREATE_SOCIAL_POSTS"] as const).map((type) => { const task = tasks.find((item) => item.task_type === type); return <li key={type}><span>{TASK_TYPE_LABELS[type]}</span>{task ? <><Link href={`/tasks/${task.id}`}>{task.title}</Link><StatusBadge label={TASK_STATUS_LABELS[task.status]} status={task.status} /></> : <span className="muted">Ещё не создано</span>}</li>; })}</ol></section>
       <details className="disclosure"><summary>Завершённые и отменённые ({tasks.filter((task) => ["COMPLETED", "CANCELLED", "APPROVED"].includes(task.status)).length})</summary><ul className="simple-list">{tasks.filter((task) => ["COMPLETED", "CANCELLED", "APPROVED"].includes(task.status)).map((task) => <li key={task.id}><Link href={`/tasks/${task.id}`}>{task.title}</Link><span>{TASK_STATUS_LABELS[task.status]}</span></li>)}</ul></details>
     </section>

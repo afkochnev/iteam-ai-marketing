@@ -5,7 +5,7 @@ import KnowledgePage from "@/app/knowledge/page";
 import { useAuth } from "@/components/auth-provider";
 import { knowledgeApi } from "@/lib/api";
 
-vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }) }));
+vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }), useSearchParams: () => new URLSearchParams() }));
 vi.mock("@/components/auth-provider", () => ({ useAuth: vi.fn() }));
 vi.mock("@/lib/api", async () => {
   const actual = await vi.importActual<typeof import("@/lib/api")>("@/lib/api");

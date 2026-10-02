@@ -1,6 +1,6 @@
 export type UserRole = "ADMIN" | "MANAGER";
 export interface User { id: string; email: string; full_name: string | null; role: UserRole; is_active: boolean; created_at: string; }
-interface ApiErrorBody { error?: { message?: string; details?: { errors?: Array<{ message?: string }> } }; }
+interface ApiErrorBody { error?: { code?: string; message?: string; details?: { errors?: Array<{ message?: string }> } }; }
 export type AgentStatus = "ACTIVE" | "INACTIVE";
 export interface AgentListItem { id: string; name: string; slug: string; role: string; description: string | null; model: string | null; status: AgentStatus; autonomy_level: number; }
 export interface AgentTool { id: string; tool_name: string; is_enabled: boolean; requires_approval: boolean; settings: Record<string, unknown>; }
@@ -12,6 +12,7 @@ export interface CampaignListItem { id: string; name: string; goal: string; prod
 export interface PlannedTask { key: string; task_type: TaskType; title: string; description: string; agent_slug: string; priority: TaskPriority; brief: string; depends_on: string[]; }
 export interface CampaignPlan { campaign_summary: string; positioning: string; target_audience: string; main_message: string; content_strategy: string; content_topics: string[]; recommended_article: { title: string; objective: string; angle: string; cta: string }; social_strategy: { channels: string[]; post_count: number; approach: string }; tasks: PlannedTask[]; }
 export interface Campaign extends CampaignListItem { description: string | null; target_audience: string | null; offer: string | null; desired_result: string | null; strategy: CampaignPlan | null; strategy_version: number; created_by: string; creator: { id: string; full_name: string | null; email: string }; }
+export interface WorkspaceContentReference { id: string; title: string; status: ContentStatus; content_type: ContentType; current_version_id: string | null; current_version_number: number | null; approved_version_id: string | null; approved_version_number: number | null; source_task_id: string; source_task_title: string | null; source_task_status: TaskStatus | null; parent_content_item_id: string | null; publication_plan_item_id: string | null; channel: "TELEGRAM" | "VK" | null; }
 export type TaskStatus = "NEW" | "BLOCKED" | "READY" | "IN_PROGRESS" | "WAITING_REVIEW" | "WAITING_APPROVAL" | "APPROVED" | "COMPLETED" | "FAILED" | "CANCELLED";
 export type TaskPriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
 export type TaskType = "CAMPAIGN_PLANNING" | "KNOWLEDGE_RESEARCH" | "WRITE_ARTICLE" | "CREATE_SOCIAL_POSTS" | "CONTENT_REVISION" | "MANUAL";
@@ -55,8 +56,20 @@ export type PublicationPlanStatus = "DRAFT" | "WAITING_APPROVAL" | "APPROVED" | 
 export interface PublicationCollisionWarning { type: "NEAR_EXISTING_PUBLICATION"; publication_id: string; channel: "TELEGRAM" | "VK"; scheduled_at: string; delta_minutes: number; }
 export interface PublicationPlanItem { id: string; position: number; scheduled_at: string; channel: "TELEGRAM" | "VK"; source_content_item_id: string; source_content_version_id: string; topic: string; angle: string; purpose: string; format: string; message_brief: string; source_claim_ids: string[] | null; source_support_summary: string | null; status: "PLANNED" | "REMOVED"; near_publication_warnings: PublicationCollisionWarning[]; }
 export interface PublicationPlan { id: string; campaign_id: string; status: PublicationPlanStatus; planning_horizon_start: string; planning_horizon_end: string; timezone_policy: string; created_by_user_id: string; generated_by_agent_run_id: string | null; feedback_analysis_id: string | null; approved_at: string | null; approved_by_user_id: string | null; items: PublicationPlanItem[]; }
+export interface WorkspacePublicationReference { id: string; content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK"; status: PublicationStatus; scheduled_at: string | null; published_at: string | null; publication_plan_item_id: string | null; }
+export interface WorkspacePipelineStage { label: string; status: string; href: string | null; action_label: string | null; }
+export interface WorkspacePlanItem { id: string; position: number; scheduled_at: string; channel: "TELEGRAM" | "VK"; topic: string; purpose: string; format: string; message_brief: string; source_content_item_id: string; source_content_item_title: string | null; source_content_version_id: string; source_version_number: number | null; source_claim_ids: string[] | null; source_support_summary: string | null; status: string; social_posts: WorkspaceContentReference[]; publications: WorkspacePublicationReference[]; pipeline: WorkspacePipelineStage[]; }
+export interface WorkspacePlan { id: string; status: PublicationPlanStatus; planning_horizon_start: string; planning_horizon_end: string; timezone_policy: string; generated_by_agent_run_id: string | null; item_count: number; items: WorkspacePlanItem[]; }
+export interface WorkspaceArticle extends WorkspaceContentReference { campaign_role: string; plan_item_count: number; social_post_count: number; scheduled_publication_count: number; published_count: number; }
+export interface WorkspaceKnowledgePack { id: string; status: "READY" | "INSUFFICIENT"; task_id: string; task_title: string | null; agent_run_id: string; created_at: string; summary: string; gaps: string[]; source_count: number; }
+export interface WorkspaceKnowledgeState { store_ready: boolean; source_count: number; item_count: number; ready_item_count: number; processing_item_count: number; failed_item_count: number; campaign_packs: WorkspaceKnowledgePack[]; has_current_strategy_pack: boolean; }
+export interface WorkspaceTask { id: string; title: string; display_title: string; task_type: TaskType; status: TaskStatus; priority: TaskPriority; created_at: string; updated_at: string; plan_item_id: string | null; error_code: string | null; error_summary: string | null; next_action: string | null; retry_allowed: boolean; }
+export interface WorkspaceNextStep { title: string; description: string; href: string; entity_type: string | null; entity_id: string | null; }
+export interface WorkspaceFeedbackState { new_feedback_count: number; new_metrics_count: number; }
+export interface CampaignDirectorBrief { strategy_status: ApprovalStatus | CampaignStatus; article_count: number; approved_article_count: number; plan_status: PublicationPlanStatus | null; plan_item_count: number; plan_items_with_posts: number; plan_items_without_posts: number; social_post_count: number; posts_waiting_approval: number; scheduled_publication_count: number; published_count: number; failed_task_count: number; blocked_task_count: number; next_step: WorkspaceNextStep; }
+export interface CampaignWorkspace { campaign: Campaign; director: CampaignDirectorBrief; knowledge: WorkspaceKnowledgeState; articles: WorkspaceArticle[]; social_posts: WorkspaceContentReference[]; publication_plan: WorkspacePlan | null; other_plans: WorkspacePlan[]; publications: WorkspacePublicationReference[]; attention_tasks: WorkspaceTask[]; feedback: WorkspaceFeedbackState; }
 export interface SystemStatus { tasks: Record<string, number>; agent_runs: Record<string, number>; stuck_tasks: number; pending_approvals: number; last_activity_at: string | null; }
-export class ApiError extends Error { constructor(message: string, public status: number) { super(message); } }
+export class ApiError extends Error { constructor(message: string, public status: number, public code?: string) { super(message); } }
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -67,7 +80,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const body = (await response.json().catch(() => ({}))) as ApiErrorBody;
     const fallback = response.status === 403 ? "Недостаточно прав для выполнения действия." : "Ошибка запроса.";
     const validationMessage = body.error?.details?.errors?.[0]?.message;
-    throw new ApiError(validationMessage ?? body.error?.message ?? fallback, response.status);
+    throw new ApiError(validationMessage ?? body.error?.message ?? fallback, response.status, body.error?.code);
   }
   return response.json() as Promise<T>;
 }
@@ -76,7 +89,7 @@ async function uploadRequest<T>(path: string, body: FormData): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, { method: "POST", body, credentials: "include" });
   if (!response.ok) {
     const payload = (await response.json().catch(() => ({}))) as ApiErrorBody;
-    throw new ApiError(payload.error?.message ?? "Ошибка загрузки.", response.status);
+    throw new ApiError(payload.error?.message ?? "Ошибка загрузки.", response.status, payload.error?.code);
   }
   return response.json() as Promise<T>;
 }
@@ -98,6 +111,7 @@ export const agentsApi = {
 export const campaignsApi = {
   list: (status?: CampaignStatus) => request<CampaignListItem[]>(`/campaigns${status ? `?status=${status}` : ""}`),
   get: (id: string) => request<Campaign>(`/campaigns/${id}`),
+  workspace: (id: string) => request<CampaignWorkspace>(`/campaigns/${id}/workspace`),
   create: (payload: CampaignInput) => request<Campaign>("/campaigns", { method: "POST", body: JSON.stringify(payload) }),
   update: (id: string, payload: Partial<CampaignInput>) => request<Campaign>(`/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   archive: (id: string) => request<Campaign>(`/campaigns/${id}/archive`, { method: "POST" }),

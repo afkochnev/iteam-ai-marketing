@@ -10,12 +10,17 @@ describe("global navigation and page context", () => {
   it("keeps the main work areas one click away and marks the active destination", () => {
     render(<AppNavigation><main>Страница</main></AppNavigation>);
     const nav = screen.getByRole("navigation", { name: "Основная навигация" });
+    expect(nav).toHaveTextContent("Главная");
     expect(nav).toHaveTextContent("Кампании");
+    expect(nav).toHaveTextContent("База знаний");
+    expect(nav).toHaveTextContent("База знаний");
     expect(nav).toHaveTextContent("Контент");
     expect(nav).toHaveTextContent("Задачи");
     expect(nav).toHaveTextContent("Согласования");
     expect(nav).toHaveTextContent("Публикации");
     expect(screen.getByRole("link", { name: "Кампании" })).toHaveAttribute("aria-current", "page");
+    expect(screen.getByRole("link", { name: "Главная" })).toHaveAttribute("href", "/");
+    expect(screen.getByRole("link", { name: "iTeam — главная" })).toHaveAttribute("href", "/");
   });
 
   it("renders linked breadcrumbs and the current page", () => {
