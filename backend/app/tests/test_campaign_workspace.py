@@ -473,6 +473,43 @@ async def test_director_ignores_failed_plan_item_task_after_post_exists(
     assert workspace.director.next_step.title == "Создать TELEGRAM-пост для пункта №2"
 
 
+async def test_director_prioritizes_pending_post_approval_before_next_missing_post(
+    db_session: AsyncSession,
+) -> None:
+    fixture = await workspace_fixture(db_session, with_post=True)
+    campaign = fixture["campaign"]
+    plan = fixture["plan"]
+    pending_post = fixture["post"]
+    article = fixture["article"]
+    article_version = fixture["article_version"]
+    pending_post.status = ContentStatus.WAITING_APPROVAL
+    next_item = PublicationPlanItem(
+        publication_plan_id=plan.id,
+        position=2,
+        scheduled_at=datetime.now(UTC) + timedelta(days=3),
+        channel=ContentChannel.TELEGRAM,
+        source_content_item_id=article.id,
+        source_content_version_id=article_version.id,
+        topic="Следующий актуальный пост",
+        angle="Практический угол",
+        purpose="Продолжить кампанию",
+        format="post",
+        message_brief="Редакционный бриф",
+        source_claim_ids=["article_test_p01"],
+        source_support_summary="Подтверждённый тезис статьи.",
+        status=PublicationPlanItemStatus.PLANNED,
+    )
+    db_session.add(next_item)
+    await db_session.commit()
+
+    workspace = await CampaignWorkspaceService(db_session).get(campaign.id)
+
+    assert workspace.director.next_step.entity_type == "social_post"
+    assert workspace.director.next_step.entity_id == pending_post.id
+    assert workspace.director.next_step.title == "Согласовать пост"
+    assert workspace.director.next_step.href == f"/content/{pending_post.id}#approval"
+
+
 async def test_director_links_to_the_first_missing_social_post_for_approved_plan(
     db_session: AsyncSession,
 ) -> None:
