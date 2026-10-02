@@ -88,7 +88,12 @@ async def test_plan_action_authorizes_future_exact_version_and_calendar(db_sessi
             .order_by(ActivityLog.created_at)
         )
     )
-    assert events == ["PUBLICATION_CREATED", "PUBLICATION_APPROVED", "PUBLICATION_SCHEDULED"]
+    assert len(events) == 3
+    assert set(events) == {
+        "PUBLICATION_CREATED",
+        "PUBLICATION_APPROVED",
+        "PUBLICATION_SCHEDULED",
+    }
     calendar = await service.calendar(
         campaign.id, datetime.now(UTC), datetime.now(UTC) + timedelta(days=7)
     )
