@@ -957,32 +957,47 @@ Brief статьи: {task.input_data.get("brief", "Не указан")}
             else ""
         )
         single_instruction = (
-            "Это точечная генерация одного поста по утверждённому plan item. "
-            "Верни ровно один пост в пакете; не создавай пакетный календарь. "
-            "Канал уже зафиксирован приложением в plan_channel и не является полем ответа модели."
+            "Это точечная генерация одного поста по утверждённому пункту Publication Plan. "
+            "Верни SingleSocialPostResult: sufficient=true и pack с strategy_summary и ровно "
+            "одним элементом posts. У элемента posts обязательны key, title, text_markdown, "
+            "sources и suggested_publish_order=1. В sources укажи как минимум одну пару "
+            "content_version_id и section_key из разрешённой версии статьи. Не добавляй channel: "
+            "канал уже зафиксирован приложением в plan_channel и не является полем ответа модели. "
+            "Если материала недостаточно, верни sufficient=false, pack=null и непустой gaps. "
+            "Не создавай пакетный календарь и не добавляй неизвестные поля."
             if plan_item_mode
             else ""
         )
         allowed_channels = list(social_strategy.get("channels", []))
         order_example_parts = []
-        for index in range(min(expected_count, 9)):
+        order_count = 0 if plan_item_mode else min(expected_count, 9)
+        for index in range(order_count):
             channel = (
                 allowed_channels[index % len(allowed_channels)] if allowed_channels else "TELEGRAM"
             )
             order_example_parts.append(f"{{channel: {channel}, publish_order: {index + 1}}}")
         order_example = ", ".join(order_example_parts)
+        pack_strategy_instruction = (
+            "Соблюдай social_strategy из снимка: точное число постов и разрешённые каналы. "
+            "Для этого пакета publish_order глобален для всего пакета: значения должны быть "
+            f"ровно 1..{expected_count}, уникальны и не должны начинаться "
+            "заново для каждого канала. "
+            "Все каналы из снимка должны быть представлены, недопустимые каналы запрещены. "
+            f"Компактная форма ожидаемого порядка: [{order_example}]"
+            if not plan_item_mode
+            else "Соблюдай тему, угол, цель, формат и канал из утверждённого plan item. "
+            "Для единственного поста suggested_publish_order должен быть равен 1; "
+            "не включай channel."
+        )
+        result_schema = "SingleSocialPostResult" if plan_item_mode else "SocialPostPackResult"
         revision_context = f"""
 Одобренный снимок стратегии (версия {task.input_data.get("strategy_version")}): {strategy_snapshot}
 {single_instruction}
 {plan_context}
-Соблюдай social_strategy из снимка: точное число постов и разрешённые каналы.
-Для этого пакета publish_order глобален для всего пакета: значения должны быть
-ровно 1..{expected_count}, уникальны и не должны начинаться заново для каждого канала.
-Все каналы из снимка должны быть представлены, недопустимые каналы запрещены.
-Компактная форма ожидаемого порядка (без текста публикаций): [{order_example}]
+{pack_strategy_instruction}
 Доступные версии статьи: {[str(item) for item in (allowed_content_version_ids or [])]}
 Используй read_content_version для каждой разрешённой версии. После успешного чтения
-сразу верни полный структурированный SocialPostPackResult и не вызывай инструмент повторно,
+сразу верни полный структурированный {result_schema} и не вызывай инструмент повторно,
 если это не требуется явно для bounded structured-output repair. Не выдумывай факты и источники.
 Текст каждого поста — plain text для прямой публикации: не используй **жирный** текст,
 Markdown-заголовки, code fences, labels вроде «CTA:» или «Порядок:», section_key,

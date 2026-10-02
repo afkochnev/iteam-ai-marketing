@@ -52,6 +52,7 @@ services:
         BUILD_SHA: ${BUILD_SHA:-unknown}
     command: celery -A app.workers.celery_app:celery_app worker --beat --loglevel=INFO
     env_file: .env
+    stop_grace_period: 210s
     depends_on:
       postgres:
         condition: service_healthy

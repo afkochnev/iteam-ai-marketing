@@ -561,6 +561,10 @@ async def test_plan_item_smm_binds_authoritative_vk_channel(
     snapshot, task_input, _context, _trace = claimed
     assert snapshot.output_type.__name__ == "SingleSocialPostResult"
     assert "plan_channel" in task_input and "VK" in task_input
+    assert "SingleSocialPostResult" in task_input
+    assert "Не добавляй channel" in task_input
+    assert "SocialPostPackResult" not in task_input
+    assert "allowed channels" not in task_input
     await add_read_audit(db_session, run.id, article_version)
     await db_session.commit()
 

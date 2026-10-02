@@ -25,7 +25,7 @@ export default function PublicationsPage() {
     if (!user) return;
     const to = new Date();
     const from = new Date(to.getTime() - 30 * 24 * 60 * 60 * 1000);
-    const end = new Date(to.getTime() + 90 * 24 * 60 * 60 * 1000);
+    const end = new Date(from.getTime() + 90 * 24 * 60 * 60 * 1000);
     campaignsApi.list().then(async (campaigns) => {
       const results = await Promise.all(campaigns.map(async (campaign) => {
         const items = await publicationsApi.calendar(campaign.id, from.toISOString(), end.toISOString());

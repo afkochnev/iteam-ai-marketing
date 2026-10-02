@@ -290,6 +290,16 @@ async def test_campaign_plan_schema_repair_exhaustion_is_invalid_plan(
     monkeypatch.setattr(settings, "openai_api_key", "test-key")
     monkeypatch.setattr(settings, "agent_output_repair_attempts", 2)
     calls = 0
+    generation_limits: list[int] = []
+
+    async def record_generation_attempt(
+        _self: AgentRunnerService,
+        _context: AgentRuntimeContext,
+        *,
+        repair: bool,
+        max_logical_generations: int,
+    ) -> None:
+        generation_limits.append(max_logical_generations)
 
     async def always_invalid(*args: object, **kwargs: object) -> SimpleNamespace:
         nonlocal calls
@@ -301,6 +311,7 @@ async def test_campaign_plan_schema_repair_exhaustion_is_invalid_plan(
         raise AssertionError("unreachable")
 
     monkeypatch.setattr("app.services.agent_runner_service.Runner.run", always_invalid)
+    monkeypatch.setattr(AgentRunnerService, "_record_generation_attempt", record_generation_attempt)
     context = AgentRuntimeContext(uuid4(), uuid4(), uuid4(), uuid4(), TaskType.CAMPAIGN_PLANNING)
     with pytest.raises(AgentRuntimeError) as error:
         await AgentRunnerService().run(
@@ -311,6 +322,7 @@ async def test_campaign_plan_schema_repair_exhaustion_is_invalid_plan(
         )
 
     assert calls == 3
+    assert generation_limits == [3, 3, 3]
     assert error.value.code == "INVALID_CAMPAIGN_PLAN"
 
 
@@ -631,6 +643,100 @@ def test_smm_repair_contains_deterministic_pack_shape_diagnostics() -> None:
     assert "опытный консультант iTeam" in guidance
     assert "Часто вижу" in guidance
     assert "чередуй наблюдение" in guidance
+
+
+def test_plan_item_smm_repair_uses_single_post_contract() -> None:
+    from app.services.agent_runner_service import _repair_input
+
+    invalid = {
+        "sufficient": True,
+        "pack": {
+            "strategy_summary": "Один пост",
+            "posts": [
+                {
+                    "key": "plan-item-post",
+                    "title": "Диагностика",
+                    "text_markdown": "Команде важно различать проблему и симптом.",
+                    "channel": "VK",
+                    "sources": [{"content_version_id": str(uuid4()), "section_key": "diagnosis"}],
+                    "suggested_publish_order": 1,
+                }
+            ],
+        },
+    }
+    with pytest.raises(ValidationError) as error:
+        SingleSocialPostResult.model_validate(invalid)
+
+    repair = _repair_input(
+        "publication_plan_item_id='plan-item'; plan_channel='VK'",
+        error.value,
+        TaskType.CREATE_SOCIAL_POSTS,
+        single_plan_item=True,
+    )
+    assert "SingleSocialPostResult" in repair
+    assert "ровно одним элементом posts" in repair
+    assert "Не добавляй channel" in repair
+    assert "suggested_publish_order=1" in repair
+    assert "expected_post_count" not in repair
+    assert "allowed_channels" not in repair
+
+
+@pytest.mark.asyncio
+async def test_plan_item_invalid_output_is_repaired_with_plan_item_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "openai_api_key", "test-key")
+    monkeypatch.setattr(settings, "smm_agent_output_repair_attempts", 1)
+    usage = SimpleNamespace(requests=1, input_tokens=1, output_tokens=1, total_tokens=2)
+    source_version_id = str(uuid4())
+    invalid_post = {
+        "key": "plan-item-post",
+        "title": "Диагностика",
+        "text_markdown": "Команде важно различать проблему и симптом.",
+        "channel": "VK",
+        "sources": [{"content_version_id": source_version_id, "section_key": "diagnosis"}],
+        "suggested_publish_order": 1,
+    }
+    valid_post = {key: value for key, value in invalid_post.items() if key != "channel"}
+    inputs: list[str] = []
+    generation_limits: list[int] = []
+
+    async def fake_run(_agent: object, value: str, **_kwargs: object) -> SimpleNamespace:
+        inputs.append(value)
+        output = invalid_post if len(inputs) == 1 else valid_post
+        return SimpleNamespace(
+            final_output={
+                "sufficient": True,
+                "pack": {"strategy_summary": "Один пост", "posts": [output]},
+            },
+            context_wrapper=SimpleNamespace(usage=usage),
+        )
+
+    async def record_generation_attempt(
+        _self: AgentRunnerService,
+        _context: AgentRuntimeContext,
+        *,
+        repair: bool,
+        max_logical_generations: int,
+    ) -> None:
+        generation_limits.append(max_logical_generations)
+
+    monkeypatch.setattr("app.services.agent_runner_service.Runner.run", fake_run)
+    monkeypatch.setattr(AgentRunnerService, "_record_generation_attempt", record_generation_attempt)
+    context = AgentRuntimeContext(uuid4(), uuid4(), uuid4(), uuid4(), TaskType.CREATE_SOCIAL_POSTS)
+    result = await AgentRunnerService().run(
+        AgentSnapshot("SMM", "Prompt", "model", [], SingleSocialPostResult),
+        "publication_plan_item_id=plan-item; plan_channel=VK",
+        context,
+        None,
+    )
+
+    assert len(inputs) == 2
+    assert "SingleSocialPostResult" in inputs[1]
+    assert "Не добавляй channel" in inputs[1]
+    assert "expected_post_count" not in inputs[1]
+    assert "channel" not in result.output_data["pack"]["posts"][0]
+    assert generation_limits == [2, 2]
 
 
 async def test_smm_repair_reuses_cached_article_without_exposing_tool(

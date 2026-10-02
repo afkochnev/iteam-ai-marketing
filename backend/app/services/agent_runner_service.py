@@ -16,8 +16,10 @@ from app.agents.tool_registry import tool_registry
 from app.core.config import settings
 from app.core.redaction import redact_text
 from app.models.task import TaskType
+from app.schemas.agent_outputs import SingleSocialPostResult
 
 logger = logging.getLogger(__name__)
+MAX_OUTPUT_REPAIR_ATTEMPTS = 2
 
 
 class _InstrumentedResponsesModel(OpenAIResponsesModel):
@@ -154,8 +156,8 @@ def _is_structured_output_error(error: ModelBehaviorError) -> bool:
     )
 
 
-def _structured_validation_reason(error: ModelBehaviorError) -> str:
-    cause = error.__cause__
+def _structured_validation_reason(error: ModelBehaviorError | ValidationError) -> str:
+    cause = error if isinstance(error, ValidationError) else error.__cause__
     if isinstance(cause, ValidationError):
         parts = []
         for detail in cause.errors(include_context=False):
@@ -167,9 +169,11 @@ def _structured_validation_reason(error: ModelBehaviorError) -> str:
 
 def _repair_input(
     original_input: str,
-    error: ModelBehaviorError,
+    error: ModelBehaviorError | ValidationError,
     task_type: TaskType,
     cached_source_content: str | None = None,
+    *,
+    single_plan_item: bool = False,
 ) -> str:
     guidance = ""
     if task_type is TaskType.CAMPAIGN_PLANNING:
@@ -179,63 +183,75 @@ def _repair_input(
             " Не добавляй другие типы задач или agent_slug."
         )
     if task_type is TaskType.CREATE_SOCIAL_POSTS:
-        expected_count_match = re.search(r"['\"]post_count['\"]\s*:\s*(\d+)", original_input)
-        expected_count = (
-            expected_count_match.group(1) if expected_count_match else "из снимка стратегии"
-        )
-        channels_match = re.search(r"['\"]channels['\"]\s*:\s*\[([^\]]*)\]", original_input)
-        allowed_channels = channels_match.group(1) if channels_match else "TELEGRAM, VK"
-        actual_count = "не определён"
-        actual_orders = "не определены"
-        duplicate_orders = "[]"
-        missing_orders = "не определены"
-        cause = error.__cause__
-        if isinstance(cause, ValidationError):
-            for detail in cause.errors(include_context=False):
-                value = detail.get("input")
-                if isinstance(value, dict) and isinstance(value.get("posts"), list):
-                    posts = value["posts"]
-                    orders: list[int] = [
-                        int(post["suggested_publish_order"])
-                        for post in posts
-                        if isinstance(post, dict)
-                        and isinstance(post.get("suggested_publish_order"), int)
-                    ]
-                    actual_count = str(len(posts))
-                    actual_orders = str(orders)
-                    duplicates = sorted({order for order in orders if orders.count(order) > 1})
-                    duplicate_orders = str(duplicates)
-                    try:
-                        missing_orders = str(
-                            sorted(set(range(1, int(expected_count) + 1)) - set(orders))
-                        )
-                    except ValueError:
-                        pass
-                    break
-        guidance = (
-            " Детерминированные требования SocialPostPack: "
-            f"expected_post_count={expected_count}; actual_post_count={actual_count}; "
-            "expected_publish_orders="
-            f"[1..{expected_count}]; actual_publish_orders={actual_orders}; "
-            "duplicate_publish_orders="
-            f"{duplicate_orders}; missing_publish_orders={missing_orders}; "
-            f"allowed_channels=[{allowed_channels}]. "
-            "Порядок публикации глобальный для всего пакета: не начинай нумерацию "
-            "заново по каналу. "
-            "Сгенерируй полный исправленный пакет, а не только недостающие посты; "
-            "сохрани смысл статьи "
-            "и стратегии; верни ровно полный объект. "
-            "Текст постов должен быть plain text без **, Markdown-заголовков, code fences, "
-            "CTA:/Порядок:/section_key/provenance и иных внутренних меток. "
-            "Каждый пост должен быть самостоятельным, цельным и разговорным: начни с "
-            "узнаваемой управленческой ситуации или спокойного обращения к читателю, "
-            "как опытный консультант iTeam к владельцу бизнеса или команде. Уместны общие "
-            "наблюдения («Часто вижу…», «Знакомая ситуация…»), но нельзя выдумывать клиентов, "
-            "кейсы, результаты или цитаты. Естественно используй «вы» и «ваша команда», "
-            "чередуй наблюдение, мини-ситуацию, контраст, практическую мысль и рефлексивный "
-            "вопрос; не повторяй нейтральное начало и одну схему во всех постах. Заверши "
-            "естественным выводом или вопросом, не навязывай CTA; CTA не обязателен."
-        )
+        if single_plan_item:
+            guidance = (
+                " Контракт одиночного поста для Publication Plan item (SingleSocialPostResult): "
+                "верни sufficient=true и pack с strategy_summary и ровно одним элементом posts; "
+                "у поста обязательны key, title, text_markdown, sources и "
+                "suggested_publish_order=1. В sources укажи как минимум одну пару "
+                "content_version_id и section_key из разрешённой версии статьи. "
+                "Не добавляй channel: канал уже определён пунктом утверждённого плана. "
+                "Не возвращай несколько постов и не добавляй неизвестные поля. "
+                "Если материала недостаточно, верни sufficient=false, pack=null и непустой gaps. "
+                "Текст поста должен быть plain text без Markdown-разметки и внутренних меток."
+            )
+        else:
+            expected_count_match = re.search(r"['\"]post_count['\"]\s*:\s*(\d+)", original_input)
+            expected_count = (
+                expected_count_match.group(1) if expected_count_match else "из снимка стратегии"
+            )
+            channels_match = re.search(r"['\"]channels['\"]\s*:\s*\[([^\]]*)\]", original_input)
+            allowed_channels = channels_match.group(1) if channels_match else "TELEGRAM, VK"
+            actual_count = "не определён"
+            actual_orders = "не определены"
+            duplicate_orders = "[]"
+            missing_orders = "не определены"
+            cause = error if isinstance(error, ValidationError) else error.__cause__
+            if isinstance(cause, ValidationError):
+                for detail in cause.errors(include_context=False):
+                    value = detail.get("input")
+                    if isinstance(value, dict) and isinstance(value.get("posts"), list):
+                        posts = value["posts"]
+                        orders: list[int] = [
+                            int(post["suggested_publish_order"])
+                            for post in posts
+                            if isinstance(post, dict)
+                            and isinstance(post.get("suggested_publish_order"), int)
+                        ]
+                        actual_count = str(len(posts))
+                        actual_orders = str(orders)
+                        duplicates = sorted({order for order in orders if orders.count(order) > 1})
+                        duplicate_orders = str(duplicates)
+                        try:
+                            missing_orders = str(
+                                sorted(set(range(1, int(expected_count) + 1)) - set(orders))
+                            )
+                        except ValueError:
+                            pass
+                        break
+            guidance = (
+                " Детерминированные требования SocialPostPack: "
+                f"expected_post_count={expected_count}; actual_post_count={actual_count}; "
+                "expected_publish_orders="
+                f"[1..{expected_count}]; actual_publish_orders={actual_orders}; "
+                "duplicate_publish_orders="
+                f"{duplicate_orders}; missing_publish_orders={missing_orders}; "
+                f"allowed_channels=[{allowed_channels}]. "
+                "Порядок публикации глобальный для всего пакета: не начинай нумерацию "
+                "заново по каналу. "
+                "Сгенерируй полный исправленный пакет, а не только недостающие посты; "
+                "сохрани смысл статьи и стратегии; верни ровно полный объект. "
+                "Текст постов должен быть plain text без **, Markdown-заголовков, code fences, "
+                "CTA:/Порядок:/section_key/provenance и иных внутренних меток. "
+                "Каждый пост должен быть самостоятельным, цельным и разговорным: начни с "
+                "узнаваемой управленческой ситуации или спокойного обращения к читателю, "
+                "как опытный консультант iTeam к владельцу бизнеса или команде. Уместны общие "
+                "наблюдения («Часто вижу…», «Знакомая ситуация…»), но нельзя выдумывать клиентов, "
+                "кейсы, результаты или цитаты. Естественно используй «вы» и «ваша команда», "
+                "чередуй наблюдение, мини-ситуацию, контраст, практическую мысль и рефлексивный "
+                "вопрос; не повторяй нейтральное начало и одну схему во всех постах. Заверши "
+                "естественным выводом или вопросом, не навязывай CTA; CTA не обязателен."
+            )
         if cached_source_content:
             guidance += (
                 " Статья уже прочитана и приведена ниже; повторно инструмент не вызывай. "
@@ -268,7 +284,11 @@ class AgentRuntimeError(Exception):
 
 class AgentRunnerService:
     async def _record_generation_attempt(
-        self, context: AgentRuntimeContext, *, repair: bool
+        self,
+        context: AgentRuntimeContext,
+        *,
+        repair: bool,
+        max_logical_generations: int,
     ) -> None:
         if context.session_factory is None:
             return
@@ -284,7 +304,7 @@ class AgentRunnerService:
                 return
             accounting = dict((run.input_data or {}).get("model_request_accounting") or {})
             logical = int(accounting.get("logical_generation_attempt_count", 0)) + 1
-            if logical > 2:
+            if logical > max_logical_generations:
                 raise AgentRuntimeError(
                     "AGENT_REQUEST_BOUND_EXCEEDED",
                     "Превышен предел логических генераций агента.",
@@ -325,13 +345,18 @@ class AgentRunnerService:
             if task_type is TaskType.CREATE_SOCIAL_POSTS
             else settings.agent_max_turns
         )
-        repair_limit = (
+        configured_repair_limit = (
             settings.smm_agent_output_repair_attempts
             if task_type is TaskType.CREATE_SOCIAL_POSTS
             else settings.agent_output_repair_attempts
         )
+        repair_limit = min(configured_repair_limit, MAX_OUTPUT_REPAIR_ATTEMPTS)
         for repair_attempt in range(repair_limit + 1):
-            await self._record_generation_attempt(context, repair=repair_attempt > 0)
+            await self._record_generation_attempt(
+                context,
+                repair=repair_attempt > 0,
+                max_logical_generations=repair_limit + 1,
+            )
             attempt_tool_names = enabled_tool_names
             if repair_attempt > 0 and context.content_version_cache:
                 attempt_tool_names = []
@@ -413,7 +438,7 @@ class AgentRunnerService:
                     ) from exc
                 except ModelBehaviorError as exc:
                     if _is_structured_output_error(exc):
-                        if repair_attempt >= settings.agent_output_repair_attempts:
+                        if repair_attempt >= repair_limit:
                             raise AgentRuntimeError(
                                 error_code,
                                 "Структура результата агента не прошла проверку.",
@@ -437,6 +462,7 @@ class AgentRunnerService:
                                 if task_type is TaskType.CREATE_SOCIAL_POSTS
                                 else None
                             ),
+                            single_plan_item=snapshot.output_type is SingleSocialPostResult,
                         )
                         continue
                     raise AgentRuntimeError(
@@ -474,13 +500,20 @@ class AgentRunnerService:
                         output_type=snapshot.output_type,
                     )
                 except ValidationError as exc:
-                    if repair_attempt >= settings.agent_output_repair_attempts:
+                    if repair_attempt >= repair_limit:
                         raise AgentRuntimeError(
                             error_code, "Структура результата агента не прошла проверку."
                         ) from exc
-                    current_input = (
-                        f"{task_input}\n\nПредыдущий результат был недопустим. "
-                        "Повтори ответ строго в требуемом структурированном формате."
+                    current_input = _repair_input(
+                        task_input,
+                        exc,
+                        task_type,
+                        cached_source_content=(
+                            next(iter(context.content_version_cache.values()), None)
+                            if task_type is TaskType.CREATE_SOCIAL_POSTS
+                            else None
+                        ),
+                        single_plan_item=snapshot.output_type is SingleSocialPostResult,
                     )
                     continue
                 return RuntimeResult(

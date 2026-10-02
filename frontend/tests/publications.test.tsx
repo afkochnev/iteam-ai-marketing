@@ -28,5 +28,7 @@ describe("publication calendar", () => {
     expect(screen.getByText("Опубликованные · 1")).toBeInTheDocument();
     expect(screen.getByText("Запуск")).toHaveAttribute("href", "/campaigns/campaign-1");
     expect(mocks.calendar).toHaveBeenCalledWith("campaign-1", expect.any(String), expect.any(String));
+    const [, from, to] = mocks.calendar.mock.calls[0] as [string, string, string];
+    expect(Date.parse(to) - Date.parse(from)).toBe(90 * 24 * 60 * 60 * 1000);
   });
 });

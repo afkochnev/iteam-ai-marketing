@@ -113,7 +113,7 @@ export default function ContentDetailPage() {
 
   return (
     <main className="page">
-      <PageBreadcrumbs items={[{ label: "Контент", href: "/content" }, { label: item.title }]} />
+      <PageBreadcrumbs items={[{ label: "Кампании", href: "/campaigns" }, { label: campaignName, href: `/campaigns/${item.campaign_id}` }, { label: "Контент", href: `/content?campaign_id=${item.campaign_id}` }, { label: item.title }]} />
       <header className="page-header">
         <div><p className="eyebrow">{CONTENT_TYPE_LABELS[item.content_type]}</p><h1>{item.title}</h1><div className="row-meta"><StatusBadge status={item.status} label={CONTENT_STATUS_LABELS[item.status]} /><Link href={`/campaigns/${item.campaign_id}`}>{campaignName}</Link>{item.channel && <span>{item.channel === "VK" ? "VK" : "Telegram"}</span>}</div></div>
         <Link className="button-link secondary-link" href={`/campaigns/${item.campaign_id}`}>Открыть кампанию</Link>
