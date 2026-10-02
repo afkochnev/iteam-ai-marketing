@@ -25,4 +25,12 @@ describe("user-facing error presentation", () => {
     expect(view.reason).toContain("связаться с API");
     expect(view.retryable).toBe(true);
   });
+
+  it("explains a blocked plan-item run without exposing only 409", () => {
+    const view = presentError(new ApiError("Запустить можно только готовую задачу.", 409, "TASK_NOT_READY"));
+    expect(view.title).toBe("Пост пока нельзя создать");
+    expect(view.reason).toContain("условия запуска");
+    expect(view.nextStep).toContain("пункта медиаплана");
+    expect(view.retryable).toBe(false);
+  });
 });

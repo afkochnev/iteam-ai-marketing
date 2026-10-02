@@ -7,7 +7,7 @@ from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
 from app.core.errors import AppError
-from app.models.agent_run import AgentRun
+from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.approval import Approval, ApprovalObjectType, ApprovalStatus
 from app.models.campaign import Campaign, CampaignStatus
 from app.models.content import ContentItem, ContentStatus, ContentType
@@ -45,9 +45,11 @@ from app.schemas.campaign_workspace import (
     WorkspacePipelineStage,
     WorkspacePlan,
     WorkspacePlanItem,
+    WorkspacePostAction,
     WorkspacePublicationReference,
     WorkspaceTask,
 )
+from app.services.plan_item_smm_service import PlanItemSmmService
 
 
 class CampaignWorkspaceService:
@@ -159,6 +161,97 @@ class CampaignWorkspaceService:
                 posts_by_item[plan_item_id].append(post)
                 post_item_ids[post.id] = plan_item_id
 
+        post_actions: dict[UUID, WorkspacePostAction] = {}
+        if current_plan:
+            for item in current_plan.items:
+                if item.status is not PublicationPlanItemStatus.PLANNED:
+                    continue
+                existing_task = next(
+                    (
+                        task
+                        for task in tasks
+                        if task.task_type.value == "CREATE_SOCIAL_POSTS"
+                        and str((task.input_data or {}).get("publication_plan_item_id"))
+                        == str(item.id)
+                        and task.status
+                        in {
+                            TaskStatus.NEW,
+                            TaskStatus.BLOCKED,
+                            TaskStatus.READY,
+                            TaskStatus.IN_PROGRESS,
+                            TaskStatus.WAITING_REVIEW,
+                            TaskStatus.WAITING_APPROVAL,
+                        }
+                    ),
+                    None,
+                )
+                active_run = latest_runs.get(existing_task.id) if existing_task else None
+                if posts_by_item.get(item.id):
+                    post_actions[item.id] = WorkspacePostAction(
+                        allowed=False,
+                        error_code="SOCIAL_POST_ALREADY_EXISTS",
+                        reason="Для этого пункта медиаплана пост уже создан.",
+                        next_action="Откройте пост и продолжите согласование.",
+                        existing_task_id=existing_task.id if existing_task else None,
+                    )
+                    continue
+                try:
+                    await PlanItemSmmService(self.session).validate(
+                        campaign_id,
+                        {
+                            "publication_plan_id": str(current_plan.id),
+                            "publication_plan_item_id": str(item.id),
+                            "source_content_item_id": str(item.source_content_item_id),
+                            "source_content_version_id": str(item.source_content_version_id),
+                        },
+                    )
+                except AppError as error:
+                    post_actions[item.id] = WorkspacePostAction(
+                        allowed=False,
+                        error_code=error.code,
+                        reason=error.message,
+                        next_action="Проверьте источник и состояние пункта медиаплана.",
+                        existing_task_id=existing_task.id if existing_task else None,
+                    )
+                else:
+                    operation_in_progress = bool(
+                        existing_task
+                        and (
+                            existing_task.status
+                            in {
+                                TaskStatus.IN_PROGRESS,
+                                TaskStatus.WAITING_REVIEW,
+                                TaskStatus.WAITING_APPROVAL,
+                            }
+                            or (
+                                active_run
+                                and active_run.status
+                                in {
+                                    AgentRunStatus.QUEUED,
+                                    AgentRunStatus.RUNNING,
+                                    AgentRunStatus.WAITING_APPROVAL,
+                                }
+                            )
+                        )
+                    )
+                    post_actions[item.id] = WorkspacePostAction(
+                        allowed=not operation_in_progress,
+                        error_code=(
+                            "TASK_ALREADY_QUEUED_OR_RUNNING" if operation_in_progress else None
+                        ),
+                        reason=(
+                            "Создание поста уже поставлено в очередь или выполняется."
+                            if operation_in_progress
+                            else None
+                        ),
+                        next_action=(
+                            "Откройте задачу и дождитесь результата."
+                            if operation_in_progress
+                            else None
+                        ),
+                        existing_task_id=existing_task.id if existing_task else None,
+                    )
+
         publications_by_item: dict[UUID, list[Publication]] = defaultdict(list)
         for publication in publication_rows:
             plan_item_id = self._metadata_uuid(
@@ -177,6 +270,7 @@ class CampaignWorkspaceService:
                 posts_by_item,
                 publications_by_item,
                 content_refs,
+                post_actions if current_plan and plan.id == current_plan.id else {},
             )
             for plan in plans
         }
@@ -241,6 +335,7 @@ class CampaignWorkspaceService:
             publication_rows,
             tasks,
             feedback,
+            post_actions,
         )
 
         return CampaignWorkspaceResponse(
@@ -375,6 +470,7 @@ class CampaignWorkspaceService:
         posts_by_item: dict[UUID, list[ContentItem]],
         publications_by_item: dict[UUID, list[Publication]],
         content_refs: dict[UUID, WorkspaceContentReference],
+        post_actions: dict[UUID, WorkspacePostAction],
     ) -> WorkspacePlan:
         items: list[WorkspacePlanItem] = []
         for item in plan.items:
@@ -391,6 +487,15 @@ class CampaignWorkspaceService:
                 source_version.version_number if source_version_matches_article else None
             )
             post_refs = [content_refs[post.id] for post in posts if post.id in content_refs]
+            post_action = post_actions.get(
+                item.id,
+                WorkspacePostAction(
+                    allowed=False,
+                    error_code="PUBLICATION_PLAN_NOT_APPROVED",
+                    reason="Пост можно создать только по текущему утверждённому медиаплану.",
+                    next_action="Откройте текущий медиаплан.",
+                ),
+            )
             publication_refs = [self._publication_reference(pub, item.id) for pub in pubs]
             item_anchor = f"/campaigns/{plan.campaign_id}#plan-item-{item.id}"
             article_stage = WorkspacePipelineStage(
@@ -422,6 +527,7 @@ class CampaignWorkspaceService:
                         not posts
                         and plan.status is PublicationPlanStatus.APPROVED
                         and source_version_matches_article
+                        and post_action.allowed
                     )
                     else None
                 ),
@@ -464,6 +570,7 @@ class CampaignWorkspaceService:
                     social_posts=post_refs,
                     publications=publication_refs,
                     pipeline=[article_stage, post_stage, approval_stage, *publication_stages],
+                    post_action=post_action,
                 )
             )
         return WorkspacePlan(
@@ -700,6 +807,7 @@ class CampaignWorkspaceService:
         publications: list[Publication],
         tasks: list[Task],
         feedback: WorkspaceFeedbackState,
+        post_actions: dict[UUID, WorkspacePostAction],
     ) -> CampaignDirectorBrief:
         active_items = (
             [
@@ -737,6 +845,7 @@ class CampaignWorkspaceService:
             publications,
             tasks,
             feedback,
+            post_actions,
         )
         return CampaignDirectorBrief(
             strategy_status=strategy_status,
@@ -769,10 +878,21 @@ class CampaignWorkspaceService:
         publications: list[Publication],
         tasks: list[Task],
         feedback: WorkspaceFeedbackState,
+        post_actions: dict[UUID, WorkspacePostAction],
     ) -> WorkspaceNextStep:
         campaign_url = f"/campaigns/{campaign.id}"
+        recoverable_task_ids = {
+            action.existing_task_id
+            for action in post_actions.values()
+            if action.allowed and action.existing_task_id is not None
+        }
         issue = next(
-            (task for task in tasks if task.status in {TaskStatus.FAILED, TaskStatus.BLOCKED}),
+            (
+                task
+                for task in tasks
+                if task.status in {TaskStatus.FAILED, TaskStatus.BLOCKED}
+                and task.id not in recoverable_task_ids
+            ),
             None,
         )
         if issue:
@@ -850,6 +970,26 @@ class CampaignWorkspaceService:
                 None,
             )
             if missing_post:
+                action = post_actions.get(missing_post.id)
+                if action is not None and not action.allowed:
+                    if (
+                        action.error_code == "TASK_ALREADY_QUEUED_OR_RUNNING"
+                        and action.existing_task_id is not None
+                    ):
+                        return WorkspaceNextStep(
+                            title="Проверить создание поста",
+                            description=action.reason or "Задача уже выполняется.",
+                            href=f"/tasks/{action.existing_task_id}",
+                            entity_type="task",
+                            entity_id=action.existing_task_id,
+                        )
+                    return WorkspaceNextStep(
+                        title="Проверить условия создания поста",
+                        description=action.reason or "Пост пока нельзя создать.",
+                        href=f"{campaign_url}#plan-item-{missing_post.id}",
+                        entity_type="publication_plan_item",
+                        entity_id=missing_post.id,
+                    )
                 return WorkspaceNextStep(
                     title=(
                         f"Создать {missing_post.channel.value}-пост "

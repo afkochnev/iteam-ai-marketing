@@ -40,13 +40,13 @@ from app.models.knowledge_pack import (
     KnowledgePackItem,
     KnowledgePackStatus,
 )
-from app.models.publication_plan import PublicationPlan, PublicationPlanItem, PublicationPlanStatus
 from app.models.task import Task, TaskStatus, TaskType
 from app.repositories.agent_runs import AgentRunRepository
 from app.repositories.tasks import TaskRepository
 from app.schemas.agent_outputs import SingleSocialPostResult
 from app.services.activity_log_service import ActivityLogService
 from app.services.agent_runner_service import AgentRuntimeError, RuntimeResult
+from app.services.plan_item_smm_service import PlanItemSmmContext, PlanItemSmmService
 from app.services.retry_policy import can_retry, retry_exhausted
 from app.services.task_result_processors import result_processor_registry
 from app.services.task_service import TaskService
@@ -102,6 +102,19 @@ class AgentRunService:
                 "Этот тип задачи пока нельзя выполнять через AI.",
                 409,
             )
+        plan_context: PlanItemSmmContext | None = None
+        if task.task_type is TaskType.CREATE_SOCIAL_POSTS and task.input_data.get(
+            "publication_plan_item_id"
+        ):
+            plan_context = await PlanItemSmmService(self.session).validate(
+                task.campaign_id,
+                task.input_data,
+                assigned_agent_id=task.assigned_agent_id,
+            )
+            task.input_data = {**task.input_data, **plan_context.task_input()}
+            if task.status is TaskStatus.BLOCKED:
+                task.status = TaskStatus.READY
+                task.error_message = None
         if retry:
             if task.status is TaskStatus.READY and task.retry_count > 0:
                 # A transient failure may already have scheduled an automatic
@@ -136,8 +149,10 @@ class AgentRunService:
         elif task.status is not TaskStatus.READY:
             raise AppError("TASK_NOT_READY", "Запустить можно только готовую задачу.", 409)
         if task.task_type is TaskType.CREATE_SOCIAL_POSTS:
-            approved_version_id = await TaskService(self.session).approved_article_version_for_smm(
-                task
+            approved_version_id = (
+                plan_context.version.id
+                if plan_context is not None
+                else await TaskService(self.session).approved_article_version_for_smm(task)
             )
             if approved_version_id is None:
                 raise AppError(
@@ -150,41 +165,10 @@ class AgentRunService:
                 "source_content_version_id": str(approved_version_id),
             }
             if task.input_data.get("publication_plan_item_id"):
-                plan_item = await self.session.scalar(
-                    select(PublicationPlanItem).where(
-                        PublicationPlanItem.id
-                        == UUID(str(task.input_data["publication_plan_item_id"]))
-                    )
-                )
-                plan = await self.session.scalar(
-                    select(PublicationPlan).where(
-                        PublicationPlan.id == UUID(str(task.input_data["publication_plan_id"])),
-                        PublicationPlan.status == PublicationPlanStatus.APPROVED,
-                        PublicationPlan.campaign_id == task.campaign_id,
-                    )
-                )
-                if (
-                    plan is None
-                    or plan_item is None
-                    or plan_item.publication_plan_id != plan.id
-                    or plan_item.source_content_version_id != approved_version_id
-                ):
-                    raise AppError(
-                        "PUBLICATION_PLAN_SOURCE_INVALID",
-                        "Plan item не связан с точной утверждённой версией статьи.",
-                        409,
-                    )
+                assert plan_context is not None
                 task.input_data = {
                     **task.input_data,
-                    "publication_plan_id": str(plan.id),
-                    "publication_plan_item_id": str(plan_item.id),
-                    "publication_plan_source_claim_ids": plan_item.source_claim_ids or [],
-                    "plan_topic": plan_item.topic,
-                    "plan_angle": plan_item.angle,
-                    "plan_purpose": plan_item.purpose,
-                    "plan_format": plan_item.format,
-                    "plan_message_brief": plan_item.message_brief,
-                    "plan_channel": plan_item.channel.value,
+                    **plan_context.task_input(),
                 }
         agent = task.assigned_agent
         if agent is None:
@@ -291,22 +275,27 @@ class AgentRunService:
                     "Инструмент read_content_version недоступен агенту.",
                     409,
                 )
-            dependency_ids = await TaskRepository(self.session).dependency_ids(task.id)
-            article_tasks = [await self.session.get(Task, item_id) for item_id in dependency_ids]
-            article_tasks = [
-                item
-                for item in article_tasks
-                if item is not None
-                and item.task_type is TaskType.WRITE_ARTICLE
-                and item.status is TaskStatus.COMPLETED
-            ]
-            for article_task in article_tasks:
-                assert article_task is not None
-                version_id = task.input_data.get("source_content_version_id") or (
-                    article_task.output_data.get("content_version_id")
-                )
-                if version_id:
-                    allowed_content_version_ids.append(UUID(str(version_id)))
+            if plan_context is not None:
+                allowed_content_version_ids.append(plan_context.version.id)
+            else:
+                dependency_ids = await TaskRepository(self.session).dependency_ids(task.id)
+                article_tasks = [
+                    await self.session.get(Task, item_id) for item_id in dependency_ids
+                ]
+                article_tasks = [
+                    item
+                    for item in article_tasks
+                    if item is not None
+                    and item.task_type is TaskType.WRITE_ARTICLE
+                    and item.status is TaskStatus.COMPLETED
+                ]
+                for article_task in article_tasks:
+                    assert article_task is not None
+                    version_id = task.input_data.get("source_content_version_id") or (
+                        article_task.output_data.get("content_version_id")
+                    )
+                    if version_id:
+                        allowed_content_version_ids.append(UUID(str(version_id)))
             if not allowed_content_version_ids:
                 raise AppError(
                     "SOURCE_ARTICLE_NOT_AVAILABLE",

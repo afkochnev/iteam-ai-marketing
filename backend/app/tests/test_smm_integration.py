@@ -29,6 +29,7 @@ from app.models.content import (
     ContentVersion,
 )
 from app.models.marketing_feedback import FeedbackAnalysisStatus
+from app.models.publication import Publication
 from app.models.publication_plan import (
     PublicationPlan,
     PublicationPlanItem,
@@ -224,6 +225,48 @@ async def add_read_audit(session: AsyncSession, run_id: UUID, version: ContentVe
         )
     )
     await session.flush()
+
+
+async def add_plan_item(
+    session: AsyncSession,
+    campaign: Campaign,
+    article_version: ContentVersion,
+    *,
+    channel: ContentChannel = ContentChannel.TELEGRAM,
+) -> tuple[PublicationPlan, PublicationPlanItem]:
+    user = await session.scalar(select(User))
+    assert user is not None
+    plan = PublicationPlan(
+        campaign_id=campaign.id,
+        status=PublicationPlanStatus.APPROVED,
+        planning_horizon_start=datetime.now(UTC),
+        planning_horizon_end=datetime.now(UTC) + timedelta(days=7),
+        timezone_policy="UTC",
+        created_by_user_id=user.id,
+        approved_at=datetime.now(UTC),
+        approved_by_user_id=user.id,
+    )
+    session.add(plan)
+    await session.flush()
+    item = PublicationPlanItem(
+        publication_plan_id=plan.id,
+        position=1,
+        scheduled_at=datetime.now(UTC) + timedelta(days=1),
+        channel=channel,
+        source_content_item_id=article_version.content_item_id,
+        source_content_version_id=article_version.id,
+        topic="Почему решения не входят в ежедневную работу",
+        angle="Показать разрыв между решением и исполнением",
+        purpose="Помочь руководителю увидеть недостающий механизм",
+        format="diagnostic",
+        message_brief="Один grounded пост по утверждённой статье.",
+        source_claim_ids=["article_test_p01"],
+        source_support_summary="Проверочный источник.",
+        status=PublicationPlanItemStatus.PLANNED,
+    )
+    session.add(item)
+    await session.flush()
+    return plan, item
 
 
 @pytest.mark.asyncio
@@ -510,6 +553,121 @@ async def test_smm_wrong_article_version_approval_does_not_unlock(
 
 
 @pytest.mark.asyncio
+async def test_plan_item_task_without_article_dependency_is_runnable_and_idempotent(
+    db_session: AsyncSession,
+) -> None:
+    bulk_task, campaign, article_version = await smm_fixture(db_session)
+    plan, plan_item = await add_plan_item(db_session, campaign, article_version)
+    bulk_task.status = TaskStatus.CANCELLED
+    blocked = Task(
+        campaign_id=campaign.id,
+        task_type=TaskType.CREATE_SOCIAL_POSTS,
+        title="Historical blocked plan-item task",
+        assigned_agent_id=bulk_task.assigned_agent_id,
+        status=TaskStatus.BLOCKED,
+        input_data={
+            "publication_plan_id": str(plan.id),
+            "publication_plan_item_id": str(plan_item.id),
+            "source_content_item_id": str(article_version.content_item_id),
+            "source_content_version_id": str(article_version.id),
+        },
+    )
+    db_session.add(blocked)
+    await db_session.commit()
+
+    payload = TaskCreate(
+        campaign_id=campaign.id,
+        task_type=TaskType.CREATE_SOCIAL_POSTS,
+        title="Create one plan item post",
+        assigned_agent_id=bulk_task.assigned_agent_id,
+        input_data={
+            "publication_plan_id": str(plan.id),
+            "publication_plan_item_id": str(plan_item.id),
+            "source_content_item_id": str(article_version.content_item_id),
+            "source_content_version_id": str(article_version.id),
+        },
+    )
+    reused = await TaskService(db_session).create_task(payload)
+    assert reused.id == blocked.id
+    assert reused.status is TaskStatus.READY
+    duplicate = await TaskService(db_session).create_task(payload)
+    assert duplicate.id == blocked.id
+
+    run = await AgentRunService(db_session).create_queued_run(blocked.id)
+    assert run.status is AgentRunStatus.QUEUED
+    assert run.input_data["allowed_content_version_ids"] == [str(article_version.id)]
+    assert run.input_data["publication_plan_item_id"] == str(plan_item.id)
+
+
+@pytest.mark.asyncio
+async def test_plan_item_business_state_overrides_historical_task_dependency(
+    db_session: AsyncSession,
+) -> None:
+    bulk_task, campaign, article_version = await smm_fixture(db_session)
+    plan, plan_item = await add_plan_item(db_session, campaign, article_version)
+    bulk_task.status = TaskStatus.CANCELLED
+    stale_dependency = Task(
+        campaign_id=campaign.id,
+        task_type=TaskType.WRITE_ARTICLE,
+        title="Old unfinished article workflow",
+        assigned_agent_id=None,
+        status=TaskStatus.BLOCKED,
+    )
+    db_session.add(stale_dependency)
+    await db_session.flush()
+    task = await TaskService(db_session).create_task(
+        TaskCreate(
+            campaign_id=campaign.id,
+            task_type=TaskType.CREATE_SOCIAL_POSTS,
+            title="Create grounded plan item post",
+            assigned_agent_id=bulk_task.assigned_agent_id,
+            dependency_ids=[stale_dependency.id],
+            input_data={
+                "publication_plan_id": str(plan.id),
+                "publication_plan_item_id": str(plan_item.id),
+                "source_content_item_id": str(article_version.content_item_id),
+                "source_content_version_id": str(article_version.id),
+            },
+        )
+    )
+    assert task.status is TaskStatus.READY
+    assert task.dependencies[0].depends_on_task.id == stale_dependency.id
+
+
+@pytest.mark.asyncio
+async def test_plan_item_wrong_source_is_rejected_before_task_creation(
+    db_session: AsyncSession,
+) -> None:
+    bulk_task, campaign, article_version = await smm_fixture(db_session)
+    plan, plan_item = await add_plan_item(db_session, campaign, article_version)
+    bulk_task.status = TaskStatus.CANCELLED
+    with pytest.raises(AppError) as error:
+        await TaskService(db_session).create_task(
+            TaskCreate(
+                campaign_id=campaign.id,
+                task_type=TaskType.CREATE_SOCIAL_POSTS,
+                title="Wrong source",
+                assigned_agent_id=bulk_task.assigned_agent_id,
+                input_data={
+                    "publication_plan_id": str(plan.id),
+                    "publication_plan_item_id": str(plan_item.id),
+                    "source_content_item_id": str(article_version.content_item_id),
+                    "source_content_version_id": str(uuid4()),
+                },
+            )
+        )
+    assert error.value.code == "PUBLICATION_PLAN_SOURCE_INVALID"
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(Task)
+            .where(Task.input_data["publication_plan_item_id"].astext == str(plan_item.id))
+        )
+        == 0
+    )
+
+
+@pytest.mark.asyncio
 async def test_plan_item_smm_binds_authoritative_vk_channel(
     db_session: AsyncSession,
 ) -> None:
@@ -611,6 +769,25 @@ async def test_plan_item_smm_binds_authoritative_vk_channel(
     assert (
         version.structured_content["text_markdown"] == output["pack"]["posts"][0]["text_markdown"]
     )
+    derivation = await db_session.scalar(
+        select(ContentDerivation).where(ContentDerivation.derived_content_version_id == version.id)
+    )
+    assert derivation is not None
+    assert derivation.source_content_version_id == article_version.id
+    assert derivation.source_section_key == "problem"
+    assert post.status is ContentStatus.WAITING_APPROVAL
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(Approval)
+            .where(
+                Approval.object_id == post.id,
+                Approval.status == ApprovalStatus.PENDING,
+            )
+        )
+        == 1
+    )
+    assert await db_session.scalar(select(func.count()).select_from(Publication)) == 0
 
 
 @pytest.mark.asyncio

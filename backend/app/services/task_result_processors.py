@@ -710,6 +710,25 @@ class SocialPostResultProcessor:
                     422,
                 )
             post = result.pack.posts[0]
+            plan_available: dict[UUID, set[str]] = {}
+            for call in calls:
+                payload = call.result or {}
+                version_id = payload.get("content_version_id")
+                if version_id:
+                    plan_available[UUID(str(version_id))] = set(payload.get("section_keys", []))
+            for source in post.sources:
+                if source.content_version_id != plan_item.source_content_version_id:
+                    raise AppError(
+                        "INVALID_SOCIAL_SOURCE",
+                        "Пост ссылается не на версию статьи из медиаплана.",
+                        422,
+                    )
+                if source.section_key not in plan_available.get(source.content_version_id, set()):
+                    raise AppError(
+                        "INVALID_SOCIAL_SOURCE_SECTION",
+                        "Пост ссылается на неизвестный раздел статьи.",
+                        422,
+                    )
             authoritative_channel = plan_item.channel.value
             generation_key = f"plan-item:{plan_item.id}"
             existing_version = await session.scalar(
@@ -753,13 +772,14 @@ class SocialPostResultProcessor:
             session.add(version)
             await session.flush()
             child.current_version_id = version.id
-            session.add(
-                ContentDerivation(
-                    derived_content_version_id=version.id,
-                    source_content_version_id=plan_item.source_content_version_id,
-                    source_section_key="publication_plan_item",
+            for source in post.sources:
+                session.add(
+                    ContentDerivation(
+                        derived_content_version_id=version.id,
+                        source_content_version_id=source.content_version_id,
+                        source_section_key=source.section_key,
+                    )
                 )
-            )
             await ApprovalService(session).create_content_approval(
                 child.id,
                 1,

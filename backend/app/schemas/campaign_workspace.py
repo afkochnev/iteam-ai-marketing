@@ -48,6 +48,14 @@ class WorkspacePipelineStage(BaseModel):
     action_label: str | None = None
 
 
+class WorkspacePostAction(BaseModel):
+    allowed: bool
+    error_code: str | None = None
+    reason: str | None = None
+    next_action: str | None = None
+    existing_task_id: UUID | None = None
+
+
 class WorkspacePlanItem(BaseModel):
     id: UUID
     position: int
@@ -67,6 +75,7 @@ class WorkspacePlanItem(BaseModel):
     social_posts: list[WorkspaceContentReference]
     publications: list[WorkspacePublicationReference]
     pipeline: list[WorkspacePipelineStage]
+    post_action: WorkspacePostAction
 
 
 class WorkspacePlan(BaseModel):
