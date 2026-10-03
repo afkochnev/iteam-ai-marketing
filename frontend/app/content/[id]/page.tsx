@@ -63,6 +63,13 @@ export default function ContentDetailPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [editMode, setEditMode] = useState(false);
+  const [draftText, setDraftText] = useState("");
+  const [editComment, setEditComment] = useState("");
+  const [revisionMode, setRevisionMode] = useState(false);
+  const [revisionComment, setRevisionComment] = useState("");
+  const [rejectMode, setRejectMode] = useState(false);
+  const [rejectComment, setRejectComment] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -101,11 +108,29 @@ export default function ContentDetailPage() {
     ?? publications.find((candidate) => candidate.content_item_id === item?.id && ["DRAFT", "WAITING_APPROVAL", "APPROVED", "SCHEDULED", "PUBLISHING"].includes(candidate.status));
   const structured = item?.current_version?.structured_content ?? {};
   const sourceDerivations = item?.current_version?.derivations ?? [];
-  const canRevise = item?.content_type !== "SOCIAL_POST";
+  const canEdit = item?.content_type === "ARTICLE" || item?.content_type === "SOCIAL_POST";
+  const canRevise = item?.content_type === "ARTICLE" || item?.content_type === "SOCIAL_POST" || item?.content_type === "SOCIAL_POST_PACK";
+  const publicationVersion = publication ? item?.versions.find((version) => version.id === publication.content_version_id) : null;
+  const hasPublicationVersionConflict = Boolean(publication && item?.current_version && publication.content_version_id !== item.current_version.id);
 
   async function approve() { if (!item) return; setBusy(true); try { setItem(await contentApi.approve(item.id)); setNotice("Материал утверждён."); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
-  async function reject() { if (!item) return; const comment = window.prompt("Причина отклонения"); if (!comment?.trim()) return; setBusy(true); try { setItem(await contentApi.reject(item.id, comment)); setNotice("Материал отклонён."); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
-  async function revise() { if (!item) return; const comment = window.prompt("Что необходимо доработать?"); if (!comment?.trim()) return; setBusy(true); try { setItem(await contentApi.requestRevision(item.id, comment)); setNotice("Запрос на доработку отправлен."); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
+  async function reject() { if (!item || !rejectComment.trim()) return; setBusy(true); try { setItem(await contentApi.reject(item.id, rejectComment)); setNotice("Материал отклонён."); setRejectMode(false); setRejectComment(""); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
+  async function revise() { if (!item || !revisionComment.trim()) return; setBusy(true); try { setItem(await contentApi.requestRevision(item.id, revisionComment)); setNotice("Запрос на доработку отправлен профильному AI-исполнителю."); setRevisionMode(false); setRevisionComment(""); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
+  function beginEdit() { if (!item?.current_version) return; setDraftText(item.current_version.content); setEditComment(""); setEditMode(true); setRevisionMode(false); setRejectMode(false); }
+  async function saveEdit() {
+    if (!item?.current_version || !draftText.trim()) return;
+    setBusy(true);
+    try {
+      const updated = await contentApi.manualEdit(item.id, { content: draftText, expected_current_version_id: item.current_version.id, change_description: editComment.trim() || null });
+      setItem(updated);
+      setNotice(`Создана версия v${updated.current_version?.version_number ?? ""}. Она ожидает отдельного утверждения.`);
+      setEditMode(false);
+    } catch (reason) {
+      setNotice((reason as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
   async function schedulePublication() { if (!item) return; setBusy(true); try { const scheduled = await publicationsApi.scheduleContent(item.id); setPublications((rows) => [scheduled, ...rows.filter((row) => row.id !== scheduled.id)]); setNotice("Публикация запланирована по утверждённому плану."); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
 
   if (authLoading || loading) return <main><p role="status">Загружаем материал…</p></main>;
@@ -130,13 +155,20 @@ export default function ContentDetailPage() {
           <div className="metadata-item"><strong>Изменён</strong><span>{formatDateTime(item.updated_at)}</span></div>
           {item.channel && <div className="metadata-item"><strong>Канал</strong><span>{item.plan_channel ?? item.channel}</span></div>}
         </div>
-        {item.status === "WAITING_APPROVAL" && <div className="actions" style={{ marginTop: "1rem" }}><button disabled={busy} onClick={() => void approve()}>Утвердить материал</button><button className="secondary" disabled={busy} onClick={() => void reject()}>Отклонить</button>{canRevise && <button className="secondary" disabled={busy} onClick={() => void revise()}>Запросить доработку</button>}</div>}
+        {item.status === "WAITING_APPROVAL" && <div id="approval" className="content-stack" style={{ marginTop: "1rem" }}>
+          <div className="card"><h3>Редакторское решение</h3><p className="subtle"><strong>Утвердить</strong> — разрешить дальнейшее планирование этой версии. <strong>Редактировать</strong> — сохранить ручную правку как новую версию. <strong>Отправить на доработку</strong> — создать задачу профильному AI-исполнителю. <strong>Отклонить</strong> — завершить согласование без публикации.</p>
+            <div className="actions"><button disabled={busy} onClick={() => void approve()}>Утвердить</button>{canEdit && <button className="secondary" disabled={busy} onClick={beginEdit}>Редактировать текст</button>}{canRevise && <button className="secondary" disabled={busy} onClick={() => { setRevisionMode(true); setEditMode(false); setRejectMode(false); }}>Отправить на доработку</button>}<button className="secondary" disabled={busy} onClick={() => { setRejectMode(true); setEditMode(false); setRevisionMode(false); }}>Отклонить</button></div>
+          </div>
+          {editMode && <form className="card" onSubmit={(event) => { event.preventDefault(); void saveEdit(); }}><h3>Ручная редактура</h3>{item.content_type === "SOCIAL_POST" && <p className="notice">Меняется только текст. Канал, время, пункт медиаплана и привязка к источникам сохраняются.</p>}<label>Текст материала<textarea aria-label="Текст материала" rows={14} value={draftText} onChange={(event) => setDraftText(event.target.value)} required /></label><label>Комментарий к версии<input aria-label="Комментарий к версии" value={editComment} onChange={(event) => setEditComment(event.target.value)} placeholder="Ручная редактура" /></label><p className="subtle">Сохранение создаст новую версию. Утверждение выполняется отдельным действием.</p><div className="actions"><button disabled={busy || !draftText.trim()} type="submit">Сохранить новую версию</button><button className="secondary" disabled={busy} type="button" onClick={() => setEditMode(false)}>Отмена</button></div></form>}
+          {revisionMode && <form className="card" onSubmit={(event) => { event.preventDefault(); void revise(); }}><h3>Отправить на доработку</h3><label>Замечания редактора<textarea aria-label="Замечания редактора" rows={5} value={revisionComment} onChange={(event) => setRevisionComment(event.target.value)} required /></label><p className="subtle">{item.content_type === "SOCIAL_POST" ? "SMM Manager" : "AI-исполнитель"} получит точную текущую версию, замечания и зафиксированные источники. Результат станет новой версией и снова потребует утверждения.</p><div className="actions"><button disabled={busy || !revisionComment.trim()} type="submit">Поставить задачу на доработку</button><button className="secondary" disabled={busy} type="button" onClick={() => setRevisionMode(false)}>Отмена</button></div></form>}
+          {rejectMode && <form className="card" onSubmit={(event) => { event.preventDefault(); void reject(); }}><h3>Отклонить материал</h3><label>Причина отклонения<textarea aria-label="Причина отклонения" rows={4} value={rejectComment} onChange={(event) => setRejectComment(event.target.value)} required /></label><div className="actions"><button className="secondary" disabled={busy || !rejectComment.trim()} type="submit">Подтвердить отклонение</button><button className="secondary" disabled={busy} type="button" onClick={() => setRejectMode(false)}>Отмена</button></div></form>}
+        </div>}
       </section>
 
       {item.content_type === "SOCIAL_POST" && item.publication_plan_item_id && <section className="section-block" aria-label="План публикации">
         <div className="section-heading"><h2>План публикации</h2>{plan && <StatusBadge status={plan.status} label={PLAN_STATUS_LABELS[plan.status]} />}</div>
         {planItem ? <><div className="metadata-grid"><div className="metadata-item"><strong>Канал</strong><span>{planItem.channel === "VK" ? "VK" : "Telegram"}</span></div><div className="metadata-item"><strong>Дата и время</strong><span>{formatDateTime(planItem.scheduled_at)}</span></div><div className="metadata-item"><strong>Тема</strong><span>{planItem.topic}</span></div><div className="metadata-item"><strong>Исходная статья</strong><span><Link href={`/content/${planItem.source_content_item_id}`}>{item.source_content_item_title ?? sourceDerivations[0]?.source_content_item_title ?? "Открыть источник"}</Link></span></div></div>
-          {publication ? <p className="notice">Публикация: <StatusBadge status={publication.status} label={PUBLICATION_STATUS_LABELS[publication.status]} />{publication.scheduled_at && ` · ${formatDateTime(publication.scheduled_at)} · ${publication.channel === "VK" ? "VK" : "Telegram"}`}</p> : <><p>Публикация: ещё не запланирована</p>{item.status === "APPROVED" && exactApproved && plan?.status === "APPROVED" && <button disabled={busy} onClick={() => void schedulePublication()}>{busy ? "Планируем…" : "Запланировать публикацию"}</button>}</>}
+          {publication ? <><p className="notice">Публикация: <StatusBadge status={publication.status} label={PUBLICATION_STATUS_LABELS[publication.status]} />{publication.scheduled_at && ` · ${formatDateTime(publication.scheduled_at)} · ${publication.channel === "VK" ? "VK" : "Telegram"}`}</p>{hasPublicationVersionConflict && <p className="warning">Запланирована публикация предыдущей утверждённой версии v{publicationVersion?.version_number ?? "?"}. Новая v{item.current_version?.version_number} ещё не утверждена и не заменит её автоматически.</p>}</> : <><p>Публикация: ещё не запланирована</p>{item.status === "APPROVED" && exactApproved && plan?.status === "APPROVED" && <button disabled={busy} onClick={() => void schedulePublication()}>{busy ? "Планируем…" : "Запланировать публикацию"}</button>}</>}
         </> : <p className="warning">Плановый пункт не найден. Обратитесь к странице кампании.</p>}
       </section>}
 
@@ -144,6 +176,8 @@ export default function ContentDetailPage() {
         <div className="section-heading"><h2>{item.content_type === "SOCIAL_POST_PACK" ? "Пакет публикаций" : "Текст материала"}</h2>{item.current_version && <span className="subtle">Версия {item.current_version.version_number}</span>}</div>
         {!item.current_version ? <div className="empty-state"><p>Текст пока не создан.</p></div> : item.content_type === "SOCIAL_POST_PACK" ? <PackView value={structured} /> : <Markdown value={item.current_version.content} />}
       </section>
+
+      {item.current_version?.created_by_user_id && (sourceDerivations.length > 0 || item.current_version.sources.length > 0) && <p className="notice">Источники и provenance унаследованы от предыдущей версии. Ручные изменения текста не проходили отдельную AI-проверку источников.</p>}
 
       <section className="section-block" aria-label="Источники и происхождение">
         <div className="section-heading"><h2>Источники и происхождение</h2><span className="subtle">Материал связан с проверяемыми исходными данными</span></div>
@@ -154,7 +188,7 @@ export default function ContentDetailPage() {
 
       <section className="section-block" aria-label="История версий">
         <div className="section-heading"><h2>Версии</h2><span className="subtle">Текущая и утверждённая версии отмечены отдельно</span></div>
-        {item.versions.length ? <div className="content-stack">{[...item.versions].sort((a, b) => b.version_number - a.version_number).map((version) => <article className="content-row" key={version.id}><div className="content-row-main"><strong>Версия {version.version_number}</strong><div className="row-meta">{version.id === item.current_version?.id && <StatusBadge label="Текущая" status="IN_PROGRESS" />}{version.id === item.approved_version_id && <StatusBadge label="Утверждена" status="APPROVED" />}<span>{formatDateTime(version.created_at)}</span></div>{version.change_description && <span className="subtle">{version.change_description}</span>}</div>{version.id === item.current_version?.id && <span className="subtle">Текст показан выше</span>}</article>)}</div> : <p>История версий пока пуста.</p>}
+        {item.versions.length ? <div className="content-stack">{[...item.versions].sort((a, b) => b.version_number - a.version_number).map((version) => <article className="content-row" key={version.id}><div className="content-row-main"><strong>Версия {version.version_number}</strong><div className="row-meta">{version.id === item.current_version?.id && <StatusBadge label="Текущая" status="IN_PROGRESS" />}{version.id === item.approved_version_id && <StatusBadge label="Утверждена" status="APPROVED" />}<span>{version.created_by_user_id ? "Создана редактором" : version.created_by_agent_id ? "Создана AI-исполнителем" : "Автор не указан"}</span><span>{formatDateTime(version.created_at)}</span></div>{version.change_description && <span className="subtle">{version.change_description}</span>}</div>{version.id === item.current_version?.id && <span className="subtle">Текст показан выше</span>}</article>)}</div> : <p>История версий пока пуста.</p>}
       </section>
 
       <section className="section-block" aria-label="История согласований">

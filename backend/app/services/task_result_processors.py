@@ -731,6 +731,116 @@ class SocialPostResultProcessor:
                         422,
                     )
             authoritative_channel = plan_item.channel.value
+            if task.task_type is TaskType.CONTENT_REVISION:
+                if task.input_data.get("revision_target_type") != ContentType.SOCIAL_POST.value:
+                    raise AppError(
+                        "INVALID_REVISION_TARGET",
+                        "Эта задача не является доработкой отдельного поста.",
+                        409,
+                    )
+                content_id = UUID(str(task.input_data["content_item_id"]))
+                child = (
+                    await session.execute(
+                        select(ContentItem).where(ContentItem.id == content_id).with_for_update()
+                    )
+                ).scalar_one_or_none()
+                if (
+                    child is None
+                    or child.content_type is not ContentType.SOCIAL_POST
+                    or str((child.metadata_ or {}).get("publication_plan_item_id"))
+                    != str(plan_item.id)
+                    or child.channel != plan_item.channel
+                ):
+                    raise AppError(
+                        "INVALID_REVISION_TARGET",
+                        "Пост для доработки не соответствует пункту медиаплана.",
+                        409,
+                    )
+                generation_key = f"plan-item-revision:{task.id}"
+                existing_version = await session.scalar(
+                    select(ContentVersion).where(
+                        ContentVersion.source_agent_run_id == run.id,
+                        ContentVersion.generation_key == generation_key,
+                    )
+                )
+                if existing_version is not None:
+                    return
+                base_version_id = UUID(str(task.input_data["base_content_version_id"]))
+                if child.current_version_id != base_version_id:
+                    raise AppError(
+                        "STALE_REVISION_BASE",
+                        "Пост изменился после запроса доработки. Созданный результат не применён.",
+                        409,
+                    )
+                previous = await session.get(ContentVersion, base_version_id)
+                if previous is None:
+                    raise AppError("INVALID_REVISION_TARGET", "Версия поста не найдена.", 409)
+                version = ContentVersion(
+                    content_item_id=child.id,
+                    version_number=previous.version_number + 1,
+                    content=post.text_markdown,
+                    structured_content={
+                        **previous.structured_content,
+                        "text_markdown": post.text_markdown,
+                        "cta": post.cta,
+                        "sources": [source.model_dump(mode="json") for source in post.sources],
+                        "channel": authoritative_channel,
+                    },
+                    created_by_agent_id=run.agent_id,
+                    source_agent_run_id=run.id,
+                    generation_key=generation_key,
+                    change_description=(
+                        f"Social post revision: {task.input_data.get('revision_comment', '')}"
+                    ),
+                )
+                session.add(version)
+                await session.flush()
+                child.current_version_id = version.id
+                child.status = ContentStatus.WAITING_APPROVAL
+                for source in post.sources:
+                    session.add(
+                        ContentDerivation(
+                            derived_content_version_id=version.id,
+                            source_content_version_id=source.content_version_id,
+                            source_section_key=source.section_key,
+                        )
+                    )
+                await ApprovalService(session).create_content_approval(
+                    child.id,
+                    version.version_number,
+                    {
+                        "content_item_id": str(child.id),
+                        "content_version_id": str(version.id),
+                        "version_number": version.version_number,
+                        "content_hash": hashlib.sha256(version.content.encode()).hexdigest(),
+                    },
+                    run.agent_id,
+                )
+                await TaskService(session).complete_task(
+                    task.id,
+                    {
+                        "content_item_id": str(child.id),
+                        "content_version_id": str(version.id),
+                        "content_type": ContentType.SOCIAL_POST.value,
+                        "publication_plan_id": str(plan.id),
+                        "publication_plan_item_id": str(plan_item.id),
+                    },
+                    commit=False,
+                )
+                await ActivityLogService(session).record(
+                    "CONTENT_REVISION_COMPLETED",
+                    operation_key=f"revision-completed:{run.id}",
+                    campaign_id=task.campaign_id,
+                    task_id=task.id,
+                    agent_id=run.agent_id,
+                    content_item_id=child.id,
+                    metadata={
+                        "publication_plan_item_id": str(plan_item.id),
+                        "source_content_version_id": str(plan_item.source_content_version_id),
+                        "source_claim_ids": plan_item.source_claim_ids or [],
+                    },
+                )
+                return
             generation_key = f"plan-item:{plan_item.id}"
             existing_version = await session.scalar(
                 select(ContentVersion).where(
@@ -1160,7 +1270,10 @@ class ContentRevisionResultProcessor:
     ) -> None:
         if task.input_data.get("revision_target_type") == ContentType.ARTICLE.value:
             await WriterResultProcessor().process(session, run, task, output)
-        elif task.input_data.get("revision_target_type") == ContentType.SOCIAL_POST_PACK.value:
+        elif task.input_data.get("revision_target_type") in {
+            ContentType.SOCIAL_POST.value,
+            ContentType.SOCIAL_POST_PACK.value,
+        }:
             await SocialPostResultProcessor().process(session, run, task, output)
         else:
             raise AppError("INVALID_REVISION_TARGET", "Недопустимый объект доработки.", 409)

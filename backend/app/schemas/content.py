@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.content import ContentStatus, ContentType
 
@@ -12,6 +12,26 @@ class ContentApprovalRequest(BaseModel):
 
 class ContentRejectionRequest(BaseModel):
     comment: str
+
+
+class ContentManualEditRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1, max_length=100_000)
+    expected_current_version_id: UUID
+    change_description: str | None = Field(default=None, max_length=10_000)
+
+    @field_validator("content")
+    @classmethod
+    def normalize_content(cls, value: str) -> str:
+        if not (normalized := value.strip()):
+            raise ValueError("Текст материала обязателен.")
+        return normalized
+
+    @field_validator("change_description")
+    @classmethod
+    def normalize_description(cls, value: str | None) -> str | None:
+        return value.strip() or None if value is not None else None
 
 
 class ContentSourceResponse(BaseModel):
@@ -27,6 +47,9 @@ class ContentVersionSummary(BaseModel):
     id: UUID
     version_number: int
     change_description: str | None
+    created_by_user_id: UUID | None = None
+    created_by_agent_id: UUID | None = None
+    source_agent_run_id: UUID | None = None
     created_at: datetime
 
 

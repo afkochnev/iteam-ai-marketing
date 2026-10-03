@@ -311,7 +311,10 @@ class AgentRunService:
                         "Доработку статьи выполняет Writer.",
                         409,
                     )
-            elif target_type == ContentType.SOCIAL_POST_PACK.value:
+            elif target_type in {
+                ContentType.SOCIAL_POST.value,
+                ContentType.SOCIAL_POST_PACK.value,
+            }:
                 if agent.slug != "smm_manager":
                     raise AppError(
                         "INVALID_AGENT_FOR_TASK_TYPE",
@@ -403,7 +406,11 @@ class AgentRunService:
                 409,
             )
         enabled = [item.tool_name for item in agent.tools if item.is_enabled]
-        if task.task_type is TaskType.CREATE_SOCIAL_POSTS:
+        if task.task_type is TaskType.CREATE_SOCIAL_POSTS or (
+            task.task_type is TaskType.CONTENT_REVISION
+            and task.input_data.get("revision_target_type")
+            in {ContentType.SOCIAL_POST.value, ContentType.SOCIAL_POST_PACK.value}
+        ):
             # SMM has one permitted read boundary. Other configured legacy
             # tools must never be exposed to the model for this task.
             enabled = [name for name in enabled if name == "read_content_version"]
@@ -716,7 +723,11 @@ class AgentRunService:
         agent = task.assigned_agent
         assert agent is not None
         enabled = [item.tool_name for item in agent.tools if item.is_enabled]
-        if task.task_type is TaskType.CREATE_SOCIAL_POSTS:
+        if task.task_type is TaskType.CREATE_SOCIAL_POSTS or (
+            task.task_type is TaskType.CONTENT_REVISION
+            and task.input_data.get("revision_target_type")
+            in {ContentType.SOCIAL_POST.value, ContentType.SOCIAL_POST_PACK.value}
+        ):
             enabled = [name for name in enabled if name == "read_content_version"]
         output_task_type = (
             TaskType.WRITE_ARTICLE
@@ -724,7 +735,8 @@ class AgentRunService:
             and task.input_data.get("revision_target_type") == ContentType.ARTICLE.value
             else TaskType.CREATE_SOCIAL_POSTS
             if task.task_type is TaskType.CONTENT_REVISION
-            and task.input_data.get("revision_target_type") == ContentType.SOCIAL_POST_PACK.value
+            and task.input_data.get("revision_target_type")
+            in {ContentType.SOCIAL_POST.value, ContentType.SOCIAL_POST_PACK.value}
             else task.task_type
         )
         output_type = (
