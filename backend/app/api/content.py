@@ -1,4 +1,5 @@
 import hashlib
+from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
@@ -20,7 +21,7 @@ from app.models.content import (
     ContentVersionSource,
 )
 from app.models.knowledge_pack import KnowledgePackItem
-from app.models.publication_plan import PublicationPlanItem
+from app.models.publication_plan import PublicationPlan, PublicationPlanItem, PublicationPlanStatus
 from app.models.task import Task, TaskStatus, TaskType
 from app.models.user import User
 from app.repositories.agents import AgentRepository
@@ -30,6 +31,7 @@ from app.schemas.content import (
     ContentApprovalRequest,
     ContentDerivationResponse,
     ContentListItem,
+    ContentManualEditRequest,
     ContentRejectionRequest,
     ContentResponse,
     ContentSourceResponse,
@@ -38,6 +40,7 @@ from app.schemas.content import (
 )
 from app.schemas.task import TaskCreate
 from app.services.activity_log_service import ActivityLogService
+from app.services.approval_service import ApprovalService
 from app.services.content_service import ContentService
 from app.services.social_content_quality import (
     social_text_quality_errors,
@@ -66,6 +69,9 @@ def _summary(version: Any) -> ContentVersionSummary:
         id=version.id,
         version_number=version.version_number,
         change_description=version.change_description,
+        created_by_user_id=version.created_by_user_id,
+        created_by_agent_id=version.created_by_agent_id,
+        source_agent_run_id=version.source_agent_run_id,
         created_at=version.created_at,
     )
 
@@ -342,6 +348,139 @@ async def list_versions(
     ]
 
 
+@router.post("/{content_id}/manual-edit", response_model=ContentResponse)
+async def manual_edit_content(
+    content_id: UUID,
+    payload: ContentManualEditRequest,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> ContentResponse:
+    item = (
+        await session.execute(
+            select(ContentItem).where(ContentItem.id == content_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+    if item is None:
+        raise ContentAppError("CONTENT_NOT_FOUND", "Материал не найден.", 404)
+    if item.status is not ContentStatus.WAITING_APPROVAL:
+        raise ContentAppError(
+            "CONTENT_NOT_EDITABLE",
+            "Редактировать можно только материал, ожидающий согласования.",
+            409,
+        )
+    if item.content_type not in {ContentType.ARTICLE, ContentType.SOCIAL_POST}:
+        raise ContentAppError(
+            "CONTENT_MANUAL_EDIT_NOT_SUPPORTED",
+            "Для этого типа материала ручная редактура пока недоступна.",
+            409,
+        )
+    if item.current_version_id != payload.expected_current_version_id:
+        raise ContentAppError(
+            "CONTENT_VERSION_CONFLICT",
+            (
+                "Материал уже был изменён. Обновите страницу и проверьте "
+                "новую версию перед сохранением."
+            ),
+            409,
+        )
+    previous = await session.scalar(
+        select(ContentVersion).where(ContentVersion.id == item.current_version_id)
+    )
+    if previous is None:
+        raise ContentAppError("CONTENT_VERSION_NOT_FOUND", "Текущая версия не найдена.", 409)
+    if item.content_type is ContentType.SOCIAL_POST:
+        quality_errors = social_text_quality_errors(payload.content)
+        if quality_errors:
+            raise ContentAppError(
+                "SOCIAL_POST_QUALITY_INVALID",
+                social_text_quality_message(quality_errors),
+                422,
+            )
+
+    structured_content = deepcopy(previous.structured_content)
+    if item.content_type is ContentType.SOCIAL_POST:
+        structured_content["text_markdown"] = payload.content
+    else:
+        structured_content["manually_edited_content"] = payload.content
+    version = ContentVersion(
+        content_item_id=item.id,
+        version_number=previous.version_number + 1,
+        content=payload.content,
+        structured_content=structured_content,
+        created_by_user_id=user.id,
+        change_description=payload.change_description or "Ручная редактура",
+        generation_key=f"manual:{previous.id}",
+    )
+    session.add(version)
+    await session.flush()
+
+    sources = list(
+        (
+            await session.scalars(
+                select(ContentVersionSource).where(
+                    ContentVersionSource.content_version_id == previous.id
+                )
+            )
+        ).all()
+    )
+    for source in sources:
+        session.add(
+            ContentVersionSource(
+                content_version_id=version.id,
+                knowledge_pack_item_id=source.knowledge_pack_item_id,
+                section_key=source.section_key,
+                position=source.position,
+            )
+        )
+    derivations = list(
+        (
+            await session.scalars(
+                select(ContentDerivation).where(
+                    ContentDerivation.derived_content_version_id == previous.id
+                )
+            )
+        ).all()
+    )
+    for derivation in derivations:
+        session.add(
+            ContentDerivation(
+                derived_content_version_id=version.id,
+                source_content_version_id=derivation.source_content_version_id,
+                source_section_key=derivation.source_section_key,
+            )
+        )
+
+    item.current_version_id = version.id
+    item.status = ContentStatus.WAITING_APPROVAL
+    await ApprovalService(session).create_content_approval(
+        item.id,
+        version.version_number,
+        {
+            "content_item_id": str(item.id),
+            "content_version_id": str(version.id),
+            "version_number": version.version_number,
+            "content_hash": hashlib.sha256(version.content.encode()).hexdigest(),
+        },
+        None,
+    )
+    await ActivityLogService(session).record(
+        "CONTENT_MANUALLY_EDITED",
+        operation_key=f"content-manual-edit:{version.id}",
+        campaign_id=item.campaign_id,
+        task_id=item.source_task_id,
+        user_id=user.id,
+        content_item_id=item.id,
+        metadata={
+            "previous_content_version_id": str(previous.id),
+            "content_version_id": str(version.id),
+            "version_number": version.version_number,
+        },
+    )
+    await session.commit()
+    session.expire(item, ["versions", "current_version"])
+    return await get_content(content_id, user, session)
+
+
 async def _resolve_content(
     content_id: UUID, user: User, session: AsyncSession, status: ApprovalStatus, comment: str | None
 ) -> ContentResponse:
@@ -607,7 +746,11 @@ async def request_revision(
         from app.core.errors import AppError
 
         raise AppError("CONTENT_NOT_FOUND", "Материал не найден.", 404)
-    if item.content_type not in {ContentType.ARTICLE, ContentType.SOCIAL_POST_PACK}:
+    if item.content_type not in {
+        ContentType.ARTICLE,
+        ContentType.SOCIAL_POST,
+        ContentType.SOCIAL_POST_PACK,
+    }:
         from app.core.errors import AppError
 
         raise AppError(
@@ -645,6 +788,21 @@ async def request_revision(
                 "superseded_by_content_version_id": current_version_id,
             }
     if approval is None:
+        existing_revision = await session.scalar(
+            select(Task).where(
+                Task.task_type == TaskType.CONTENT_REVISION,
+                Task.input_data["content_item_id"].as_string() == str(item.id),
+                Task.input_data["base_content_version_id"].as_string()
+                == str(item.current_version_id),
+                Task.status.in_([TaskStatus.READY, TaskStatus.IN_PROGRESS]),
+            )
+        )
+        if existing_revision is not None:
+            raise ContentAppError(
+                "CONTENT_REVISION_ALREADY_REQUESTED",
+                "Для этой версии уже создана задача доработки.",
+                409,
+            )
         from app.core.errors import AppError
 
         raise AppError("CONTENT_APPROVAL_NOT_FOUND", "Ожидающее согласование не найдено.", 404)
@@ -686,7 +844,11 @@ async def request_revision(
         )
     )
     if existing:
-        return _response(await ContentService(session).get(content_id))
+        raise ContentAppError(
+            "CONTENT_REVISION_ALREADY_REQUESTED",
+            "Для этой версии уже создана задача доработки.",
+            409,
+        )
     slug = "writer" if item.content_type is ContentType.ARTICLE else "smm_manager"
     agent = await AgentRepository(session).get_by_slug(slug)
     from app.core.errors import AppError
@@ -694,6 +856,7 @@ async def request_revision(
     if agent is None or agent.status is not AgentStatus.ACTIVE:
         raise AppError("REQUIRED_AGENT_INACTIVE", "Исполнитель доработки недоступен.", 409)
     immutable_context: dict[str, object] = {}
+    task_context: dict[str, object] = {}
     if item.content_type is ContentType.ARTICLE:
         pack_ids = list(
             (
@@ -708,7 +871,7 @@ async def request_revision(
             ).all()
         )
         immutable_context["knowledge_pack_ids"] = [str(value) for value in dict.fromkeys(pack_ids)]
-    else:
+    elif item.content_type is ContentType.SOCIAL_POST_PACK:
         article_version_ids = list(
             (
                 await session.scalars(
@@ -725,6 +888,72 @@ async def request_revision(
         immutable_context["article_version_ids"] = [
             str(value) for value in dict.fromkeys(article_version_ids)
         ]
+    else:
+        raw_plan_item_id = (item.metadata_ or {}).get("publication_plan_item_id")
+        try:
+            plan_item_id = UUID(str(raw_plan_item_id))
+        except (TypeError, ValueError):
+            raise ContentAppError(
+                "SOCIAL_POST_PLAN_CONTEXT_REQUIRED",
+                "Для доработки поста не найден утверждённый пункт медиаплана.",
+                409,
+            ) from None
+        plan_item = await session.scalar(
+            select(PublicationPlanItem).where(PublicationPlanItem.id == plan_item_id)
+        )
+        plan = (
+            await session.get(PublicationPlan, plan_item.publication_plan_id)
+            if plan_item is not None
+            else None
+        )
+        if (
+            plan_item is None
+            or plan is None
+            or plan.status is not PublicationPlanStatus.APPROVED
+            or item.channel != plan_item.channel
+        ):
+            raise ContentAppError(
+                "SOCIAL_POST_PLAN_CONTEXT_INVALID",
+                "Пункт медиаплана поста недоступен или больше не является утверждённым.",
+                409,
+            )
+        current_version = await session.get(ContentVersion, item.current_version_id)
+        if current_version is None:
+            raise ContentAppError("CONTENT_VERSION_NOT_FOUND", "Текущая версия не найдена.", 409)
+        article_version_ids = list(
+            (
+                await session.scalars(
+                    select(ContentDerivation.source_content_version_id).where(
+                        ContentDerivation.derived_content_version_id == current_version.id
+                    )
+                )
+            ).all()
+        )
+        if plan_item.source_content_version_id not in article_version_ids:
+            raise ContentAppError(
+                "SOCIAL_POST_SOURCE_CONTEXT_INVALID",
+                "Источник поста не совпадает с утверждённым медиапланом.",
+                409,
+            )
+        immutable_context["article_version_ids"] = [
+            str(value) for value in dict.fromkeys(article_version_ids)
+        ]
+        task_context = {
+            "publication_plan_id": str(plan.id),
+            "publication_plan_item_id": str(plan_item.id),
+            "plan_channel": plan_item.channel.value,
+            "scheduled_at": plan_item.scheduled_at.isoformat(),
+            "source_content_item_id": str(plan_item.source_content_item_id),
+            "source_content_version_id": str(plan_item.source_content_version_id),
+            "source_claim_ids": plan_item.source_claim_ids or [],
+            "source_support_summary": plan_item.source_support_summary,
+            "topic": plan_item.topic,
+            "angle": plan_item.angle,
+            "purpose": plan_item.purpose,
+            "format": plan_item.format,
+            "message_brief": plan_item.message_brief,
+            "original_text": current_version.content,
+        }
     approval.status = ApprovalStatus.REVISION_REQUESTED
     approval.reviewed_by_user_id = user.id
     approval.comment = payload.comment
@@ -745,6 +974,7 @@ async def request_revision(
                 "original_task_id": str(item.source_task_id),
                 "revision_target_type": item.content_type.value,
                 "immutable_source_context": immutable_context,
+                **task_context,
             },
         ),
         commit=False,

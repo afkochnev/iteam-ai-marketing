@@ -31,7 +31,7 @@ class ApprovalService:
         )
 
     async def create_content_approval(
-        self, content_id: UUID, version: int, snapshot: dict[str, object], agent_id: UUID
+        self, content_id: UUID, version: int, snapshot: dict[str, object], agent_id: UUID | None
     ) -> Approval:
         # A new immutable version supersedes any still-pending approval for an
         # older version.  Keep the old approval as audit history, but make it

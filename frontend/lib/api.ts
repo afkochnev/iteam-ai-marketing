@@ -43,7 +43,7 @@ export interface KnowledgeSearchResponse { query: string; result_count: number; 
 export type ContentType = "ARTICLE" | "SOCIAL_POST" | "SOCIAL_POST_PACK";
 export type ContentStatus = "DRAFT" | "WAITING_REVIEW" | "WAITING_APPROVAL" | "APPROVED" | "REJECTED" | "ARCHIVED";
 export interface ContentSource { knowledge_pack_item_id: string; source_title: string; filename: string | null; excerpt: string; relevance_score: number | null; section_key: string; }
-export interface ContentVersionSummary { id: string; version_number: number; change_description: string | null; created_at: string; }
+export interface ContentVersionSummary { id: string; version_number: number; change_description: string | null; created_by_user_id?: string | null; created_by_agent_id?: string | null; source_agent_run_id?: string | null; created_at: string; }
 export interface ContentDerivation { source_content_item_id: string; source_content_item_title: string; source_content_version_id: string; source_version_number: number; section_key: string; }
 export interface ContentVersion extends ContentVersionSummary { content: string; structured_content: Record<string, unknown>; sources: ContentSource[]; derivations?: ContentDerivation[]; }
 export interface ContentApprovalHistory { id: string; subject_version: number; status: string; comment: string | null; reviewed_by_user_id: string | null; created_at: string; resolved_at: string | null; }
@@ -179,6 +179,7 @@ export const contentApi = {
   approve: (id: string, comment?: string) => request<Content>(`/content/${id}/approve`, { method: "POST", body: JSON.stringify({ comment: comment || null }) }),
   reject: (id: string, comment: string) => request<Content>(`/content/${id}/reject`, { method: "POST", body: JSON.stringify({ comment }) }),
   requestRevision: (id: string, comment: string) => request<Content>(`/content/${id}/request-revision`, { method: "POST", body: JSON.stringify({ comment }) }),
+  manualEdit: (id: string, payload: { content: string; expected_current_version_id: string; change_description?: string | null }) => request<Content>(`/content/${id}/manual-edit`, { method: "POST", body: JSON.stringify(payload) }),
 };
 export const publicationsApi = {
   scheduleContent: (contentId: string) => request<Publication>(`/publications/plan-content/${contentId}/schedule`, { method: "POST" }),

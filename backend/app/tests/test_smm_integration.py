@@ -11,7 +11,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.factory import AgentRuntimeContext
 from app.agents.social_tools import read_content_version
-from app.api.content import approve_content, reject_content
+from app.api.content import (
+    approve_content,
+    manual_edit_content,
+    reject_content,
+    request_revision,
+)
 from app.core.config import settings
 from app.core.database import async_session_factory, create_worker_session_factory
 from app.core.errors import AppError
@@ -29,7 +34,7 @@ from app.models.content import (
     ContentVersion,
 )
 from app.models.marketing_feedback import FeedbackAnalysisStatus
-from app.models.publication import Publication
+from app.models.publication import Publication, PublicationStatus
 from app.models.publication_plan import (
     PublicationPlan,
     PublicationPlanItem,
@@ -39,8 +44,14 @@ from app.models.publication_plan import (
 from app.models.task import Task, TaskStatus, TaskType
 from app.models.user import User, UserRole
 from app.repositories.users import UserRepository
+from app.schemas.agent_outputs import SingleSocialPostResult
+from app.schemas.approval import RequiredApprovalComment
 from app.schemas.campaign import CampaignCreate
-from app.schemas.content import ContentApprovalRequest, ContentRejectionRequest
+from app.schemas.content import (
+    ContentApprovalRequest,
+    ContentManualEditRequest,
+    ContentRejectionRequest,
+)
 from app.schemas.task import TaskCreate
 from app.services.agent_run_service import AgentRunService
 from app.services.agent_runner_service import RuntimeResult
@@ -267,6 +278,318 @@ async def add_plan_item(
     session.add(item)
     await session.flush()
     return plan, item
+
+
+async def add_plan_bound_post(
+    session: AsyncSession,
+    task: Task,
+    plan: PublicationPlan,
+    plan_item: PublicationPlanItem,
+    article_version: ContentVersion,
+) -> tuple[ContentItem, ContentVersion, Approval]:
+    assert task.assigned_agent_id is not None
+    post = ContentItem(
+        campaign_id=task.campaign_id,
+        source_task_id=task.id,
+        content_type=ContentType.SOCIAL_POST,
+        title="Плановый пост",
+        status=ContentStatus.WAITING_APPROVAL,
+        author_agent_id=task.assigned_agent_id,
+        channel=plan_item.channel,
+        metadata_={
+            "publication_plan_id": str(plan.id),
+            "publication_plan_item_id": str(plan_item.id),
+            "source_content_version_id": str(article_version.id),
+            "source_claim_ids": plan_item.source_claim_ids or [],
+        },
+    )
+    session.add(post)
+    await session.flush()
+    version = ContentVersion(
+        content_item_id=post.id,
+        version_number=1,
+        content="Исходный текст поста",
+        structured_content={
+            "key": "plan_item_post",
+            "title": post.title,
+            "text_markdown": "Исходный текст поста",
+            "cta": "",
+            "sources": [
+                {
+                    "content_version_id": str(article_version.id),
+                    "section_key": "problem",
+                }
+            ],
+            "suggested_publish_order": 1,
+            "channel": plan_item.channel.value,
+        },
+        created_by_agent_id=task.assigned_agent_id,
+        generation_key=f"plan-item:{plan_item.id}",
+    )
+    session.add(version)
+    await session.flush()
+    post.current_version_id = version.id
+    session.add(
+        ContentDerivation(
+            derived_content_version_id=version.id,
+            source_content_version_id=article_version.id,
+            source_section_key="problem",
+        )
+    )
+    approval = await ApprovalService(session).create_content_approval(
+        post.id,
+        1,
+        {
+            "content_item_id": str(post.id),
+            "content_version_id": str(version.id),
+            "version_number": 1,
+            "content_hash": hashlib.sha256(version.content.encode()).hexdigest(),
+        },
+        task.assigned_agent_id,
+    )
+    await session.commit()
+    return post, version, approval
+
+
+@pytest.mark.asyncio
+async def test_manual_social_edit_creates_immutable_version_and_preserves_plan_binding(
+    db_session: AsyncSession,
+) -> None:
+    task, campaign, article_version = await smm_fixture(db_session)
+    plan, plan_item = await add_plan_item(db_session, campaign, article_version)
+    post, first, first_approval = await add_plan_bound_post(
+        db_session, task, plan, plan_item, article_version
+    )
+    user = await db_session.scalar(select(User))
+    assert user is not None
+    scheduled = Publication(
+        campaign_id=campaign.id,
+        content_item_id=post.id,
+        content_version_id=first.id,
+        channel=plan_item.channel,
+        status=PublicationStatus.SCHEDULED,
+        scheduled_at=plan_item.scheduled_at,
+        approved_for_publish_at=datetime.now(UTC),
+        approved_for_publish_by=user.id,
+    )
+    db_session.add(scheduled)
+    await db_session.commit()
+
+    response = await manual_edit_content(
+        post.id,
+        ContentManualEditRequest(
+            content="Отредактированный текст поста",
+            expected_current_version_id=first.id,
+            change_description="Уточнён вывод",
+        ),
+        user,
+        db_session,
+    )
+    assert response.current_version is not None
+    assert response.current_version.version_number == 2
+    assert response.current_version.created_by_user_id == user.id
+    assert response.current_version.content == "Отредактированный текст поста"
+    assert response.current_version.structured_content["channel"] == plan_item.channel.value
+    assert (
+        response.current_version.structured_content["text_markdown"]
+        == response.current_version.content
+    )
+    assert response.publication_plan_item_id == plan_item.id
+    assert response.plan_channel == plan_item.channel.value
+
+    versions = list(
+        (
+            await db_session.scalars(
+                select(ContentVersion)
+                .where(ContentVersion.content_item_id == post.id)
+                .order_by(ContentVersion.version_number)
+            )
+        ).all()
+    )
+    assert len(versions) == 2
+    assert versions[0].id == first.id and versions[0].content == "Исходный текст поста"
+    assert versions[1].created_by_user_id == user.id
+    derivations = list(
+        (
+            await db_session.scalars(
+                select(ContentDerivation).where(
+                    ContentDerivation.derived_content_version_id == versions[1].id
+                )
+            )
+        ).all()
+    )
+    assert [(row.source_content_version_id, row.source_section_key) for row in derivations] == [
+        (article_version.id, "problem")
+    ]
+    approvals = list(
+        (
+            await db_session.scalars(
+                select(Approval).where(Approval.object_id == post.id).order_by(Approval.created_at)
+            )
+        ).all()
+    )
+    assert first_approval.status is ApprovalStatus.REVISION_REQUESTED
+    assert [entry.status for entry in approvals] == [
+        ApprovalStatus.REVISION_REQUESTED,
+        ApprovalStatus.PENDING,
+    ]
+    assert approvals[1].subject_snapshot["content_version_id"] == str(versions[1].id)
+
+    approvals[0].status = ApprovalStatus.PENDING
+    approvals[1].status = ApprovalStatus.REVISION_REQUESTED
+    await db_session.flush()
+    with pytest.raises(AppError) as stale_approval:
+        await approve_content(
+            post.id,
+            ContentApprovalRequest(comment="Попытка согласовать старую версию"),
+            user,
+            db_session,
+        )
+    assert stale_approval.value.code == "STALE_APPROVAL_VERSION"
+    approvals[0].status = ApprovalStatus.REVISION_REQUESTED
+    approvals[1].status = ApprovalStatus.PENDING
+    await db_session.commit()
+
+    await db_session.refresh(scheduled)
+    assert scheduled.content_version_id == first.id
+    assert scheduled.status is PublicationStatus.SCHEDULED
+
+    with pytest.raises(AppError) as invalid_text:
+        await manual_edit_content(
+            post.id,
+            ContentManualEditRequest(
+                content="**Служебная разметка** content_version_id",
+                expected_current_version_id=versions[1].id,
+            ),
+            user,
+            db_session,
+        )
+    assert invalid_text.value.code == "SOCIAL_POST_QUALITY_INVALID"
+
+    with pytest.raises(AppError) as conflict:
+        await manual_edit_content(
+            post.id,
+            ContentManualEditRequest(
+                content="Конкурирующая правка",
+                expected_current_version_id=first.id,
+            ),
+            user,
+            db_session,
+        )
+    assert conflict.value.code == "CONTENT_VERSION_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_plan_bound_social_revision_reuses_item_and_preserves_authoritative_context(
+    db_session: AsyncSession,
+) -> None:
+    task, campaign, article_version = await smm_fixture(db_session)
+    plan, plan_item = await add_plan_item(db_session, campaign, article_version)
+    post, first, _first_approval = await add_plan_bound_post(
+        db_session, task, plan, plan_item, article_version
+    )
+    user = await db_session.scalar(select(User))
+    assert user is not None
+
+    await request_revision(
+        post.id,
+        RequiredApprovalComment(comment="Сделать вывод конкретнее"),
+        user,
+        db_session,
+    )
+    revision = await db_session.scalar(
+        select(Task).where(
+            Task.task_type == TaskType.CONTENT_REVISION,
+            Task.input_data["content_item_id"].astext == str(post.id),
+        )
+    )
+    assert revision is not None
+    assert revision.assigned_agent_id == task.assigned_agent_id
+    assert revision.input_data["base_content_version_id"] == str(first.id)
+    assert revision.input_data["publication_plan_item_id"] == str(plan_item.id)
+    assert revision.input_data["plan_channel"] == plan_item.channel.value
+    assert revision.input_data["source_content_version_id"] == str(article_version.id)
+    assert revision.input_data["source_claim_ids"] == plan_item.source_claim_ids
+    assert revision.input_data["original_text"] == first.content
+    with pytest.raises(AppError) as duplicate:
+        await request_revision(
+            post.id,
+            RequiredApprovalComment(comment="Повторный запрос"),
+            user,
+            db_session,
+        )
+    assert duplicate.value.code == "CONTENT_REVISION_ALREADY_REQUESTED"
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(Task)
+            .where(
+                Task.task_type == TaskType.CONTENT_REVISION,
+                Task.input_data["content_item_id"].astext == str(post.id),
+            )
+        )
+        == 1
+    )
+
+    run = await db_session.scalar(select(AgentRun).where(AgentRun.task_id == revision.id))
+    assert run is not None
+    service = AgentRunService(db_session)
+    claimed = await service.claim(run.id)
+    assert claimed is not None
+    snapshot, task_input, _runtime_context, _trace = claimed
+    assert snapshot.output_type is SingleSocialPostResult
+    assert "Сделать вывод конкретнее" in task_input
+    assert plan_item.message_brief in task_input
+    await add_read_audit(db_session, run.id, article_version)
+    await db_session.commit()
+    revised_text = "Теперь управленческий вывод сформулирован конкретнее."
+    output = {
+        "sufficient": True,
+        "pack": {
+            "strategy_summary": "Доработка одного планового поста.",
+            "posts": [
+                {
+                    "key": "model_must_not_replace_identity",
+                    "title": "Заголовок модели не заменяет карточку",
+                    "text_markdown": revised_text,
+                    "cta": "",
+                    "sources": [
+                        {
+                            "content_version_id": str(article_version.id),
+                            "section_key": "problem",
+                        }
+                    ],
+                    "suggested_publish_order": 1,
+                }
+            ],
+        },
+    }
+    await service.finish_success(run.id, RuntimeResult(output, 1, 10, 5, 15, None))
+    await db_session.refresh(post)
+    assert post.current_version_id != first.id
+    assert post.title == "Плановый пост"
+    assert post.channel is plan_item.channel
+    assert post.status is ContentStatus.WAITING_APPROVAL
+    assert post.metadata_["publication_plan_item_id"] == str(plan_item.id)
+    assert post.metadata_["source_claim_ids"] == plan_item.source_claim_ids
+    second = await db_session.get(ContentVersion, post.current_version_id)
+    assert second is not None
+    assert second.version_number == 2 and second.content == revised_text
+    assert second.structured_content["channel"] == plan_item.channel.value
+    assert second.source_agent_run_id == run.id
+    approvals = list(
+        (
+            await db_session.scalars(
+                select(Approval).where(Approval.object_id == post.id).order_by(Approval.created_at)
+            )
+        ).all()
+    )
+    assert [entry.status for entry in approvals] == [
+        ApprovalStatus.REVISION_REQUESTED,
+        ApprovalStatus.PENDING,
+    ]
+    assert approvals[1].subject_snapshot["content_version_id"] == str(second.id)
+    assert await db_session.scalar(select(func.count()).select_from(Publication)) == 0
 
 
 @pytest.mark.asyncio
