@@ -11,13 +11,25 @@ from sqlalchemy.ext.asyncio import AsyncSession
 # ever binding the destructive fixture to the runtime database.
 from app.core.config import settings
 from app.core.test_database import resolve_test_database_url
+from app.core.test_redis import resolve_test_redis_url
 
 _TEST_DATABASE_URL = resolve_test_database_url(
     settings.database_url,
     os.environ.get("TEST_DATABASE_URL"),
 )
+_TEST_REDIS_URL = resolve_test_redis_url(
+    settings.redis_url,
+    os.environ.get("TEST_REDIS_URL"),
+)
+settings.app_env = "test"
 settings.database_url = _TEST_DATABASE_URL
+settings.redis_url = _TEST_REDIS_URL
+settings.validate_redis_isolation()
+os.environ["APP_ENV"] = "test"
+os.environ["DATABASE_URL"] = _TEST_DATABASE_URL
 os.environ["TEST_DATABASE_URL"] = _TEST_DATABASE_URL
+os.environ["REDIS_URL"] = _TEST_REDIS_URL
+os.environ["TEST_REDIS_URL"] = _TEST_REDIS_URL
 
 from app.core.database import (  # noqa: E402
     async_session_factory,

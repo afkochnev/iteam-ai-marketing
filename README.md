@@ -298,8 +298,11 @@ Backend integration tests должны выполняться только пр�
 ```bash
 docker compose exec postgres createdb -U iteam iteam_test
 docker run --rm --user root --network iteam-ai-marketing_default \
+  -e APP_ENV=test \
   -e DATABASE_URL=postgresql+asyncpg://iteam:iteam@postgres:5432/iteam_test \
   -e TEST_DATABASE_URL=postgresql+asyncpg://iteam:iteam@postgres:5432/iteam_test \
+  -e REDIS_URL=redis://redis:6379/15 \
+  -e TEST_REDIS_URL=redis://redis:6379/15 \
   -v "$PWD/backend:/workspace" -w /workspace iteam-ai-marketing-backend \
   sh -c 'pip install -r requirements-dev.lock && alembic upgrade head && pytest'
 ```
@@ -309,6 +312,12 @@ runtime or reserved databases such as `iteam` and `postgres` before cleanup
 SQL can run. If the variable is omitted, it derives the safe `iteam_test`
 database from `DATABASE_URL`; destructive test fixtures never use the runtime
 database.
+
+Test startup also refuses Redis DB0 and derives DB15 when `TEST_REDIS_URL` is
+not set. Celery uses an in-process memory broker and result backend in test
+context, so `.delay()` and `.apply_async()` cannot publish into any Redis
+queue. The non-zero Redis URL is retained only for application readiness
+checks that explicitly ping Redis.
 
 ## Типовые ошибки
 
