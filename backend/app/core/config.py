@@ -70,7 +70,29 @@ class Settings(BaseSettings):
         value = self.cors_allowed_origins or self.frontend_url
         return [item.strip() for item in value.split(",") if item.strip()]
 
+    @property
+    def is_test_context(self) -> bool:
+        from app.core.test_redis import is_test_context
+
+        return is_test_context(self.app_env, self.database_url)
+
+    @property
+    def celery_broker_url(self) -> str:
+        return "memory://" if self.is_test_context else self.redis_url
+
+    @property
+    def celery_result_backend_url(self) -> str:
+        return "cache+memory://" if self.is_test_context else self.redis_url
+
+    def validate_redis_isolation(self) -> None:
+        if not self.is_test_context:
+            return
+        from app.core.test_redis import ensure_safe_test_redis_url
+
+        ensure_safe_test_redis_url(self.redis_url)
+
     def validate_production(self) -> None:
+        self.validate_redis_isolation()
         numeric_errors: list[str] = []
         positive_values = {
             "ACCESS_TOKEN_EXPIRE_MINUTES": self.access_token_expire_minutes,

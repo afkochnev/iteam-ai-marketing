@@ -2,10 +2,11 @@ from celery import Celery
 
 from app.core.config import settings
 
+settings.validate_redis_isolation()
 celery_app = Celery(
     "iteam_ai_marketing",
-    broker=settings.redis_url,
-    backend=settings.redis_url,
+    broker=settings.celery_broker_url,
+    backend=settings.celery_result_backend_url,
     include=[
         "app.workers.agent_worker",
         "app.workers.knowledge_worker",
