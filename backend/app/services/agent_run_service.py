@@ -763,11 +763,7 @@ class AgentRunService:
                 task.task_type,
                 tuple(UUID(item) for item in run.input_data.get("allowed_knowledge_pack_ids", [])),
                 tuple(UUID(item) for item in run.input_data.get("allowed_content_version_ids", [])),
-                TaskType.WRITE_ARTICLE
-                if run.input_data.get("revision_target_type") == ContentType.ARTICLE.value
-                else TaskType.CREATE_SOCIAL_POSTS
-                if run.input_data.get("revision_target_type") == ContentType.SOCIAL_POST_PACK.value
-                else None,
+                output_task_type if task.task_type is TaskType.CONTENT_REVISION else None,
                 self.session_factory,
             ),
             trace_id,
