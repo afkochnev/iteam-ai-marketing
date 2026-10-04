@@ -536,8 +536,9 @@ async def test_plan_bound_social_revision_reuses_item_and_preserves_authoritativ
     service = AgentRunService(db_session)
     claimed = await service.claim(run.id)
     assert claimed is not None
-    snapshot, task_input, _runtime_context, _trace = claimed
+    snapshot, task_input, runtime_context, _trace = claimed
     assert snapshot.output_type is SingleSocialPostResult
+    assert runtime_context.output_task_type is TaskType.CREATE_SOCIAL_POSTS
     assert "Сделать вывод конкретнее" in task_input
     assert plan_item.message_brief in task_input
     await add_read_audit(db_session, run.id, article_version)
