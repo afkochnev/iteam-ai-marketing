@@ -3,7 +3,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from app.models.agent_run import AgentRunStatus
 from app.models.content import ContentStatus, ContentType
+from app.models.task import TaskStatus
 
 
 class ContentApprovalRequest(BaseModel):
@@ -105,3 +107,16 @@ class ContentResponse(ContentListItem):
     current_version: ContentVersionResponse | None
     versions: list[ContentVersionSummary]
     approval_history: list[ContentApprovalHistory] = Field(default_factory=list)
+
+
+class ContentRevisionProgress(BaseModel):
+    task_id: UUID
+    task_status: TaskStatus
+    agent_run_id: UUID | None = None
+    agent_run_status: AgentRunStatus | None = None
+    error_code: str | None = None
+    error_message: str | None = None
+    base_content_version_id: UUID
+    created_content_version_id: UUID | None = None
+    created_at: datetime
+    updated_at: datetime
