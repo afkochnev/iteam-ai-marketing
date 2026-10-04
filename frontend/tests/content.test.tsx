@@ -4,17 +4,46 @@ import ContentDetailPage from "../app/content/[id]/page";
 import ContentPage from "../app/content/page";
 import ApprovalsPage from "../app/approvals/page";
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), list: vi.fn(), approve: vi.fn(), reject: vi.fn(), requestRevision: vi.fn(), manualEdit: vi.fn(), campaignGet: vi.fn(), campaignsList: vi.fn(), taskGet: vi.fn(), taskList: vi.fn(), runList: vi.fn(), plansList: vi.fn(), publicationList: vi.fn(), scheduleContent: vi.fn() }));
+const mocks = vi.hoisted(() => ({ get: vi.fn(), list: vi.fn(), approve: vi.fn(), reject: vi.fn(), requestRevision: vi.fn(), revisionProgress: vi.fn(), manualEdit: vi.fn(), campaignGet: vi.fn(), campaignsList: vi.fn(), taskGet: vi.fn(), taskList: vi.fn(), runList: vi.fn(), plansList: vi.fn(), publicationList: vi.fn(), scheduleContent: vi.fn() }));
 vi.mock("next/navigation", () => ({ useParams: () => ({ id: "content-1" }), useRouter: () => ({ replace: vi.fn() }) }));
 vi.mock("@/components/auth-provider", () => ({ useAuth: () => ({ user: { role: "ADMIN" }, loading: false }) }));
-vi.mock("@/lib/api", async (original) => { const actual = await original<typeof import("@/lib/api")>(); return { ...actual, campaignsApi: { ...actual.campaignsApi, get: mocks.campaignGet, list: mocks.campaignsList }, tasksApi: { ...actual.tasksApi, get: mocks.taskGet, list: mocks.taskList }, agentRunsApi: { ...actual.agentRunsApi, list: mocks.runList }, publicationPlansApi: { ...actual.publicationPlansApi, list: mocks.plansList }, publicationsApi: { ...actual.publicationsApi, listCampaign: mocks.publicationList, scheduleContent: mocks.scheduleContent }, contentApi: { get: mocks.get, list: mocks.list, approve: mocks.approve, reject: mocks.reject, requestRevision: mocks.requestRevision, manualEdit: mocks.manualEdit }, approvalsApi: { list: mocks.list } }; });
+vi.mock("@/lib/api", async (original) => { const actual = await original<typeof import("@/lib/api")>(); return { ...actual, campaignsApi: { ...actual.campaignsApi, get: mocks.campaignGet, list: mocks.campaignsList }, tasksApi: { ...actual.tasksApi, get: mocks.taskGet, list: mocks.taskList }, agentRunsApi: { ...actual.agentRunsApi, list: mocks.runList }, publicationPlansApi: { ...actual.publicationPlansApi, list: mocks.plansList }, publicationsApi: { ...actual.publicationsApi, listCampaign: mocks.publicationList, scheduleContent: mocks.scheduleContent }, contentApi: { get: mocks.get, list: mocks.list, approve: mocks.approve, reject: mocks.reject, requestRevision: mocks.requestRevision, revisionProgress: mocks.revisionProgress, manualEdit: mocks.manualEdit }, approvalsApi: { list: mocks.list } }; });
 
 const article = { id: "content-1", campaign_id: "campaign-1", source_task_id: "task-1", author_agent_id: "writer-1", content_type: "ARTICLE" as const, title: "Статья", status: "WAITING_APPROVAL" as const, current_version_number: 1, created_at: "2026-09-22T10:00:00Z", updated_at: "2026-09-22T10:00:00Z", current_version: { id: "version-1", version_number: 1, change_description: null, created_at: "2026-09-22T10:00:00Z", content: "# Заголовок\n\n<script>alert(1)</script>", structured_content: {}, sources: [] }, versions: [] };
 
 describe("Content and approvals UI", () => {
-  beforeEach(() => { vi.clearAllMocks(); window.history.replaceState({}, "", "/"); mocks.get.mockResolvedValue(article); mocks.list.mockResolvedValue([{ id: "approval-1", object_type: "CONTENT_ITEM", object_id: "content-1", subject_version: 1, status: "PENDING", reviewed_by_user_id: null, comment: null, subject_snapshot: {}, metadata: {}, created_at: article.created_at, resolved_at: null, updated_at: article.updated_at }]); mocks.campaignGet.mockResolvedValue({ id: "campaign-1", name: "Кампания" }); mocks.campaignsList.mockResolvedValue([]); mocks.taskGet.mockResolvedValue({ id: "task-1", title: "Задача", task_type: "WRITE_ARTICLE" }); mocks.taskList.mockResolvedValue([]); mocks.runList.mockResolvedValue([]); mocks.plansList.mockResolvedValue([]); mocks.publicationList.mockResolvedValue([]); });
+  beforeEach(() => { vi.clearAllMocks(); window.history.replaceState({}, "", "/"); mocks.get.mockResolvedValue(article); mocks.list.mockResolvedValue([{ id: "approval-1", object_type: "CONTENT_ITEM", object_id: "content-1", subject_version: 1, status: "PENDING", reviewed_by_user_id: null, comment: null, subject_snapshot: {}, metadata: {}, created_at: article.created_at, resolved_at: null, updated_at: article.updated_at }]); mocks.campaignGet.mockResolvedValue({ id: "campaign-1", name: "Кампания" }); mocks.campaignsList.mockResolvedValue([]); mocks.taskGet.mockResolvedValue({ id: "task-1", title: "Задача", task_type: "WRITE_ARTICLE" }); mocks.taskList.mockResolvedValue([]); mocks.runList.mockResolvedValue([]); mocks.revisionProgress.mockResolvedValue(null); mocks.plansList.mockResolvedValue([]); mocks.publicationList.mockResolvedValue([]); });
   it("renders article safely and exposes approval actions", async () => { render(<ContentDetailPage />); expect(await screen.findByRole("heading", { name: "Статья" })).toBeInTheDocument(); expect(screen.getByText("<script>alert(1)</script>")).toBeInTheDocument(); expect(screen.getByRole("button", { name: "Редактировать текст" })).toBeInTheDocument(); expect(screen.getByRole("button", { name: "Отправить на доработку" })).toBeInTheDocument(); expect(screen.getByRole("button", { name: "Отклонить" })).toBeInTheDocument(); fireEvent.click(screen.getByRole("button", { name: "Утвердить" })); await waitFor(() => expect(mocks.approve).toHaveBeenCalledWith("content-1")); });
   it("requests revision with a required inline comment", async () => { mocks.requestRevision.mockResolvedValue(article); render(<ContentDetailPage />); await screen.findByRole("heading", { name: "Статья" }); fireEvent.click(screen.getByRole("button", { name: "Отправить на доработку" })); const submit = screen.getByRole("button", { name: "Поставить задачу на доработку" }); expect(submit).toBeDisabled(); fireEvent.change(screen.getByLabelText("Замечания редактора"), { target: { value: "Усилить CTA" } }); fireEvent.click(submit); await waitFor(() => expect(mocks.requestRevision).toHaveBeenCalledWith("content-1", "Усилить CTA")); });
+
+  it("shows queued revision progress with a link to the existing task", async () => {
+    mocks.revisionProgress.mockResolvedValue({ task_id: "revision-task-1", task_status: "READY", agent_run_id: "run-1", agent_run_status: "QUEUED", error_code: null, error_message: null, base_content_version_id: "version-1", created_content_version_id: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+    render(<ContentDetailPage />);
+    expect(await screen.findByText("Доработка поставлена в очередь")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Открыть задачу" })).toHaveAttribute("href", "/tasks/revision-task-1");
+  });
+
+  it("shows active revision state from polling data", async () => {
+    const now = new Date().toISOString();
+    mocks.revisionProgress.mockResolvedValue({ task_id: "revision-task-1", task_status: "IN_PROGRESS", agent_run_id: "run-1", agent_run_status: "RUNNING", error_code: null, error_message: null, base_content_version_id: "version-1", created_content_version_id: null, created_at: now, updated_at: now });
+    render(<ContentDetailPage />);
+    expect(await screen.findByText("SMM Manager дорабатывает материал…")).toBeInTheDocument();
+  });
+
+  it("explains when the revision worker is unavailable", async () => {
+    const stale = new Date(Date.now() - 30_000).toISOString();
+    mocks.revisionProgress.mockResolvedValue({ task_id: "revision-task-1", task_status: "READY", agent_run_id: "run-1", agent_run_status: "QUEUED", error_code: null, error_message: null, base_content_version_id: "version-1", created_content_version_id: null, created_at: stale, updated_at: stale });
+    render(<ContentDetailPage />);
+    expect(await screen.findByText("Задача создана, но исполнитель сейчас не запущен")).toBeInTheDocument();
+  });
+
+  it("shows that a completed revision is ready for approval", async () => {
+    const now = new Date().toISOString();
+    mocks.revisionProgress.mockResolvedValue({ task_id: "revision-task-1", task_status: "COMPLETED", agent_run_id: "run-1", agent_run_status: "COMPLETED", error_code: null, error_message: null, base_content_version_id: "version-1", created_content_version_id: "version-2", created_at: now, updated_at: now });
+    mocks.get.mockResolvedValue({ ...article, current_version_number: 2, current_version: { ...article.current_version, id: "version-2", version_number: 2 } });
+    render(<ContentDetailPage />);
+    expect(await screen.findByText("Новая версия готова и ожидает согласования")).toBeInTheDocument();
+  });
   it("renders content list and approval list", async () => { mocks.list.mockResolvedValueOnce([article]).mockResolvedValueOnce([{ id: "approval-1", object_type: "CONTENT_ITEM", object_id: "content-1", subject_version: 1, status: "PENDING", reviewed_by_user_id: null, comment: null, subject_snapshot: {}, metadata: {}, created_at: article.created_at, resolved_at: null, updated_at: article.updated_at }]); render(<ContentPage />); expect(await screen.findByText("Статья")).toBeInTheDocument(); });
   it("applies campaign and content-type filters from campaign links", async () => {
     window.history.replaceState({}, "", "/content?campaign_id=campaign-1&content_type=ARTICLE");

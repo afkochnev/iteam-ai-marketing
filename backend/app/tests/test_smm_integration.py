@@ -13,6 +13,7 @@ from app.agents.factory import AgentRuntimeContext
 from app.agents.social_tools import read_content_version
 from app.api.content import (
     approve_content,
+    get_revision_status,
     manual_edit_content,
     reject_content,
     request_revision,
@@ -533,6 +534,14 @@ async def test_plan_bound_social_revision_reuses_item_and_preserves_authoritativ
 
     run = await db_session.scalar(select(AgentRun).where(AgentRun.task_id == revision.id))
     assert run is not None
+    queued_progress = await get_revision_status(post.id, user, db_session)
+    assert queued_progress is not None
+    assert queued_progress.task_id == revision.id
+    assert queued_progress.task_status is TaskStatus.READY
+    assert queued_progress.agent_run_id == run.id
+    assert queued_progress.agent_run_status is AgentRunStatus.QUEUED
+    assert queued_progress.base_content_version_id == first.id
+    assert queued_progress.created_content_version_id is None
     service = AgentRunService(db_session)
     claimed = await service.claim(run.id)
     assert claimed is not None
@@ -578,6 +587,11 @@ async def test_plan_bound_social_revision_reuses_item_and_preserves_authoritativ
     assert second.version_number == 2 and second.content == revised_text
     assert second.structured_content["channel"] == plan_item.channel.value
     assert second.source_agent_run_id == run.id
+    completed_progress = await get_revision_status(post.id, user, db_session)
+    assert completed_progress is not None
+    assert completed_progress.task_status is TaskStatus.COMPLETED
+    assert completed_progress.agent_run_status is AgentRunStatus.COMPLETED
+    assert completed_progress.created_content_version_id == second.id
     approvals = list(
         (
             await db_session.scalars(

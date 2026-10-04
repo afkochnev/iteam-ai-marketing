@@ -16,6 +16,7 @@ import {
   tasksApi,
   type AgentRun,
   type Content,
+  type ContentRevisionProgress,
   type Publication,
   type PublicationPlan,
   type Task,
@@ -68,6 +69,8 @@ export default function ContentDetailPage() {
   const [editComment, setEditComment] = useState("");
   const [revisionMode, setRevisionMode] = useState(false);
   const [revisionComment, setRevisionComment] = useState("");
+  const [revisionProgress, setRevisionProgress] = useState<ContentRevisionProgress | null>(null);
+  const [revisionClock, setRevisionClock] = useState(() => Date.now());
   const [rejectMode, setRejectMode] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
 
@@ -77,18 +80,21 @@ export default function ContentDetailPage() {
     try {
       const content = await contentApi.get(params.id);
       setItem(content);
-      const [campaign, sourceTask, sourceRuns, campaignPlans, campaignPublications] = await Promise.all([
+      const [campaign, sourceTask, sourceRuns, campaignPlans, campaignPublications, currentRevision] = await Promise.all([
         campaignsApi.get(content.campaign_id).catch(() => null),
         tasksApi.get(content.source_task_id).catch(() => null),
         agentRunsApi.list({ task_id: content.source_task_id }).catch(() => []),
         publicationPlansApi.list(content.campaign_id).catch(() => []),
         publicationsApi.listCampaign(content.campaign_id).catch(() => []),
+        contentApi.revisionProgress(content.id).catch(() => null),
       ]);
       setCampaignName(campaign?.name ?? "Кампания");
       setTask(sourceTask);
       setRuns(sourceRuns);
       setPlans(campaignPlans);
       setPublications(campaignPublications);
+      setRevisionProgress(currentRevision);
+      setRevisionClock(Date.now());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Не удалось загрузить материал.");
     } finally {
@@ -100,6 +106,20 @@ export default function ContentDetailPage() {
     if (!authLoading && !user) { router.replace("/login"); return; }
     if (user) void Promise.resolve().then(load);
   }, [authLoading, user, router, load]);
+
+  useEffect(() => {
+    if (!revisionProgress || ["COMPLETED", "FAILED", "CANCELLED"].includes(revisionProgress.task_status)) return;
+    const timer = window.setInterval(() => {
+      void contentApi.revisionProgress(params.id).then(async (next) => {
+        setRevisionProgress(next);
+        setRevisionClock(Date.now());
+        if (next?.task_status === "COMPLETED" || next?.agent_run_status === "COMPLETED") {
+          setItem(await contentApi.get(params.id));
+        }
+      }).catch(() => undefined);
+    }, 2500);
+    return () => window.clearInterval(timer);
+  }, [params.id, revisionProgress]);
 
   const plan = useMemo(() => plans.find((candidate) => candidate.items.some((planned) => planned.id === item?.publication_plan_item_id)), [plans, item?.publication_plan_item_id]);
   const planItem = plan?.items.find((planned) => planned.id === item?.publication_plan_item_id);
@@ -115,7 +135,7 @@ export default function ContentDetailPage() {
 
   async function approve() { if (!item) return; setBusy(true); try { setItem(await contentApi.approve(item.id)); setNotice("Материал утверждён."); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
   async function reject() { if (!item || !rejectComment.trim()) return; setBusy(true); try { setItem(await contentApi.reject(item.id, rejectComment)); setNotice("Материал отклонён."); setRejectMode(false); setRejectComment(""); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
-  async function revise() { if (!item || !revisionComment.trim()) return; setBusy(true); try { setItem(await contentApi.requestRevision(item.id, revisionComment)); setNotice("Запрос на доработку отправлен профильному AI-исполнителю."); setRevisionMode(false); setRevisionComment(""); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
+  async function revise() { if (!item || !revisionComment.trim()) return; setBusy(true); try { setItem(await contentApi.requestRevision(item.id, revisionComment)); const progress = await contentApi.revisionProgress(item.id); setRevisionProgress(progress); setRevisionClock(Date.now()); setNotice(progress ? "" : "Доработка поставлена в очередь"); setRevisionMode(false); setRevisionComment(""); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
   function beginEdit() { if (!item?.current_version) return; setDraftText(item.current_version.content); setEditComment(""); setEditMode(true); setRevisionMode(false); setRejectMode(false); }
   async function saveEdit() {
     if (!item?.current_version || !draftText.trim()) return;
@@ -136,6 +156,23 @@ export default function ContentDetailPage() {
   if (authLoading || loading) return <main><p role="status">Загружаем материал…</p></main>;
   if (error || !item) return <main className="page"><PageBreadcrumbs items={[{ label: "Контент", href: "/content" }, { label: "Материал" }]} /><div className="empty-state" role="alert"><h1>Не удалось открыть материал</h1><p>{error || "Материал не найден."}</p><button onClick={() => void load()}>Повторить</button></div></main>;
 
+  const revisionIsReady = revisionProgress?.task_status === "COMPLETED" || revisionProgress?.agent_run_status === "COMPLETED";
+  const revisionIsRunning = revisionProgress?.task_status === "IN_PROGRESS" || revisionProgress?.agent_run_status === "RUNNING";
+  const revisionIsStopped = revisionProgress?.task_status === "FAILED" || revisionProgress?.task_status === "CANCELLED" || revisionProgress?.agent_run_status === "FAILED" || revisionProgress?.agent_run_status === "CANCELLED";
+  const revisionIsActive = Boolean(revisionProgress && !revisionIsReady && !revisionIsStopped);
+  const revisionIsUnavailable = Boolean(revisionProgress && revisionProgress.task_status === "READY" && (!revisionProgress.agent_run_id || (revisionProgress.agent_run_status === "QUEUED" && revisionClock - Date.parse(revisionProgress.updated_at) >= 10_000)));
+  const revisionMessage = revisionIsReady
+    ? "Новая версия готова и ожидает согласования"
+    : revisionIsRunning
+      ? "SMM Manager дорабатывает материал…"
+      : revisionIsStopped
+        ? `Доработка остановлена${revisionProgress?.error_message ? `: ${revisionProgress.error_message}` : "."}`
+        : revisionIsUnavailable
+          ? "Задача создана, но исполнитель сейчас не запущен"
+          : revisionProgress
+            ? "Доработка поставлена в очередь"
+            : null;
+
   return (
     <main className="page">
       <PageBreadcrumbs items={[{ label: "Кампании", href: "/campaigns" }, { label: campaignName, href: `/campaigns/${item.campaign_id}` }, { label: "Контент", href: `/content?campaign_id=${item.campaign_id}` }, { label: item.title }]} />
@@ -145,6 +182,7 @@ export default function ContentDetailPage() {
       </header>
 
       {notice && <p className="notice" role="status">{notice}</p>}
+      {revisionProgress && revisionMessage && <section className={revisionIsStopped || revisionIsUnavailable ? "warning" : "notice"} aria-live="polite" aria-label="Статус доработки" role="status"><strong>{revisionMessage}</strong><span> · </span><Link href={`/tasks/${revisionProgress.task_id}`}>Открыть задачу</Link>{revisionProgress.agent_run_id && <details><summary>Технические сведения</summary><p>AgentRun: <code>{revisionProgress.agent_run_id}</code></p></details>}</section>}
       <section className="section-block" aria-label="Сведения о материале">
         <div className="section-heading"><h2>Карточка материала</h2><span className="subtle">{contentStatusHelp(item.status)}</span></div>
         <div className="metadata-grid">
@@ -157,7 +195,7 @@ export default function ContentDetailPage() {
         </div>
         {item.status === "WAITING_APPROVAL" && <div id="approval" className="content-stack" style={{ marginTop: "1rem" }}>
           <div className="card"><h3>Редакторское решение</h3><p className="subtle"><strong>Утвердить</strong> — разрешить дальнейшее планирование этой версии. <strong>Редактировать</strong> — сохранить ручную правку как новую версию. <strong>Отправить на доработку</strong> — создать задачу профильному AI-исполнителю. <strong>Отклонить</strong> — завершить согласование без публикации.</p>
-            <div className="actions"><button disabled={busy} onClick={() => void approve()}>Утвердить</button>{canEdit && <button className="secondary" disabled={busy} onClick={beginEdit}>Редактировать текст</button>}{canRevise && <button className="secondary" disabled={busy} onClick={() => { setRevisionMode(true); setEditMode(false); setRejectMode(false); }}>Отправить на доработку</button>}<button className="secondary" disabled={busy} onClick={() => { setRejectMode(true); setEditMode(false); setRevisionMode(false); }}>Отклонить</button></div>
+            <div className="actions"><button disabled={busy || revisionIsActive} onClick={() => void approve()}>Утвердить</button>{canEdit && <button className="secondary" disabled={busy || revisionIsActive} onClick={beginEdit}>Редактировать текст</button>}{canRevise && <button className="secondary" disabled={busy || revisionIsActive} onClick={() => { setRevisionMode(true); setEditMode(false); setRejectMode(false); }}>Отправить на доработку</button>}<button className="secondary" disabled={busy || revisionIsActive} onClick={() => { setRejectMode(true); setEditMode(false); setRevisionMode(false); }}>Отклонить</button></div>
           </div>
           {editMode && <form className="card" onSubmit={(event) => { event.preventDefault(); void saveEdit(); }}><h3>Ручная редактура</h3>{item.content_type === "SOCIAL_POST" && <p className="notice">Меняется только текст. Канал, время, пункт медиаплана и привязка к источникам сохраняются.</p>}<label>Текст материала<textarea aria-label="Текст материала" rows={14} value={draftText} onChange={(event) => setDraftText(event.target.value)} required /></label><label>Комментарий к версии<input aria-label="Комментарий к версии" value={editComment} onChange={(event) => setEditComment(event.target.value)} placeholder="Ручная редактура" /></label><p className="subtle">Сохранение создаст новую версию. Утверждение выполняется отдельным действием.</p><div className="actions"><button disabled={busy || !draftText.trim()} type="submit">Сохранить новую версию</button><button className="secondary" disabled={busy} type="button" onClick={() => setEditMode(false)}>Отмена</button></div></form>}
           {revisionMode && <form className="card" onSubmit={(event) => { event.preventDefault(); void revise(); }}><h3>Отправить на доработку</h3><label>Замечания редактора<textarea aria-label="Замечания редактора" rows={5} value={revisionComment} onChange={(event) => setRevisionComment(event.target.value)} required /></label><p className="subtle">{item.content_type === "SOCIAL_POST" ? "SMM Manager" : "AI-исполнитель"} получит точную текущую версию, замечания и зафиксированные источники. Результат станет новой версией и снова потребует утверждения.</p><div className="actions"><button disabled={busy || !revisionComment.trim()} type="submit">Поставить задачу на доработку</button><button className="secondary" disabled={busy} type="button" onClick={() => setRevisionMode(false)}>Отмена</button></div></form>}

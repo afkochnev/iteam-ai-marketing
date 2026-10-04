@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import CurrentUser, SessionDependency
 from app.core.errors import AppError as ContentAppError
 from app.models.agent import AgentStatus
+from app.models.agent_run import AgentRun
 from app.models.approval import Approval, ApprovalObjectType, ApprovalStatus
 from app.models.content import (
     ContentDerivation,
@@ -34,6 +35,7 @@ from app.schemas.content import (
     ContentManualEditRequest,
     ContentRejectionRequest,
     ContentResponse,
+    ContentRevisionProgress,
     ContentSourceResponse,
     ContentVersionResponse,
     ContentVersionSummary,
@@ -727,6 +729,49 @@ async def reject_content(
         raise AppError("CONTENT_REJECTION_COMMENT_REQUIRED", "Причина отклонения обязательна.", 422)
     return await _resolve_content(
         content_id, user, session, ApprovalStatus.REJECTED, payload.comment
+    )
+
+
+@router.get("/{content_id}/revision-status", response_model=ContentRevisionProgress | None)
+async def get_revision_status(
+    content_id: UUID,
+    _user: CurrentUser,
+    session: SessionDependency,
+) -> ContentRevisionProgress | None:
+    item = await session.get(ContentItem, content_id)
+    if item is None:
+        raise ContentAppError("CONTENT_NOT_FOUND", "Материал не найден.", 404)
+    task = await session.scalar(
+        select(Task)
+        .where(
+            Task.task_type == TaskType.CONTENT_REVISION,
+            Task.input_data["content_item_id"].as_string() == str(content_id),
+        )
+        .order_by(Task.created_at.desc())
+        .limit(1)
+    )
+    if task is None:
+        return None
+    run = await session.scalar(
+        select(AgentRun)
+        .where(AgentRun.task_id == task.id)
+        .order_by(AgentRun.created_at.desc())
+        .limit(1)
+    )
+    raw_created_version_id = task.output_data.get("content_version_id")
+    return ContentRevisionProgress(
+        task_id=task.id,
+        task_status=task.status,
+        agent_run_id=run.id if run else None,
+        agent_run_status=run.status if run else None,
+        error_code=run.error_code if run else None,
+        error_message=run.error_message if run else task.error_message,
+        base_content_version_id=UUID(str(task.input_data["base_content_version_id"])),
+        created_content_version_id=(
+            UUID(str(raw_created_version_id)) if raw_created_version_id else None
+        ),
+        created_at=task.created_at,
+        updated_at=max(task.updated_at, run.updated_at) if run else task.updated_at,
     )
 
 

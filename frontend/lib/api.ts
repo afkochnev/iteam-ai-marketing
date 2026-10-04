@@ -49,6 +49,7 @@ export interface ContentVersion extends ContentVersionSummary { content: string;
 export interface ContentApprovalHistory { id: string; subject_version: number; status: string; comment: string | null; reviewed_by_user_id: string | null; created_at: string; resolved_at: string | null; }
 export interface ContentListItem { current_version_id?: string | null; publication_plan_item_id?: string | null; plan_channel?: "TELEGRAM" | "VK" | null; plan_scheduled_at?: string | null; approved_version_id?: string | null; approved_version_number?: number | null; source_content_item_id?: string | null; source_content_item_title?: string | null; id: string; campaign_id: string; content_type: ContentType; title: string; status: ContentStatus; current_version_number: number | null; created_at: string; updated_at: string; parent_content_item_id?: string | null; channel?: "TELEGRAM" | "VK" | null; }
 export interface Content extends ContentListItem { source_task_id: string; author_agent_id: string; parent_content_item_id?: string | null; channel?: "TELEGRAM" | "VK" | null; approved_version_id?: string | null; current_version: ContentVersion | null; versions: ContentVersionSummary[]; approval_history?: ContentApprovalHistory[]; }
+export interface ContentRevisionProgress { task_id: string; task_status: TaskStatus; agent_run_id: string | null; agent_run_status: AgentRunStatus | null; error_code: string | null; error_message: string | null; base_content_version_id: string; created_content_version_id: string | null; created_at: string; updated_at: string; }
 export type PublicationStatus = "DRAFT" | "WAITING_APPROVAL" | "APPROVED" | "SCHEDULED" | "PUBLISHING" | "PUBLISHED" | "FAILED" | "CANCELLED";
 export interface PublicationProvenance { content_version_id: string; source_content_version_id: string; section_key: string; }
 export interface PublicationReconciliation { id: string; publication_id: string; operator_user_id: string; channel: "TELEGRAM" | "VK"; decision: "CONFIRMED_PUBLISHED" | "CONFIRMED_NOT_PUBLISHED"; external_id: string | null; external_url: string | null; external_published_at: string | null; note: string | null; created_at: string; }
@@ -179,6 +180,7 @@ export const contentApi = {
   approve: (id: string, comment?: string) => request<Content>(`/content/${id}/approve`, { method: "POST", body: JSON.stringify({ comment: comment || null }) }),
   reject: (id: string, comment: string) => request<Content>(`/content/${id}/reject`, { method: "POST", body: JSON.stringify({ comment }) }),
   requestRevision: (id: string, comment: string) => request<Content>(`/content/${id}/request-revision`, { method: "POST", body: JSON.stringify({ comment }) }),
+  revisionProgress: (id: string) => request<ContentRevisionProgress | null>(`/content/${id}/revision-status`),
   manualEdit: (id: string, payload: { content: string; expected_current_version_id: string; change_description?: string | null }) => request<Content>(`/content/${id}/manual-edit`, { method: "POST", body: JSON.stringify(payload) }),
 };
 export const publicationsApi = {
