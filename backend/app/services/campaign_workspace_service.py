@@ -51,6 +51,7 @@ from app.schemas.campaign_workspace import (
 )
 from app.services.campaign_change_service import CampaignChangeService
 from app.services.plan_item_smm_service import PlanItemSmmService
+from app.services.task_classification_service import classify_tasks
 
 
 class CampaignWorkspaceService:
@@ -85,6 +86,10 @@ class CampaignWorkspaceService:
 
         contents = await ContentRepository(self.session).list(campaign_id=campaign_id)
         tasks = await TaskRepository(self.session).list_tasks(campaign_id=campaign_id)
+        task_classifications = await classify_tasks(self.session, tasks)
+        attention_source_tasks = [
+            task for task in tasks if task_classifications[task.id][0] == "actionable"
+        ]
         plans = list(
             (
                 await self.session.scalars(
@@ -332,7 +337,7 @@ class CampaignWorkspaceService:
         ]
         issue_tasks = [
             self._task_summary(task, latest_runs.get(task.id), plan_item_by_id)
-            for task in tasks
+            for task in attention_source_tasks
             if task.status
             in {
                 TaskStatus.FAILED,
@@ -357,7 +362,7 @@ class CampaignWorkspaceService:
             current_plan,
             posts_by_item,
             publication_rows,
-            tasks,
+            attention_source_tasks,
             feedback,
             post_actions,
             change_state,

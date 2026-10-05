@@ -1,10 +1,12 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.task import TaskPriority, TaskStatus, TaskType
+
+TaskClassification = Literal["actionable", "superseded", "historical"]
 
 
 class TaskCreate(BaseModel):
@@ -94,6 +96,8 @@ class TaskListItem(BaseModel):
     deadline: datetime | None
     created_at: datetime
     updated_at: datetime
+    classification: TaskClassification = "historical"
+    classification_label: str | None = None
 
 
 class TaskResponse(TaskListItem):
@@ -163,4 +167,25 @@ def task_to_response(task: Any) -> TaskResponse:
 
 def task_to_list_item(task: Any) -> TaskListItem:
     response = task_to_response(task)
-    return TaskListItem.model_validate(response.model_dump())
+    classification: TaskClassification = (
+        "actionable"
+        if task.status
+        in {
+            TaskStatus.NEW,
+            TaskStatus.BLOCKED,
+            TaskStatus.READY,
+            TaskStatus.IN_PROGRESS,
+            TaskStatus.WAITING_REVIEW,
+            TaskStatus.WAITING_APPROVAL,
+            TaskStatus.FAILED,
+        }
+        else "historical"
+    )
+    label = (
+        "Историческая ошибка"
+        if classification == "historical" and task.status is TaskStatus.FAILED
+        else None
+    )
+    return TaskListItem.model_validate(
+        response.model_dump() | {"classification": classification, "classification_label": label}
+    )

@@ -146,6 +146,88 @@ async def test_reconciliation_published_is_durable_and_does_not_call_provider(
 
 
 @pytest.mark.integration
+async def test_scheduled_publication_version_replacement_is_atomic_and_audited(
+    db_session: AsyncSession,
+) -> None:
+    user, campaign, post, first = await _approved_post(db_session)
+    scheduled_at = datetime.now(UTC) + timedelta(days=2)
+    old = Publication(
+        campaign_id=campaign.id,
+        content_item_id=post.id,
+        content_version_id=first.id,
+        channel=post.channel,
+        status=PublicationStatus.SCHEDULED,
+        scheduled_at=scheduled_at,
+        approved_for_publish_at=datetime.now(UTC),
+        approved_for_publish_by=user.id,
+    )
+    db_session.add(old)
+    second = ContentVersion(
+        content_item_id=post.id,
+        version_number=2,
+        content="Approved revised post",
+        structured_content={"text_markdown": "Approved revised post"},
+        created_by_user_id=user.id,
+        change_description="Approved new edition",
+    )
+    db_session.add(second)
+    await db_session.flush()
+    second_approval = await ApprovalService(db_session).create_content_approval(
+        post.id,
+        2,
+        {
+            "content_item_id": str(post.id),
+            "content_version_id": str(second.id),
+            "version_number": 2,
+        },
+        post.author_agent_id,
+    )
+    second_approval.status = ApprovalStatus.APPROVED
+    second_approval.resolved_at = datetime.now(UTC)
+    post.current_version_id = second.id
+    await db_session.commit()
+
+    replacement = await PublicationService(db_session).replace_scheduled_version(old.id, user)
+
+    assert replacement.id != old.id
+    assert replacement.content_version_id == second.id
+    assert replacement.status is PublicationStatus.SCHEDULED
+    assert replacement.channel is old.channel
+    assert replacement.scheduled_at == scheduled_at
+    await db_session.refresh(old)
+    assert old.status is PublicationStatus.CANCELLED
+    assert old.content_version_id == first.id
+    event = await db_session.scalar(
+        select(ActivityLog).where(ActivityLog.event_type == "PUBLICATION_VERSION_REPLACED")
+    )
+    assert event is not None
+    assert event.user_id == user.id
+    assert event.metadata_["old_publication_id"] == str(old.id)
+    assert event.metadata_["new_publication_id"] == str(replacement.id)
+    assert event.metadata_["old_content_version_id"] == str(first.id)
+    assert event.metadata_["new_content_version_id"] == str(second.id)
+
+
+@pytest.mark.integration
+async def test_published_publication_version_cannot_be_replaced(db_session: AsyncSession) -> None:
+    user, campaign, post, first = await _approved_post(db_session)
+    old = Publication(
+        campaign_id=campaign.id,
+        content_item_id=post.id,
+        content_version_id=first.id,
+        channel=post.channel,
+        status=PublicationStatus.PUBLISHED,
+        scheduled_at=datetime.now(UTC),
+    )
+    db_session.add(old)
+    await db_session.commit()
+
+    with pytest.raises(AppError) as immutable:
+        await PublicationService(db_session).replace_scheduled_version(old.id, user)
+    assert immutable.value.code == "PUBLISHED_PUBLICATION_IMMUTABLE"
+
+
+@pytest.mark.integration
 async def test_reconciliation_not_published_unlocks_explicit_retry_only(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:

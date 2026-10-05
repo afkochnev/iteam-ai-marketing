@@ -94,6 +94,17 @@ async def cancel_publication(
 
 
 @router.post(
+    "/{publication_id}/replace-scheduled-version",
+    response_model=PublicationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def replace_scheduled_publication_version(
+    publication_id: UUID, user: CurrentUser, session: SessionDependency
+) -> PublicationResponse:
+    return await PublicationService(session).replace_scheduled_version(publication_id, user)
+
+
+@router.post(
     "/{publication_id}/publish-now",
     response_model=PublicationResponse,
     status_code=status.HTTP_202_ACCEPTED,

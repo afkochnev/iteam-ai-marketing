@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({ push: vi.fn(), list: vi.fn(), get: vi.fn(), cr
 vi.mock("next/navigation", () => ({ useRouter: () => ({ push: mocks.push, back: vi.fn() }), useParams: () => ({ id: "task-1" }) }));
 vi.mock("@/lib/api", async (importOriginal) => { const actual = await importOriginal<typeof import("@/lib/api")>(); return { ...actual, tasksApi: { list: mocks.list, get: mocks.get, create: mocks.create, update: mocks.update, start: mocks.start, complete: mocks.complete, cancel: mocks.cancel, run: mocks.run, retry: mocks.retry, addDependency: mocks.addDependency, removeDependency: mocks.removeDependency }, agentRunsApi: { list: mocks.runList, get: vi.fn() }, knowledgePacksApi: { list: mocks.packList, get: vi.fn() }, feedbackApi: { ...actual.feedbackApi, analyses: mocks.analyses }, campaignsApi: { ...actual.campaignsApi, list: mocks.campaignList }, agentsApi: { ...actual.agentsApi, list: mocks.agentList } }; });
 
-const task = { id: "task-1", campaign_id: "campaign-1", campaign: { id: "campaign-1", name: "Кампания" }, parent_task_id: null, parent_task: null, task_type: "MANUAL" as const, title: "Первая задача", description: "Описание", assigned_agent_id: null, assigned_agent: null, priority: "NORMAL" as const, status: "READY" as const, input_data: {}, output_data: {}, requires_approval: false, error_message: null, retry_count: 0, deadline: null, started_at: null, completed_at: null, dependencies: [], dependents: [], created_at: "2026-09-21T10:00:00Z", updated_at: "2026-09-21T10:00:00Z" };
+const task = { id: "task-1", campaign_id: "campaign-1", campaign: { id: "campaign-1", name: "Кампания" }, parent_task_id: null, parent_task: null, task_type: "MANUAL" as const, title: "Первая задача", description: "Описание", assigned_agent_id: null, assigned_agent: null, priority: "NORMAL" as const, status: "READY" as const, classification: "actionable" as const, classification_label: null, input_data: {}, output_data: {}, requires_approval: false, error_message: null, retry_count: 0, deadline: null, started_at: null, completed_at: null, dependencies: [], dependents: [], created_at: "2026-09-21T10:00:00Z", updated_at: "2026-09-21T10:00:00Z" };
 
 describe("Tasks UI", () => {
   beforeEach(() => { vi.clearAllMocks(); mocks.list.mockResolvedValue([task]); mocks.get.mockResolvedValue(task); mocks.runList.mockResolvedValue([]); mocks.packList.mockResolvedValue([]); mocks.analyses.mockResolvedValue([]); mocks.campaignList.mockResolvedValue([{ id: "campaign-1", name: "Кампания" }]); mocks.agentList.mockResolvedValue([]); });
@@ -19,6 +19,7 @@ describe("Tasks UI", () => {
   it("explains the task dashboard counts and separates urgent work from history", async () => {
     mocks.list.mockResolvedValue([
       { ...task, id: "failed", title: "Ошибка", status: "FAILED" },
+      { ...task, id: "superseded", title: "Старая ошибка", status: "FAILED", classification: "superseded", classification_label: "Заменена успешным выполнением" },
       { ...task, id: "ready", title: "Следующий шаг", status: "READY" },
       { ...task, id: "done", title: "Готово", status: "COMPLETED" },
     ]);
@@ -26,7 +27,11 @@ describe("Tasks UI", () => {
     expect(await screen.findByText("Ошибка")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Требуют внимания/ })).toHaveAttribute("title", "Ошибки и задачи, ожидающие зависимость");
     expect(screen.getByRole("link", { name: /Готовы к выполнению/ })).toHaveAttribute("title", "Можно запустить следующим шагом");
-    expect(screen.getByText("Показать завершённые задачи и историю · 1")).toBeInTheDocument();
+    expect(screen.getByText("Показать завершённые задачи и историю · 2")).toBeInTheDocument();
+    fireEvent.click(screen.getByText("Показать завершённые задачи и историю · 2"));
+    expect(await screen.findByText("Старая ошибка")).toBeInTheDocument();
+    expect(screen.getByText("Заменена успешным выполнением")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /Требуют внимания/ })).toHaveTextContent("1");
   });
 
   it("creates task and redirects", async () => { mocks.create.mockResolvedValue(task); render(<NewTaskPage />); await screen.findByText("Кампания"); fireEvent.change(screen.getByLabelText("Кампания *"), { target: { value: "campaign-1" } }); fireEvent.change(screen.getByLabelText("Название *"), { target: { value: "Первая задача" } }); fireEvent.click(screen.getByRole("button", { name: "Создать задачу" })); await waitFor(() => expect(mocks.create).toHaveBeenCalled()); expect(mocks.push).toHaveBeenCalledWith("/tasks/task-1"); });

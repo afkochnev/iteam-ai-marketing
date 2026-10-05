@@ -59,6 +59,7 @@ from app.services.agent_runner_service import RuntimeResult
 from app.services.approval_service import ApprovalService
 from app.services.campaign_service import CampaignService
 from app.services.feedback_service import FeedbackService
+from app.services.task_classification_service import classify_tasks
 from app.services.task_dispatcher_service import TaskDispatcherService
 from app.services.task_result_processors import result_processor_registry
 from app.services.task_service import TaskService
@@ -478,6 +479,252 @@ async def test_manual_social_edit_creates_immutable_version_and_preserves_plan_b
             db_session,
         )
     assert conflict.value.code == "CONTENT_VERSION_CONFLICT"
+
+
+@pytest.mark.asyncio
+async def test_manual_edit_of_approved_social_post_keeps_approved_version_and_schedule(
+    db_session: AsyncSession,
+) -> None:
+    task, campaign, article_version = await smm_fixture(db_session)
+    plan, plan_item = await add_plan_item(db_session, campaign, article_version)
+    post, first, first_approval = await add_plan_bound_post(
+        db_session, task, plan, plan_item, article_version
+    )
+    user = await db_session.scalar(select(User))
+    assert user is not None
+    approved = await approve_content(
+        post.id, ContentApprovalRequest(comment="Утверждена версия 1"), user, db_session
+    )
+    assert approved.approved_version_id == first.id
+    scheduled = Publication(
+        campaign_id=campaign.id,
+        content_item_id=post.id,
+        content_version_id=first.id,
+        channel=plan_item.channel,
+        status=PublicationStatus.SCHEDULED,
+        scheduled_at=plan_item.scheduled_at,
+        approved_for_publish_at=datetime.now(UTC),
+        approved_for_publish_by=user.id,
+    )
+    db_session.add(scheduled)
+    await db_session.commit()
+
+    response = await manual_edit_content(
+        post.id,
+        ContentManualEditRequest(
+            content="Новая редакция сохраняет факты и вывод из утверждённого материала.",
+            expected_current_version_id=first.id,
+            change_description="Новая редакция после утверждения",
+        ),
+        user,
+        db_session,
+    )
+
+    assert response.status is ContentStatus.WAITING_APPROVAL
+    assert response.current_version is not None
+    second_id = response.current_version.id
+    assert response.current_version.version_number == 2
+    assert response.current_version.created_by_user_id == user.id
+    assert response.approved_version_id == first.id
+    await db_session.refresh(first_approval)
+    assert first_approval.status is ApprovalStatus.APPROVED
+    new_approval = await db_session.scalar(
+        select(Approval).where(
+            Approval.object_id == post.id,
+            Approval.subject_snapshot["content_version_id"].as_string() == str(second_id),
+        )
+    )
+    assert new_approval is not None and new_approval.status is ApprovalStatus.PENDING
+    await db_session.refresh(scheduled)
+    assert scheduled.status is PublicationStatus.SCHEDULED
+    assert scheduled.content_version_id == first.id
+    assert scheduled.scheduled_at == plan_item.scheduled_at
+
+
+@pytest.mark.asyncio
+async def test_approved_social_post_can_start_revision_without_revoking_approval(
+    db_session: AsyncSession,
+) -> None:
+    task, campaign, article_version = await smm_fixture(db_session)
+    plan, plan_item = await add_plan_item(db_session, campaign, article_version)
+    post, first, first_approval = await add_plan_bound_post(
+        db_session, task, plan, plan_item, article_version
+    )
+    user = await db_session.scalar(select(User))
+    assert user is not None
+    approved = await approve_content(
+        post.id, ContentApprovalRequest(comment="Утверждена версия 1"), user, db_session
+    )
+    assert approved.status is ContentStatus.APPROVED
+    assert approved.approved_version_id == first.id
+    scheduled = Publication(
+        campaign_id=campaign.id,
+        content_item_id=post.id,
+        content_version_id=first.id,
+        channel=plan_item.channel,
+        status=PublicationStatus.SCHEDULED,
+        scheduled_at=plan_item.scheduled_at,
+        approved_for_publish_at=datetime.now(UTC),
+        approved_for_publish_by=user.id,
+    )
+    db_session.add(scheduled)
+    await db_session.commit()
+
+    await request_revision(
+        post.id,
+        RequiredApprovalComment(comment="Сделать начало менее формальным."),
+        user,
+        db_session,
+    )
+    revision = await db_session.scalar(
+        select(Task).where(
+            Task.task_type == TaskType.CONTENT_REVISION,
+            Task.input_data["content_item_id"].as_string() == str(post.id),
+        )
+    )
+    assert revision is not None
+    assert revision.status is TaskStatus.READY
+    revision_agent = await db_session.get(Agent, revision.assigned_agent_id)
+    assert revision_agent is not None and revision_agent.slug == "smm_manager"
+    assert revision.input_data["base_content_version_id"] == str(first.id)
+    assert revision.input_data["approved_base_approval_id"] == str(first_approval.id)
+    assert revision.input_data["plan_channel"] == plan_item.channel.value
+    assert revision.input_data["scheduled_at"] == plan_item.scheduled_at.isoformat()
+    assert revision.input_data["source_content_version_id"] == str(article_version.id)
+    assert revision.input_data["source_claim_ids"] == plan_item.source_claim_ids
+    assert "approval_id" not in revision.input_data
+    await db_session.refresh(first_approval)
+    await db_session.refresh(post)
+    await db_session.refresh(scheduled)
+    assert first_approval.status is ApprovalStatus.APPROVED
+    assert post.status is ContentStatus.APPROVED
+    assert post.current_version_id == first.id
+    assert scheduled.status is PublicationStatus.SCHEDULED
+    assert scheduled.content_version_id == first.id
+
+    with pytest.raises(AppError) as duplicate:
+        await request_revision(
+            post.id,
+            RequiredApprovalComment(comment="Повторный запрос."),
+            user,
+            db_session,
+        )
+    assert duplicate.value.code == "CONTENT_REVISION_ALREADY_REQUESTED"
+
+    run = await db_session.scalar(select(AgentRun).where(AgentRun.task_id == revision.id))
+    assert run is not None
+    run_service = AgentRunService(db_session)
+    claimed = await run_service.claim(run.id)
+    assert claimed is not None
+    snapshot, task_input, runtime_context, _trace = claimed
+    assert snapshot.output_type is SingleSocialPostResult
+    assert runtime_context.output_task_type is TaskType.CREATE_SOCIAL_POSTS
+    assert str(first.id) in task_input
+    await add_read_audit(db_session, run.id, article_version)
+    await db_session.commit()
+    revised_text = "Практический вывод сохраняется; изложение стало яснее."
+    await run_service.finish_success(
+        run.id,
+        RuntimeResult(
+            {
+                "sufficient": True,
+                "pack": {
+                    "strategy_summary": "Один утверждённый плановый пост.",
+                    "posts": [
+                        {
+                            "key": "revision_v2",
+                            "title": "Модель не меняет channel",
+                            "text_markdown": revised_text,
+                            "cta": "",
+                            "sources": [
+                                {
+                                    "content_version_id": str(article_version.id),
+                                    "section_key": "problem",
+                                }
+                            ],
+                            "suggested_publish_order": 1,
+                        }
+                    ],
+                },
+            },
+            1,
+            12,
+            8,
+            20,
+            None,
+        ),
+    )
+
+    await db_session.refresh(post)
+    await db_session.refresh(first_approval)
+    await db_session.refresh(scheduled)
+    second = await db_session.get(ContentVersion, post.current_version_id)
+    assert second is not None
+    assert second.content_item_id == post.id
+    assert second.version_number == 2
+    assert second.content == revised_text
+    assert second.source_agent_run_id == run.id
+    assert post.status is ContentStatus.WAITING_APPROVAL
+    assert post.channel is plan_item.channel
+    assert first_approval.status is ApprovalStatus.APPROVED
+    new_approval = await db_session.scalar(
+        select(Approval).where(
+            Approval.object_id == post.id,
+            Approval.subject_snapshot["content_version_id"].as_string() == str(second.id),
+        )
+    )
+    assert new_approval is not None and new_approval.status is ApprovalStatus.PENDING
+    assert scheduled.status is PublicationStatus.SCHEDULED
+    assert scheduled.content_version_id == first.id
+    assert scheduled.scheduled_at == plan_item.scheduled_at
+
+
+@pytest.mark.asyncio
+async def test_failed_plan_bound_smm_tasks_are_superseded_by_downstream_post(
+    db_session: AsyncSession,
+) -> None:
+    source_task, campaign, article_version = await smm_fixture(db_session)
+    plan, plan_item = await add_plan_item(db_session, campaign, article_version)
+    smm_agent = await db_session.get(Agent, source_task.assigned_agent_id)
+    assert smm_agent is not None and smm_agent.slug == "smm_manager"
+    failed_tasks = []
+    for index in range(2):
+        failed = await TaskService(db_session).create_task(
+            TaskCreate(
+                campaign_id=campaign.id,
+                task_type=TaskType.CREATE_SOCIAL_POSTS,
+                title=f"Failed plan-bound task {index}",
+                assigned_agent_id=smm_agent.id,
+                input_data={
+                    "publication_plan_id": str(plan.id),
+                    "publication_plan_item_id": str(plan_item.id),
+                    "source_content_item_id": str(plan_item.source_content_item_id),
+                    "source_content_version_id": str(plan_item.source_content_version_id),
+                },
+            )
+        )
+        failed.status = TaskStatus.FAILED
+        failed_tasks.append(failed)
+    await db_session.commit()
+
+    await add_plan_bound_post(db_session, source_task, plan, plan_item, article_version)
+    classifications = await classify_tasks(db_session, failed_tasks)
+
+    for failed in failed_tasks:
+        assert failed.status is TaskStatus.FAILED
+        assert classifications[failed.id] == ("superseded", "Заменена успешным выполнением")
+
+    still_actionable = await TaskService(db_session).create_task(
+        TaskCreate(
+            campaign_id=campaign.id,
+            task_type=TaskType.MANUAL,
+            title="Unrelated failure",
+        )
+    )
+    still_actionable.status = TaskStatus.FAILED
+    await db_session.flush()
+    classifications = await classify_tasks(db_session, [*failed_tasks, still_actionable])
+    assert classifications[still_actionable.id][0] == "actionable"
 
 
 @pytest.mark.asyncio
