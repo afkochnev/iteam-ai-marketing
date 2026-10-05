@@ -96,6 +96,8 @@ describe("Content and approvals UI", () => {
     expect(screen.getByRole("button", { name: "Создать новую редакцию" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Отправить на доработку" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Отклонить" })).not.toBeInTheDocument();
+    expect(screen.getByText("Уже запланирована публикация версии v2.")).toBeInTheDocument();
+    expect(screen.getByText("Если вы создадите новую редакцию, запланированная публикация останется привязана к v2. Новая версия не заменит её автоматически.")).toBeInTheDocument();
     expect(screen.getByText(/Публикация:/)).toBeInTheDocument();
   });
 
@@ -120,6 +122,29 @@ describe("Content and approvals UI", () => {
     render(<ContentDetailPage />);
     expect(await screen.findByText("Запланирована публикация версии v2. Новая редакция v3 не заменит её автоматически.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Заменить версию в запланированной публикации" })).toBeInTheDocument();
+  });
+
+  it("keeps published-version history immutable without showing a future replacement warning", async () => {
+    mocks.get.mockResolvedValue({
+      ...article,
+      content_type: "SOCIAL_POST",
+      status: "APPROVED",
+      title: "Пост с опубликованной версией",
+      approved_version_id: "post-v3",
+      current_version_number: 3,
+      publication_plan_item_id: "plan-item-1",
+      current_version: { ...article.current_version, id: "post-v3", version_number: 3, content: "Новая утверждённая версия" },
+      versions: [
+        { ...article.current_version, id: "post-v2", version_number: 2 },
+        { ...article.current_version, id: "post-v3", version_number: 3 },
+      ],
+    });
+    mocks.plansList.mockResolvedValue([{ id: "plan-1", campaign_id: "campaign-1", status: "APPROVED", planning_horizon_start: article.created_at, planning_horizon_end: article.updated_at, timezone_policy: "UTC", created_by_user_id: "user-1", generated_by_agent_run_id: null, feedback_analysis_id: null, approved_at: article.updated_at, approved_by_user_id: "user-1", items: [{ id: "plan-item-1", position: 1, scheduled_at: "2026-10-07T09:00:00Z", channel: "TELEGRAM", source_content_item_id: "article-1", source_content_version_id: "article-v1", topic: "Тема", angle: "Ракурс", purpose: "Цель", format: "post", message_brief: "Бриф", source_claim_ids: [], source_support_summary: null, status: "PLANNED", near_publication_warnings: [] }] }]);
+    mocks.publicationList.mockResolvedValue([{ id: "published-v2", campaign_id: "campaign-1", content_item_id: "content-1", content_version_id: "post-v2", channel: "TELEGRAM", status: "PUBLISHED", scheduled_at: "2026-10-07T09:00:00Z", published_at: "2026-10-07T09:00:00Z", created_at: article.created_at, updated_at: article.updated_at }]);
+    render(<ContentDetailPage />);
+    expect(await screen.findByText("Опубликованная версия v2 сохранена в истории. Заменить опубликованную публикацию нельзя.")).toBeInTheDocument();
+    expect(screen.queryByText(/Новая редакция v3 не заменит её автоматически/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Заменить версию в запланированной публикации" })).not.toBeInTheDocument();
   });
 
   it("saves a manual edit as a separate version without approving it", async () => {
@@ -169,20 +194,21 @@ describe("Content and approvals UI", () => {
       id: "post-1",
       content_type: "SOCIAL_POST",
       title: "Пост",
-      current_version_number: 2,
+      status: "WAITING_APPROVAL",
+      current_version_number: 3,
       channel: "TELEGRAM",
       publication_plan_item_id: "plan-item-1",
-      approved_version_id: "post-v1",
-      current_version: { ...article.current_version, id: "post-v2", version_number: 2, content: "Ручная версия", created_by_user_id: "user-1", derivations: [{ source_content_item_id: "article-1", source_content_item_title: "Статья", source_content_version_id: "article-v1", source_version_number: 1, section_key: "problem" }] },
+      approved_version_id: "post-v2",
+      current_version: { ...article.current_version, id: "post-v3", version_number: 3, content: "Ручная версия", created_by_user_id: "user-1", derivations: [{ source_content_item_id: "article-1", source_content_item_title: "Статья", source_content_version_id: "article-v1", source_version_number: 1, section_key: "problem" }] },
       versions: [
-        { id: "post-v1", version_number: 1, created_at: article.created_at, change_description: "AI", created_by_agent_id: "smm-1" },
-        { id: "post-v2", version_number: 2, created_at: article.updated_at, change_description: "Ручная редактура", created_by_user_id: "user-1" },
+        { id: "post-v2", version_number: 2, created_at: article.created_at, change_description: "AI", created_by_agent_id: "smm-1" },
+        { id: "post-v3", version_number: 3, created_at: article.updated_at, change_description: "Ручная редактура", created_by_user_id: "user-1" },
       ],
     });
     mocks.plansList.mockResolvedValue([{ id: "plan-1", campaign_id: "campaign-1", status: "APPROVED", planning_horizon_start: article.created_at, planning_horizon_end: article.updated_at, timezone_policy: "UTC", created_by_user_id: "user-1", generated_by_agent_run_id: null, feedback_analysis_id: null, approved_at: article.updated_at, approved_by_user_id: "user-1", items: [{ id: "plan-item-1", position: 1, scheduled_at: article.updated_at, channel: "TELEGRAM", source_content_item_id: "article-1", source_content_version_id: "article-v1", topic: "Тема", angle: "Ракурс", purpose: "Цель", format: "post", message_brief: "Бриф", source_claim_ids: ["claim-1"], source_support_summary: "Опора", status: "PLANNED", near_publication_warnings: [] }] }]);
-    mocks.publicationList.mockResolvedValue([{ id: "publication-1", campaign_id: "campaign-1", content_item_id: "post-1", content_version_id: "post-v1", channel: "TELEGRAM", status: "SCHEDULED", scheduled_at: article.updated_at, approved_for_publish_at: article.updated_at, approved_for_publish_by: "user-1", external_id: null, external_url: null, published_at: null, failure_code: null, failure_message: null, retry_count: 0, created_at: article.created_at, updated_at: article.updated_at, provenance: [] }]);
+    mocks.publicationList.mockResolvedValue([{ id: "publication-1", campaign_id: "campaign-1", content_item_id: "post-1", content_version_id: "post-v2", channel: "TELEGRAM", status: "SCHEDULED", scheduled_at: article.updated_at, approved_for_publish_at: article.updated_at, approved_for_publish_by: "user-1", external_id: null, external_url: null, published_at: null, failure_code: null, failure_message: null, retry_count: 0, created_at: article.created_at, updated_at: article.updated_at, provenance: [] }]);
     render(<ContentDetailPage />);
-    expect(await screen.findByText(/Запланирована публикация версии v1. Новая редакция v2 не заменит её автоматически./)).toBeInTheDocument();
+    expect(await screen.findByText(/Запланирована публикация версии v2. Новая редакция v3 не заменит её автоматически./)).toBeInTheDocument();
     expect(screen.getByText(/Источники и provenance унаследованы/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Запланировать публикацию" })).not.toBeInTheDocument();
   });
