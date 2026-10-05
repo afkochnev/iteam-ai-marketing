@@ -64,6 +64,7 @@ services:
     restart: unless-stopped
     environment: &ai-worker-environment
       WORKER_ROLE: ai
+      SCHEDULER_ROLE: ""
       TELEGRAM_PUBLISHING_ENABLED: "false"
       VK_PUBLISHING_ENABLED: "false"
       TELEGRAM_BOT_TOKEN: ""
@@ -79,12 +80,31 @@ services:
       <<: *ai-worker-environment
       WORKER_ROLE: ai_control
 
+  ai_scheduler:
+    <<: *worker
+    command: celery -A app.workers.celery_app:celery_app beat --loglevel=INFO --schedule=/tmp/ai-celerybeat-schedule
+    restart: unless-stopped
+    environment:
+      <<: *ai-worker-environment
+      WORKER_ROLE: ""
+      SCHEDULER_ROLE: ai
+
+  publication_scheduler:
+    <<: *worker
+    command: celery -A app.workers.celery_app:celery_app beat --loglevel=INFO --schedule=/tmp/publication-celerybeat-schedule
+    profiles: [publishing]
+    environment:
+      WORKER_ROLE: ""
+      SCHEDULER_ROLE: publication
+      OPENAI_API_KEY: ""
+
   publication_worker:
     <<: *worker
     command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --queues=publication
     profiles: [publishing]
     environment:
       WORKER_ROLE: publication
+      SCHEDULER_ROLE: ""
       OPENAI_API_KEY: ""
 
   publication_control_worker:
@@ -93,6 +113,7 @@ services:
     profiles: [publishing]
     environment:
       WORKER_ROLE: publication_control
+      SCHEDULER_ROLE: ""
       OPENAI_API_KEY: ""
 
   metrics_worker:
@@ -101,6 +122,7 @@ services:
     profiles: [publishing]
     environment:
       WORKER_ROLE: metrics
+      SCHEDULER_ROLE: ""
       OPENAI_API_KEY: ""
 
   frontend:

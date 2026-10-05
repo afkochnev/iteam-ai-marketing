@@ -8,6 +8,7 @@ class Settings(BaseSettings):
     app_name: str = "iTeam AI Marketing Department"
     app_env: str = "development"
     worker_role: str | None = None
+    scheduler_role: str | None = None
     app_secret: str = "development-only-change-me"
     database_url: str = "postgresql+asyncpg://iteam:iteam@postgres:5432/iteam"
     redis_url: str = "redis://redis:6379/0"
@@ -92,6 +93,21 @@ class Settings(BaseSettings):
         # Compose clears this optional integer along with the publication tokens.
         return None if isinstance(value, str) and not value.strip() else value
 
+    @field_validator("worker_role", "scheduler_role", mode="before")
+    @classmethod
+    def normalize_empty_runtime_role(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
+    def validate_scheduler_capabilities(self) -> None:
+        if self.scheduler_role is None:
+            return
+        if self.scheduler_role not in {"ai", "publication"}:
+            raise RuntimeError("SCHEDULER_ROLE is invalid")
+        if self.worker_role is not None:
+            raise RuntimeError("WORKER_ROLE and SCHEDULER_ROLE must not be combined")
+        if self.scheduler_role == "ai":
+            self._validate_ai_publication_capabilities("AI scheduler")
+
     def validate_worker_capabilities(self) -> None:
         # API/producers leave WORKER_ROLE unset; workers declare their boundary.
         if self.worker_role is None:
@@ -106,6 +122,9 @@ class Settings(BaseSettings):
             raise RuntimeError("WORKER_ROLE is invalid")
         if self.worker_role not in {"ai", "ai_control"}:
             return
+        self._validate_ai_publication_capabilities("AI worker")
+
+    def _validate_ai_publication_capabilities(self, process: str) -> None:
         publication_capabilities = {
             "TELEGRAM_PUBLISHING_ENABLED": self.telegram_publishing_enabled,
             "VK_PUBLISHING_ENABLED": self.vk_publishing_enabled,
@@ -117,7 +136,7 @@ class Settings(BaseSettings):
         errors = [name for name, present in publication_capabilities.items() if present]
         if errors:
             raise RuntimeError(
-                "AI worker publication capability is forbidden; clear: " + ", ".join(errors)
+                f"{process} publication capability is forbidden; clear: " + ", ".join(errors)
             )
 
     def validate_redis_isolation(self) -> None:

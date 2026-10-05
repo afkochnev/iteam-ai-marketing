@@ -17,6 +17,7 @@ from app.services.agent_run_service import AgentRunService
 from app.services.knowledge_service import KnowledgeService
 from app.workers import agent_worker, dispatcher_worker, metrics_worker, telegram_worker, vk_worker
 from app.workers.celery_app import celery_app
+from app.workers.scheduler_config import build_beat_schedule
 
 
 @pytest.fixture
@@ -68,6 +69,8 @@ def assert_message(app, task_name, expected_queue, *, options=None):
         ("sync_recent_publication_metrics", "metrics"),
         ("index_knowledge_item", "ai"),
         ("dispatch_ready_tasks", "ai_control"),
+        ("recover_stuck_ai_tasks", "ai_control"),
+        ("recover_stuck_publications", "publication_control"),
         ("recover_stuck_tasks", "unrouted"),
         ("unknown_business_task", "unrouted"),
     ],
@@ -95,16 +98,17 @@ def test_declared_queues_exclude_legacy_default():
 
 
 @pytest.mark.parametrize(
-    ("entry_name", "expected_queue"),
+    ("role", "entry_name", "expected_queue"),
     [
-        ("dispatch-ready-ai-tasks", "ai_control"),
-        ("recover-stuck-tasks", "unrouted"),
-        ("dispatch-due-publications", "publication_control"),
-        ("sync-recent-publication-metrics", "metrics"),
+        ("ai", "dispatch-ready-ai-tasks", "ai_control"),
+        ("ai", "recover-stuck-ai-tasks", "ai_control"),
+        ("publication", "dispatch-due-publications", "publication_control"),
+        ("publication", "recover-stuck-publications", "publication_control"),
+        ("publication", "sync-recent-publication-metrics", "metrics"),
     ],
 )
-def test_beat_uses_explicit_queue(broker_app, entry_name, expected_queue):
-    entry = celery_app.conf.beat_schedule[entry_name]
+def test_beat_uses_explicit_queue(broker_app, role, entry_name, expected_queue):
+    entry = build_beat_schedule(role, settings)[entry_name]
     assert entry["options"]["queue"] == expected_queue
     assert_message(broker_app, entry["task"], expected_queue, options=entry["options"])
 

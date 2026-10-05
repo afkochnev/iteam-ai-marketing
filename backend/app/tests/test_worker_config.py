@@ -87,16 +87,16 @@ def test_worker_consumes_only_owned_queue(compose_config, service_name, queue):
     assert queue_options == [f"--queues={queue}"]
 
 
-def test_no_combined_worker_scheduler_or_unrouted_consumer(compose_config):
+def test_no_combined_worker_or_unrouted_consumer(compose_config):
     workers = {}
     for name, service in compose_config["services"].items():
         command = worker_command(service) if "command" in service else []
         if "celery" not in command:
             continue
-        assert "beat" not in command
         assert "--beat" not in command
         assert "-B" not in command
         if "worker" in command:
+            assert "beat" not in command
             workers[name] = service
             queues = next(arg for arg in command if arg.startswith("--queues="))
             assert "unrouted" not in queues.partition("=")[2].split(",")
@@ -187,6 +187,7 @@ def import_worker_app(role, capabilities=None):
     environment.update(
         {
             "WORKER_ROLE": role,
+            "SCHEDULER_ROLE": "",
             "APP_ENV": "production",
             "DATABASE_URL": "postgresql+asyncpg://test:test@localhost:5432/worker_config",
             "REDIS_URL": "redis://localhost:6379/15",
