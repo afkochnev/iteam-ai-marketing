@@ -121,11 +121,15 @@ async def publish_now(
     if publication.channel.value == "VK":
         from app.workers.vk_worker import publish_vk_publication
 
-        publish_vk_publication.delay(str(publication.id), row.execution_token)
+        publish_vk_publication.apply_async(
+            args=[str(publication.id), row.execution_token], queue="publication"
+        )
     else:
         from app.workers.telegram_worker import publish_telegram_publication
 
-        publish_telegram_publication.delay(str(publication.id), row.execution_token)
+        publish_telegram_publication.apply_async(
+            args=[str(publication.id), row.execution_token], queue="publication"
+        )
     return publication
 
 
@@ -179,11 +183,15 @@ async def retry_publication(
     if claimed.channel.value == "VK":
         from app.workers.vk_worker import publish_vk_publication
 
-        publish_vk_publication.delay(str(claimed.id), row.execution_token)
+        publish_vk_publication.apply_async(
+            args=[str(claimed.id), row.execution_token], queue="publication"
+        )
     else:
         from app.workers.telegram_worker import publish_telegram_publication
 
-        publish_telegram_publication.delay(str(claimed.id), row.execution_token)
+        publish_telegram_publication.apply_async(
+            args=[str(claimed.id), row.execution_token], queue="publication"
+        )
     return claimed
 
 
@@ -280,7 +288,7 @@ async def sync_publication_metrics(
         )
     from app.workers.metrics_worker import sync_publication_metrics as task
 
-    task.delay(str(publication_id))
+    task.apply_async(args=[str(publication_id)], queue="metrics")
     return PublicationMetricsResponse.model_validate(
         await MetricsService(session).publication_metrics(publication_id)
     )

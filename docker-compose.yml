@@ -50,7 +50,7 @@ services:
       context: ./backend
       args:
         BUILD_SHA: ${BUILD_SHA:-unknown}
-    command: celery -A app.workers.celery_app:celery_app worker --beat --loglevel=INFO
+    command: celery -A app.workers.celery_app:celery_app worker --beat --loglevel=INFO --queues=ai,ai_control,publication,publication_control,metrics
     env_file: .env
     stop_grace_period: 210s
     depends_on:
