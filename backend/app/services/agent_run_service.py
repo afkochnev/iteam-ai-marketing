@@ -517,15 +517,10 @@ class AgentRunService:
         try:
             from app.workers.agent_worker import execute_agent_run
 
-            queue = "ai_live_test" if run.input_data.get("isolated_ai_execution") else None
-            if queue is None and countdown == 0:
-                result = execute_agent_run.delay(str(run.id))
-            elif countdown > 0:
-                result = execute_agent_run.apply_async(
-                    args=[str(run.id)], countdown=countdown, queue=queue
-                )
-            else:
-                result = execute_agent_run.apply_async(args=[str(run.id)], queue=queue)
+            queue = "ai_live_test" if run.input_data.get("isolated_ai_execution") else "ai"
+            result = execute_agent_run.apply_async(
+                args=[str(run.id)], countdown=countdown, queue=queue
+            )
             await self.repository.update(run, {"queue_job_id": result.id})
             await self.session.commit()
         except Exception as exc:

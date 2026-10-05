@@ -565,10 +565,11 @@ async def test_retry_accepts_stale_and_timeout_index_failures(
     item_id = item.id
     enqueued: list[str] = []
 
-    def enqueue(queued_id: str) -> None:
-        enqueued.append(queued_id)
+    def enqueue(*, args: list[str], queue: str) -> None:
+        assert queue == "ai"
+        enqueued.append(args[0])
 
-    monkeypatch.setattr(index_knowledge_item, "delay", enqueue)
+    monkeypatch.setattr(index_knowledge_item, "apply_async", enqueue)
     retried = await KnowledgeService(db_session).retry(item_id)
 
     assert retried.id == item_id
@@ -591,7 +592,11 @@ async def test_retry_api_serializes_server_timestamps_without_missing_greenlet(
     await db_session.commit()
     item_id = item.id
     enqueued: list[str] = []
-    monkeypatch.setattr(index_knowledge_item, "delay", lambda queued_id: enqueued.append(queued_id))
+    monkeypatch.setattr(
+        index_knowledge_item,
+        "apply_async",
+        lambda *, args, queue: enqueued.append(args[0]),
+    )
     await login(client, owner)
 
     response = await client.post(f"/api/v1/knowledge/items/{item_id}/retry")
@@ -619,7 +624,11 @@ async def test_stale_without_openai_file_retries_and_uploads_once(
     await db_session.commit()
     item_id = item.id
     enqueued: list[str] = []
-    monkeypatch.setattr(index_knowledge_item, "delay", lambda queued_id: enqueued.append(queued_id))
+    monkeypatch.setattr(
+        index_knowledge_item,
+        "apply_async",
+        lambda *, args, queue: enqueued.append(args[0]),
+    )
 
     retried = await KnowledgeService(db_session).retry(item_id)
     assert retried.id == item_id
@@ -648,7 +657,7 @@ async def test_timeout_with_existing_file_reuses_external_id(
     item.error_code = "KNOWLEDGE_INDEX_TIMEOUT"
     await db_session.commit()
     item_id = item.id
-    monkeypatch.setattr(index_knowledge_item, "delay", lambda _queued_id: None)
+    monkeypatch.setattr(index_knowledge_item, "apply_async", lambda *, args, queue: None)
     await KnowledgeService(db_session).retry(item_id)
 
     provider = FakeProvider()
@@ -697,10 +706,11 @@ async def test_retry_is_lock_protected_against_duplicate_enqueue(
     item_id = item.id
     enqueued: list[str] = []
 
-    def enqueue(queued_id: str) -> None:
-        enqueued.append(queued_id)
+    def enqueue(*, args: list[str], queue: str) -> None:
+        assert queue == "ai"
+        enqueued.append(args[0])
 
-    monkeypatch.setattr(index_knowledge_item, "delay", enqueue)
+    monkeypatch.setattr(index_knowledge_item, "apply_async", enqueue)
     first = await KnowledgeService(db_session).retry(item_id)
     assert first.status is KnowledgeItemStatus.INDEXING
     with pytest.raises(AppError, match="нельзя повторно"):
@@ -718,10 +728,11 @@ async def test_concurrent_retry_clicks_enqueue_once(
     item_id = item.id
     enqueued: list[str] = []
 
-    def enqueue(queued_id: str) -> None:
-        enqueued.append(queued_id)
+    def enqueue(*, args: list[str], queue: str) -> None:
+        assert queue == "ai"
+        enqueued.append(args[0])
 
-    monkeypatch.setattr(index_knowledge_item, "delay", enqueue)
+    monkeypatch.setattr(index_knowledge_item, "apply_async", enqueue)
 
     async def request_retry() -> object:
         async with async_session_factory() as session:

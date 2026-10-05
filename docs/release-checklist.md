@@ -8,8 +8,13 @@
 - [ ] Run `alembic upgrade head` as the one-shot migration step.
 - [ ] Run `scripts/release_check.sh` and build all images.
 - [ ] Verify admin bootstrap, seeded agents/tools, and configured prompts.
-- [ ] Start backend, worker and Beat; verify `/health`, `/health/ready`, task
-      registration and both Beat schedules.
+- [ ] Start the default AI-only runtime; verify `/health`, `/health/ready`,
+      `ai_worker` listens only on `ai`, and the AI beat schedule has no publication
+      or metrics entries.
+- [ ] Verify AI worker publishing flags are false and Telegram/VK credentials
+      are absent or blank.
+- [ ] Keep the `publishing` Compose profile off unless publication execution is
+      separately approved and configured.
 - [ ] Start frontend behind TLS/reverse proxy; verify security headers.
 - [ ] Run `scripts/smoke.sh` and the mocked E2E suite.
 - [ ] Confirm no external publishing integration is enabled.

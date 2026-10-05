@@ -44,6 +44,14 @@ from app.services.reconciliation_integrity import reconciliation_integrity_repor
 from app.tests.test_smm_integration import smm_fixture
 
 
+def capture_publication_enqueue(calls: list[tuple[str, str | None]]):
+    def capture(*, args: list[str], queue: str) -> None:
+        assert queue == "publication"
+        calls.append((args[0], args[1]))
+
+    return capture
+
+
 async def _approved_post(session: AsyncSession):
     _task, campaign, article_version = await smm_fixture(session)
     user = await session.scalar(select(User))
@@ -406,8 +414,8 @@ async def test_publish_now_task_uses_claim_execution_token(
     calls: list[tuple[str, str | None]] = []
     monkeypatch.setattr(
         vk_worker.publish_vk_publication,
-        "delay",
-        lambda publication_id, token: calls.append((publication_id, token)),
+        "apply_async",
+        capture_publication_enqueue(calls),
     )
 
     async def current_user():
@@ -450,8 +458,8 @@ async def test_retry_endpoint_creates_fresh_execution_token_before_enqueue(
     calls: list[tuple[str, str | None]] = []
     monkeypatch.setattr(
         vk_worker.publish_vk_publication,
-        "delay",
-        lambda publication_id, token: calls.append((publication_id, token)),
+        "apply_async",
+        capture_publication_enqueue(calls),
     )
 
     async def current_user():
@@ -1382,8 +1390,8 @@ async def test_scheduled_dispatch_only_claims_due_publications(
     calls: list[tuple[str, str | None]] = []
     monkeypatch.setattr(
         dispatcher_worker.publish_telegram_publication,
-        "delay",
-        lambda publication_id, token: calls.append((publication_id, token)),
+        "apply_async",
+        capture_publication_enqueue(calls),
     )
     await dispatcher_worker._dispatch_publications()
     assert calls == []
@@ -1430,8 +1438,8 @@ async def test_scheduled_vk_dispatch_routes_only_due_publication(
     calls: list[tuple[str, str | None]] = []
     monkeypatch.setattr(
         dispatcher_worker.publish_vk_publication,
-        "delay",
-        lambda publication_id, token: calls.append((publication_id, token)),
+        "apply_async",
+        capture_publication_enqueue(calls),
     )
     await dispatcher_worker._dispatch_publications()
     assert [item[0] for item in calls] == [str(due.id)]
@@ -1469,8 +1477,8 @@ async def test_due_vk_provider_disabled_stays_scheduled_without_enqueue(
     calls: list[tuple[str, str | None]] = []
     monkeypatch.setattr(
         dispatcher_worker.publish_vk_publication,
-        "delay",
-        lambda publication_id, token: calls.append((publication_id, token)),
+        "apply_async",
+        capture_publication_enqueue(calls),
     )
 
     await dispatcher_worker._dispatch_publications()
@@ -1507,8 +1515,8 @@ async def test_publication_dispatch_two_workers_claim_due_once(
     calls: list[tuple[str, str | None]] = []
     monkeypatch.setattr(
         dispatcher_worker.publish_telegram_publication,
-        "delay",
-        lambda publication_id, token: calls.append((publication_id, token)),
+        "apply_async",
+        capture_publication_enqueue(calls),
     )
 
     await asyncio.gather(
@@ -1533,8 +1541,8 @@ async def test_publication_dispatch_does_not_enqueue_after_reschedule_or_cancel(
     calls: list[tuple[str, str | None]] = []
     monkeypatch.setattr(
         dispatcher_worker.publish_telegram_publication,
-        "delay",
-        lambda publication_id, token: calls.append((publication_id, token)),
+        "apply_async",
+        capture_publication_enqueue(calls),
     )
 
     rescheduled = await service.create(

@@ -2,6 +2,7 @@ import asyncio
 import hashlib
 import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import pytest
@@ -852,6 +853,137 @@ async def test_plan_bound_social_revision_reuses_item_and_preserves_authoritativ
     ]
     assert approvals[1].subject_snapshot["content_version_id"] == str(second.id)
     assert await db_session.scalar(select(func.count()).select_from(Publication)) == 0
+
+
+@pytest.mark.asyncio
+async def test_autonomous_revision_dispatches_to_ai_and_worker_stops_before_provider(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Acceptance: READY revision is dispatched once and an AI worker can claim it safely."""
+    from app.services.agent_runner_service import AgentRunnerService
+    from app.workers.agent_worker import execute_agent_run
+    from app.workers.recovery_worker import _recover as recover_stuck_ai
+
+    task, campaign, article_version = await smm_fixture(db_session)
+    plan, plan_item = await add_plan_item(db_session, campaign, article_version)
+    post, first, _approval = await add_plan_bound_post(
+        db_session, task, plan, plan_item, article_version
+    )
+    task.status = TaskStatus.COMPLETED
+    task.output_data = {"content_item_id": str(post.id), "content_version_id": str(first.id)}
+    user = await db_session.scalar(select(User))
+    assert user is not None
+    publication = Publication(
+        campaign_id=campaign.id,
+        content_item_id=post.id,
+        content_version_id=first.id,
+        channel=plan_item.channel,
+        status=PublicationStatus.SCHEDULED,
+        scheduled_at=datetime.now(UTC) - timedelta(minutes=1),
+        approved_for_publish_at=datetime.now(UTC),
+        approved_for_publish_by=user.id,
+    )
+    db_session.add(publication)
+    await db_session.commit()
+
+    dispatched: dict[str, object] = {}
+
+    def capture_enqueue(*, args: list[str], countdown: int, queue: str) -> SimpleNamespace:
+        dispatched.update(args=args, countdown=countdown, queue=queue)
+        return SimpleNamespace(id="test-ai-queue-job")
+
+    monkeypatch.setattr(execute_agent_run, "apply_async", capture_enqueue)
+    await request_revision(
+        post.id,
+        RequiredApprovalComment(comment="Сократить второй абзац без новых фактов."),
+        user,
+        db_session,
+    )
+    revision = await db_session.scalar(
+        select(Task).where(
+            Task.task_type == TaskType.CONTENT_REVISION,
+            Task.input_data["content_item_id"].astext == str(post.id),
+        )
+    )
+    assert revision is not None
+    run = await db_session.scalar(select(AgentRun).where(AgentRun.task_id == revision.id))
+    assert run is not None and run.status is AgentRunStatus.QUEUED
+    assert revision.status is TaskStatus.READY
+    assert dispatched == {"args": [str(run.id)], "countdown": 0, "queue": "ai"}
+    assert revision.input_data["publication_plan_item_id"] == str(plan_item.id)
+    assert revision.input_data["plan_channel"] == plan_item.channel.value
+    assert revision.input_data["source_content_version_id"] == str(article_version.id)
+    assert revision.input_data["source_claim_ids"] == plan_item.source_claim_ids
+    assert revision.input_data["base_content_version_id"] == str(first.id)
+
+    for _ in range(3):
+        await TaskDispatcherService(db_session).dispatch_ready_tasks()
+        await recover_stuck_ai()
+    assert (
+        await db_session.scalar(
+            select(func.count())
+            .select_from(Task)
+            .where(
+                Task.task_type == TaskType.CONTENT_REVISION,
+                Task.input_data["content_item_id"].astext == str(post.id),
+            )
+        )
+        == 1
+    )
+    assert (
+        await db_session.scalar(
+            select(func.count()).select_from(AgentRun).where(AgentRun.task_id == revision.id)
+        )
+        == 1
+    )
+
+    class StopBeforeProvider(BaseException):
+        pass
+
+    async def stop_at_provider_boundary(*_args: object, **_kwargs: object) -> object:
+        raise StopBeforeProvider
+
+    monkeypatch.setattr(AgentRunnerService, "run", stop_at_provider_boundary)
+    claimed = await AgentRunService(db_session, async_session_factory).claim(run.id)
+    assert claimed is not None
+    with pytest.raises(StopBeforeProvider):
+        await AgentRunnerService().run(*claimed)
+
+    await db_session.refresh(run)
+    await db_session.refresh(revision)
+    await db_session.refresh(publication)
+    assert run.status is AgentRunStatus.RUNNING
+    assert revision.status is TaskStatus.IN_PROGRESS
+    assert publication.status is PublicationStatus.SCHEDULED
+    assert publication.execution_token is None
+
+
+@pytest.mark.asyncio
+async def test_isolated_agent_run_enqueue_uses_only_ai_live_test(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.workers.agent_worker import execute_agent_run
+
+    task, _campaign, _article_version = await smm_fixture(db_session)
+    task.input_data = {**task.input_data, "isolated_ai_execution": True}
+    await db_session.commit()
+    run = await AgentRunService(db_session).create_queued_run(task.id)
+
+    dispatched: dict[str, object] = {}
+
+    def capture_enqueue(*, args: list[str], countdown: int, queue: str) -> SimpleNamespace:
+        dispatched.update(args=args, countdown=countdown, queue=queue)
+        return SimpleNamespace(id="isolated-test-queue-job")
+
+    monkeypatch.setattr(execute_agent_run, "apply_async", capture_enqueue)
+    await AgentRunService(db_session).enqueue(run)
+    assert dispatched == {
+        "args": [str(run.id)],
+        "countdown": 0,
+        "queue": "ai_live_test",
+    }
 
 
 @pytest.mark.asyncio

@@ -372,8 +372,8 @@ async def test_agent_run_api_and_retry(
         id = "queue-job-id"
 
     monkeypatch.setattr(
-        "app.workers.agent_worker.execute_agent_run.delay",
-        lambda _run_id: QueueResult(),
+        "app.workers.agent_worker.execute_agent_run.apply_async",
+        lambda **_kwargs: QueueResult(),
     )
     assert (await client.get("/api/v1/agent-runs")).status_code == 401
     login = await client.post(

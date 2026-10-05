@@ -56,6 +56,6 @@ async def _sync_recent() -> None:
                 ).all()
             )
         for publication in publications:
-            sync_publication_metrics.delay(str(publication.id))
+            sync_publication_metrics.apply_async(args=[str(publication.id)], queue="metrics")
     finally:
         await engine.dispose()

@@ -518,7 +518,7 @@ class PublicationPlanService:
         try:
             from app.workers.publication_plan_worker import generate_publication_plan
 
-            generate_publication_plan.delay(str(run.id))
+            generate_publication_plan.apply_async(args=[str(run.id)], queue="ai")
         except Exception as exc:
             await self.session.execute(
                 select(PublicationPlan).where(PublicationPlan.id == plan.id).with_for_update()
