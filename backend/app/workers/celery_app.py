@@ -3,6 +3,7 @@ from kombu import Queue
 
 from app.core.config import settings
 
+settings.validate_worker_capabilities()
 settings.validate_redis_isolation()
 celery_app = Celery(
     "iteam_ai_marketing",

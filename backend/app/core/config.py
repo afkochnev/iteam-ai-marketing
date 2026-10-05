@@ -1,11 +1,13 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     app_name: str = "iTeam AI Marketing Department"
     app_env: str = "development"
+    worker_role: str | None = None
     app_secret: str = "development-only-change-me"
     database_url: str = "postgresql+asyncpg://iteam:iteam@postgres:5432/iteam"
     redis_url: str = "redis://redis:6379/0"
@@ -83,6 +85,40 @@ class Settings(BaseSettings):
     @property
     def celery_result_backend_url(self) -> str:
         return "cache+memory://" if self.is_test_context else self.redis_url
+
+    @field_validator("vk_owner_id", mode="before")
+    @classmethod
+    def normalize_empty_vk_owner_id(cls, value: object) -> object:
+        # Compose clears this optional integer along with the publication tokens.
+        return None if isinstance(value, str) and not value.strip() else value
+
+    def validate_worker_capabilities(self) -> None:
+        # API/producers leave WORKER_ROLE unset; workers declare their boundary.
+        if self.worker_role is None:
+            return
+        if self.worker_role not in {
+            "ai",
+            "ai_control",
+            "publication",
+            "publication_control",
+            "metrics",
+        }:
+            raise RuntimeError("WORKER_ROLE is invalid")
+        if self.worker_role not in {"ai", "ai_control"}:
+            return
+        publication_capabilities = {
+            "TELEGRAM_PUBLISHING_ENABLED": self.telegram_publishing_enabled,
+            "VK_PUBLISHING_ENABLED": self.vk_publishing_enabled,
+            "TELEGRAM_BOT_TOKEN": bool(self.telegram_bot_token),
+            "TELEGRAM_TARGET_CHAT_ID": bool(self.telegram_target_chat_id),
+            "VK_ACCESS_TOKEN": bool(self.vk_access_token),
+            "VK_OWNER_ID": self.vk_owner_id is not None,
+        }
+        errors = [name for name, present in publication_capabilities.items() if present]
+        if errors:
+            raise RuntimeError(
+                "AI worker publication capability is forbidden; clear: " + ", ".join(errors)
+            )
 
     def validate_redis_isolation(self) -> None:
         if not self.is_test_context:
