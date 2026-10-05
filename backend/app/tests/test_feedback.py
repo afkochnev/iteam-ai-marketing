@@ -122,8 +122,8 @@ async def test_analysis_queue_creates_agent_run_and_freezes_snapshot(
         id = "feedback-test-job"
 
     monkeypatch.setattr(
-        "app.workers.feedback_worker.generate_feedback_analysis.delay",
-        lambda _run_id: Result(),
+        "app.workers.feedback_worker.generate_feedback_analysis.apply_async",
+        lambda **_options: Result(),
     )
     analysis = await FeedbackService(db_session).queue_analysis(campaign.id)
     run = await db_session.get(AgentRun, analysis.agent_run_id)
@@ -383,8 +383,8 @@ async def test_duplicate_feedback_worker_execution_is_noop_after_completion(
         id = "feedback-duplicate-job"
 
     monkeypatch.setattr(
-        "app.workers.feedback_worker.generate_feedback_analysis.delay",
-        lambda _run_id: Job(),
+        "app.workers.feedback_worker.generate_feedback_analysis.apply_async",
+        lambda **_options: Job(),
     )
     analysis = await FeedbackService(db_session).queue_analysis(campaign.id)
     run = await db_session.get(AgentRun, analysis.agent_run_id)
@@ -418,8 +418,8 @@ async def test_feedback_analysis_repair_uses_same_frozen_snapshot(
         id = "feedback-repair-job"
 
     monkeypatch.setattr(
-        "app.workers.feedback_worker.generate_feedback_analysis.delay",
-        lambda _run_id: Job(),
+        "app.workers.feedback_worker.generate_feedback_analysis.apply_async",
+        lambda **_options: Job(),
     )
     analysis = await FeedbackService(db_session).queue_analysis(campaign.id)
     snapshot_ids = list(analysis.input_snapshot["feedback_ids"])
@@ -486,8 +486,8 @@ async def test_feedback_analysis_repair_exhaustion_fails_without_completed_resul
         id = "feedback-repair-exhausted-job"
 
     monkeypatch.setattr(
-        "app.workers.feedback_worker.generate_feedback_analysis.delay",
-        lambda _run_id: Job(),
+        "app.workers.feedback_worker.generate_feedback_analysis.apply_async",
+        lambda **_options: Job(),
     )
     analysis = await FeedbackService(db_session).queue_analysis(campaign.id)
 

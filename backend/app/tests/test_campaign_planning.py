@@ -152,8 +152,8 @@ async def test_planning_approval_creates_graph(
 ) -> None:
     monkeypatch.setattr(settings, "openai_default_model", "test-model")
     monkeypatch.setattr(
-        "app.workers.agent_worker.execute_agent_run.delay",
-        lambda _run_id: SimpleNamespace(id="job"),
+        "app.workers.agent_worker.execute_agent_run.apply_async",
+        lambda **_options: SimpleNamespace(id="job"),
     )
     user, campaign = await setup_campaign(db_session)
     _, planning_task = await complete_plan(db_session, campaign.id)
@@ -197,8 +197,8 @@ async def test_revision_rejection_and_runtime_input(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "app.workers.agent_worker.execute_agent_run.delay",
-        lambda _run_id: SimpleNamespace(id="job"),
+        "app.workers.agent_worker.execute_agent_run.apply_async",
+        lambda **_options: SimpleNamespace(id="job"),
     )
     user, campaign = await setup_campaign(db_session)
     await complete_plan(db_session, campaign.id)
@@ -226,8 +226,8 @@ async def test_change_revision_keeps_approved_strategy_until_new_approval(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "app.workers.agent_worker.execute_agent_run.delay",
-        lambda _run_id: SimpleNamespace(id="job"),
+        "app.workers.agent_worker.execute_agent_run.apply_async",
+        lambda **_options: SimpleNamespace(id="job"),
     )
     user, campaign = await setup_campaign(db_session)
     await complete_plan(db_session, campaign.id)
@@ -282,8 +282,8 @@ async def test_inactive_agents_and_cancellation(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "app.workers.agent_worker.execute_agent_run.delay",
-        lambda _run_id: SimpleNamespace(id="job"),
+        "app.workers.agent_worker.execute_agent_run.apply_async",
+        lambda **_options: SimpleNamespace(id="job"),
     )
     _user, campaign = await setup_campaign(db_session)
     director = (
@@ -307,8 +307,8 @@ async def test_campaign_planning_api(
     client: AsyncClient, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "app.workers.agent_worker.execute_agent_run.delay",
-        lambda _run_id: SimpleNamespace(id="job"),
+        "app.workers.agent_worker.execute_agent_run.apply_async",
+        lambda **_options: SimpleNamespace(id="job"),
     )
     user, campaign = await setup_campaign(db_session)
     assert (
@@ -343,8 +343,8 @@ async def test_concurrent_approval_creates_one_graph(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "app.workers.agent_worker.execute_agent_run.delay",
-        lambda _run_id: SimpleNamespace(id="job"),
+        "app.workers.agent_worker.execute_agent_run.apply_async",
+        lambda **_options: SimpleNamespace(id="job"),
     )
     user, campaign = await setup_campaign(db_session)
     await complete_plan(db_session, campaign.id)
@@ -368,8 +368,8 @@ async def test_invalid_plan_then_planning_retry(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        "app.workers.agent_worker.execute_agent_run.delay",
-        lambda _run_id: SimpleNamespace(id="job"),
+        "app.workers.agent_worker.execute_agent_run.apply_async",
+        lambda **_options: SimpleNamespace(id="job"),
     )
     _, campaign = await setup_campaign(db_session)
     _, task, run = await CampaignPlanningService(db_session).generate(campaign.id)

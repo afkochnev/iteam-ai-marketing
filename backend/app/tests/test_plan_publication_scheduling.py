@@ -182,7 +182,9 @@ async def test_future_dispatch_and_worker_never_send_then_due_dispatch_once(
     monkeypatch.setattr(settings, "vk_publishing_enabled", True)
     queued = []
     monkeypatch.setattr(
-        dispatcher_worker.publish_vk_publication, "delay", lambda *args: queued.append(args)
+        dispatcher_worker.publish_vk_publication,
+        "apply_async",
+        lambda *, args, queue: queued.append(tuple(args)),
     )
     await dispatcher_worker._dispatch_publications()
     assert queued == []
@@ -255,8 +257,8 @@ async def test_unauthorized_scheduled_rows_never_dispatch(db_session: AsyncSessi
     monkeypatch.setattr(settings, "vk_publishing_enabled", True)
     monkeypatch.setattr(
         dispatcher_worker.publish_vk_publication,
-        "delay",
-        lambda *args: pytest.fail("Unauthorized enqueue"),
+        "apply_async",
+        lambda **_options: pytest.fail("Unauthorized enqueue"),
     )
     await dispatcher_worker._dispatch_publications()
     await db_session.refresh(row)

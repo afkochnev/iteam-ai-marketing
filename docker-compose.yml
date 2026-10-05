@@ -1,3 +1,16 @@
+x-worker: &worker
+  build:
+    context: ./backend
+    args:
+      BUILD_SHA: ${BUILD_SHA:-unknown}
+  env_file: .env
+  stop_grace_period: 210s
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
 services:
   postgres:
     image: postgres:17-alpine
@@ -45,19 +58,72 @@ services:
       timeout: 5s
       retries: 10
 
-  worker:
-    build:
-      context: ./backend
-      args:
-        BUILD_SHA: ${BUILD_SHA:-unknown}
-    command: celery -A app.workers.celery_app:celery_app worker --beat --loglevel=INFO
-    env_file: .env
-    stop_grace_period: 210s
-    depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
+  ai_worker:
+    <<: *worker
+    command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --queues=ai
+    restart: unless-stopped
+    environment: &ai-worker-environment
+      WORKER_ROLE: ai
+      SCHEDULER_ROLE: ""
+      TELEGRAM_PUBLISHING_ENABLED: "false"
+      VK_PUBLISHING_ENABLED: "false"
+      TELEGRAM_BOT_TOKEN: ""
+      TELEGRAM_TARGET_CHAT_ID: ""
+      VK_ACCESS_TOKEN: ""
+      VK_OWNER_ID: ""
+
+  ai_control_worker:
+    <<: *worker
+    command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --queues=ai_control
+    restart: unless-stopped
+    environment:
+      <<: *ai-worker-environment
+      WORKER_ROLE: ai_control
+
+  ai_scheduler:
+    <<: *worker
+    command: celery -A app.workers.celery_app:celery_app beat --loglevel=INFO --schedule=/tmp/ai-celerybeat-schedule
+    restart: unless-stopped
+    environment:
+      <<: *ai-worker-environment
+      WORKER_ROLE: ""
+      SCHEDULER_ROLE: ai
+
+  publication_scheduler:
+    <<: *worker
+    command: celery -A app.workers.celery_app:celery_app beat --loglevel=INFO --schedule=/tmp/publication-celerybeat-schedule
+    profiles: [publishing]
+    environment:
+      WORKER_ROLE: ""
+      SCHEDULER_ROLE: publication
+      OPENAI_API_KEY: ""
+
+  publication_worker:
+    <<: *worker
+    command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --queues=publication
+    profiles: [publishing]
+    environment:
+      WORKER_ROLE: publication
+      SCHEDULER_ROLE: ""
+      OPENAI_API_KEY: ""
+
+  publication_control_worker:
+    <<: *worker
+    command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --queues=publication_control
+    profiles: [publishing]
+    environment:
+      WORKER_ROLE: publication_control
+      SCHEDULER_ROLE: ""
+      OPENAI_API_KEY: ""
+
+  metrics_worker:
+    <<: *worker
+    command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --queues=metrics
+    profiles: [publishing]
+    environment:
+      WORKER_ROLE: metrics
+      SCHEDULER_ROLE: ""
+      OPENAI_API_KEY: ""
 
   frontend:
     build:

@@ -32,9 +32,17 @@ describe("Content and approvals UI", () => {
 
   it("explains when the revision worker is unavailable", async () => {
     const stale = new Date(Date.now() - 30_000).toISOString();
-    mocks.revisionProgress.mockResolvedValue({ task_id: "revision-task-1", task_status: "READY", agent_run_id: "run-1", agent_run_status: "QUEUED", error_code: null, error_message: null, base_content_version_id: "version-1", created_content_version_id: null, created_at: stale, updated_at: stale });
+    mocks.revisionProgress.mockResolvedValue({ executor_available: false, task_id: "revision-task-1", task_status: "READY", agent_run_id: "run-1", agent_run_status: "QUEUED", error_code: null, error_message: null, base_content_version_id: "version-1", created_content_version_id: null, created_at: stale, updated_at: stale });
     render(<ContentDetailPage />);
     expect(await screen.findByText("Задача создана, но исполнитель сейчас не запущен")).toBeInTheDocument();
+  });
+
+  it("keeps a stale queued revision queued when the AI worker is available", async () => {
+    const stale = new Date(Date.now() - 30_000).toISOString();
+    mocks.revisionProgress.mockResolvedValue({ executor_available: true, task_id: "revision-task-1", task_status: "READY", agent_run_id: "run-1", agent_run_status: "QUEUED", error_code: null, error_message: null, base_content_version_id: "version-1", created_content_version_id: null, created_at: stale, updated_at: stale });
+    render(<ContentDetailPage />);
+    expect(await screen.findByText("Доработка поставлена в очередь")).toBeInTheDocument();
+    expect(screen.queryByText("Задача создана, но исполнитель сейчас не запущен")).not.toBeInTheDocument();
   });
 
   it("shows that a completed revision is ready for approval", async () => {

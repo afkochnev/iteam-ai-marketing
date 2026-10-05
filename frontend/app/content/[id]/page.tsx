@@ -70,7 +70,6 @@ export default function ContentDetailPage() {
   const [revisionMode, setRevisionMode] = useState(false);
   const [revisionComment, setRevisionComment] = useState("");
   const [revisionProgress, setRevisionProgress] = useState<ContentRevisionProgress | null>(null);
-  const [revisionClock, setRevisionClock] = useState(() => Date.now());
   const [rejectMode, setRejectMode] = useState(false);
   const [rejectComment, setRejectComment] = useState("");
 
@@ -94,7 +93,6 @@ export default function ContentDetailPage() {
       setPlans(campaignPlans);
       setPublications(campaignPublications);
       setRevisionProgress(currentRevision);
-      setRevisionClock(Date.now());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Не удалось загрузить материал.");
     } finally {
@@ -112,7 +110,6 @@ export default function ContentDetailPage() {
     const timer = window.setInterval(() => {
       void contentApi.revisionProgress(params.id).then(async (next) => {
         setRevisionProgress(next);
-        setRevisionClock(Date.now());
         if (next?.task_status === "COMPLETED" || next?.agent_run_status === "COMPLETED") {
           setItem(await contentApi.get(params.id));
         }
@@ -138,7 +135,7 @@ export default function ContentDetailPage() {
 
   async function approve() { if (!item) return; setBusy(true); try { setItem(await contentApi.approve(item.id)); setNotice("Материал утверждён."); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
   async function reject() { if (!item || !rejectComment.trim()) return; setBusy(true); try { setItem(await contentApi.reject(item.id, rejectComment)); setNotice("Материал отклонён."); setRejectMode(false); setRejectComment(""); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
-  async function revise() { if (!item || !revisionComment.trim()) return; setBusy(true); try { setItem(await contentApi.requestRevision(item.id, revisionComment)); const progress = await contentApi.revisionProgress(item.id); setRevisionProgress(progress); setRevisionClock(Date.now()); setNotice(progress ? "" : "Доработка поставлена в очередь"); setRevisionMode(false); setRevisionComment(""); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
+  async function revise() { if (!item || !revisionComment.trim()) return; setBusy(true); try { setItem(await contentApi.requestRevision(item.id, revisionComment)); const progress = await contentApi.revisionProgress(item.id); setRevisionProgress(progress); setNotice(progress ? "" : "Доработка поставлена в очередь"); setRevisionMode(false); setRevisionComment(""); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
   function beginEdit() { if (!item?.current_version) return; setDraftText(item.current_version.content); setEditComment(""); setEditMode(true); setRevisionMode(false); setRejectMode(false); }
   async function saveEdit() {
     if (!item?.current_version || !draftText.trim()) return;
@@ -178,7 +175,7 @@ export default function ContentDetailPage() {
   const revisionIsRunning = revisionProgress?.task_status === "IN_PROGRESS" || revisionProgress?.agent_run_status === "RUNNING";
   const revisionIsStopped = revisionProgress?.task_status === "FAILED" || revisionProgress?.task_status === "CANCELLED" || revisionProgress?.agent_run_status === "FAILED" || revisionProgress?.agent_run_status === "CANCELLED";
   const revisionIsActive = Boolean(revisionProgress && !revisionIsReady && !revisionIsStopped);
-  const revisionIsUnavailable = Boolean(revisionProgress && revisionProgress.task_status === "READY" && (!revisionProgress.agent_run_id || (revisionProgress.agent_run_status === "QUEUED" && revisionClock - Date.parse(revisionProgress.updated_at) >= 10_000)));
+  const revisionIsUnavailable = Boolean(revisionProgress && revisionProgress.task_status === "READY" && revisionProgress.executor_available === false);
   const revisionMessage = revisionIsReady
     ? "Новая версия готова и ожидает согласования"
     : revisionIsRunning

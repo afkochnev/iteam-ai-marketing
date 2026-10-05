@@ -54,5 +54,5 @@ strict = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = "celery.*"
+module = ["celery.*", "kombu.*"]
 ignore_missing_imports = true
