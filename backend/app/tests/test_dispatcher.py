@@ -107,6 +107,7 @@ async def test_dispatcher_enqueue_failure_is_retryable(
     assert (await TaskService(db_session).get_task(task.id)).status is TaskStatus.READY
     failed_run = await db_session.scalar(select(AgentRun).where(AgentRun.task_id == task.id))
     assert failed_run is not None and failed_run.status is AgentRunStatus.FAILED
+    assert failed_run.error_code == "QUEUE_ENQUEUE_FAILED"
 
     monkeypatch.setattr(
         agent_worker.execute_agent_run,
@@ -114,6 +115,13 @@ async def test_dispatcher_enqueue_failure_is_retryable(
         lambda **_options: type("Job", (), {"id": "job"})(),
     )
     assert await TaskDispatcherService(db_session).dispatch_ready_tasks() == [task.id]
+    assert await TaskDispatcherService(db_session).dispatch_ready_tasks() == []
+    runs = list(
+        (await db_session.scalars(select(AgentRun).where(AgentRun.task_id == task.id))).all()
+    )
+    assert len(runs) == 2
+    assert sum(run.status == AgentRunStatus.QUEUED for run in runs) == 1
+    assert all(run.status != AgentRunStatus.COMPLETED for run in runs)
 
 
 @pytest.mark.asyncio

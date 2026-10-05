@@ -110,6 +110,7 @@ class ContentResponse(ContentListItem):
 
 
 class ContentRevisionProgress(BaseModel):
+    executor_available: bool | None = None
     task_id: UUID
     task_status: TaskStatus
     agent_run_id: UUID | None = None

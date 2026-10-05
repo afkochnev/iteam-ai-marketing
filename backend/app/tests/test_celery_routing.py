@@ -38,8 +38,24 @@ def broker_app():
             )
         }
     )
-    yield app
-    app.close()
+
+    # Kombu's memory transport is process-global, including messages sent by
+    # earlier API tests. Keep these routing assertions independent of test order.
+    def clear_queues():
+        with app.connection_for_write() as connection:
+            for declared_queue in app.conf.task_queues:
+                queue = connection.SimpleQueue(declared_queue.name)
+                try:
+                    queue.clear()
+                finally:
+                    queue.close()
+
+    clear_queues()
+    try:
+        yield app
+    finally:
+        clear_queues()
+        app.close()
 
 
 def assert_message(app, task_name, expected_queue, *, options=None):

@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.dependencies import CurrentUser, SessionDependency
 from app.core.errors import AppError as ContentAppError
 from app.models.agent import AgentStatus
-from app.models.agent_run import AgentRun
+from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.approval import Approval, ApprovalObjectType, ApprovalStatus
 from app.models.content import (
     ContentDerivation,
@@ -50,6 +50,7 @@ from app.services.social_content_quality import (
 )
 from app.services.task_dispatcher_service import TaskDispatcherService
 from app.services.task_service import TaskService
+from app.workers.availability import queue_has_consumer
 
 router = APIRouter(prefix="/content", tags=["content"])
 
@@ -761,8 +762,13 @@ async def get_revision_status(
         .order_by(AgentRun.created_at.desc())
         .limit(1)
     )
+    executor_available = None
+    if task.status is TaskStatus.READY and (run is None or run.status is AgentRunStatus.QUEUED):
+        queue = "ai_live_test" if task.input_data.get("isolated_ai_execution") else "ai"
+        executor_available = await queue_has_consumer(queue)
     raw_created_version_id = task.output_data.get("content_version_id")
     return ContentRevisionProgress(
+        executor_available=executor_available,
         task_id=task.id,
         task_status=task.status,
         agent_run_id=run.id if run else None,
