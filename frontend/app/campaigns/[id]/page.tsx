@@ -123,7 +123,7 @@ export default function CampaignDetailsPage() {
   const socialPosts = contents.filter((item) => item.content_type === "SOCIAL_POST");
   const socialPacks = contents.filter((item) => item.content_type === "SOCIAL_POST_PACK");
   const attentionStatuses = ["FAILED", "BLOCKED", "READY", "IN_PROGRESS", "WAITING_REVIEW", "WAITING_APPROVAL"];
-  const attentionTasks = tasks.filter((task) => attentionStatuses.includes(task.status)).sort((a, b) => {
+  const attentionTasks = tasks.filter((task) => task.classification === "actionable" && attentionStatuses.includes(task.status)).sort((a, b) => {
     const priority = (status: string) => ["FAILED", "BLOCKED", "READY", "IN_PROGRESS", "WAITING_REVIEW", "WAITING_APPROVAL"].indexOf(status);
     return priority(a.status) - priority(b.status) || new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
   });

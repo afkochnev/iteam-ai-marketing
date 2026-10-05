@@ -12,7 +12,13 @@ from app.models.activity import ActivityLog
 from app.models.agent import Agent, AgentTool
 from app.models.agent_run import AgentRun, AgentRunStatus, ToolCall, ToolCallStatus
 from app.models.approval import Approval, ApprovalStatus
-from app.models.content import ContentItem, ContentType, ContentVersion, ContentVersionSource
+from app.models.content import (
+    ContentItem,
+    ContentStatus,
+    ContentType,
+    ContentVersion,
+    ContentVersionSource,
+)
 from app.models.knowledge import (
     KnowledgeItem,
     KnowledgeItemStatus,
@@ -122,6 +128,7 @@ async def test_concurrent_revision_requests_create_one_task(
     assert article is not None
     owner = await db_session.scalar(select(User))
     assert owner is not None
+    article.status = ContentStatus.WAITING_APPROVAL
     await ApprovalService(db_session).create_content_approval(
         article.id,
         1,

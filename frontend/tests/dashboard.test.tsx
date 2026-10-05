@@ -45,7 +45,7 @@ describe("Protected dashboard", () => {
     tasksList.mockResolvedValue([{
       id: "task-1", campaign_id: "campaign-1", campaign: { id: "campaign-1", name: "Кампания запуска" },
       task_type: "WRITE_ARTICLE", title: "Проверить проблемную задачу", assigned_agent: null,
-      priority: "HIGH", status: "FAILED", deadline: null,
+      priority: "HIGH", status: "FAILED", classification: "actionable", classification_label: null, deadline: null,
       created_at: "2026-09-25T10:00:00Z", updated_at: "2026-09-26T10:00:00Z",
     }]);
     approvalsList.mockResolvedValue([]);

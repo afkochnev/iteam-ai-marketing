@@ -364,10 +364,13 @@ async def manual_edit_content(
     ).scalar_one_or_none()
     if item is None:
         raise ContentAppError("CONTENT_NOT_FOUND", "Материал не найден.", 404)
-    if item.status is not ContentStatus.WAITING_APPROVAL:
+    if item.status not in {ContentStatus.WAITING_APPROVAL, ContentStatus.APPROVED}:
         raise ContentAppError(
             "CONTENT_NOT_EDITABLE",
-            "Редактировать можно только материал, ожидающий согласования.",
+            (
+                "Новую редакцию можно создать только для материала, ожидающего согласования "
+                "или утверждённого."
+            ),
             409,
         )
     if item.content_type not in {ContentType.ARTICLE, ContentType.SOCIAL_POST}:
@@ -801,20 +804,40 @@ async def request_revision(
         raise AppError(
             "CONTENT_REVISION_NOT_SUPPORTED", "Этот тип контента нельзя дорабатывать.", 409
         )
-    pending_approvals = list(
-        (
-            await session.scalars(
-                select(Approval)
-                .where(
-                    Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
-                    Approval.object_id == content_id,
-                    Approval.status == ApprovalStatus.PENDING,
-                )
-                .with_for_update()
-            )
-        ).all()
-    )
+    if item.status not in {ContentStatus.WAITING_APPROVAL, ContentStatus.APPROVED}:
+        raise ContentAppError(
+            "CONTENT_NOT_REVISIONABLE",
+            "Доработать можно только материал, ожидающий согласования или уже утверждённый.",
+            409,
+        )
     current_version_id = str(item.current_version_id)
+    approved_base = item.status is ContentStatus.APPROVED
+    if approved_base and item.content_type not in {
+        ContentType.ARTICLE,
+        ContentType.SOCIAL_POST,
+    }:
+        raise ContentAppError(
+            "CONTENT_REVISION_NOT_SUPPORTED",
+            "Для утверждённых пакетов постов новая AI-доработка пока недоступна.",
+            409,
+        )
+    pending_approvals = (
+        []
+        if approved_base
+        else list(
+            (
+                await session.scalars(
+                    select(Approval)
+                    .where(
+                        Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
+                        Approval.object_id == content_id,
+                        Approval.status == ApprovalStatus.PENDING,
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        )
+    )
     approval = next(
         (
             candidate
@@ -823,6 +846,25 @@ async def request_revision(
         ),
         pending_approvals[0] if pending_approvals else None,
     )
+    approved_base_approval = None
+    if approved_base:
+        approved_base_approval = await session.scalar(
+            select(Approval)
+            .where(
+                Approval.object_type == ApprovalObjectType.CONTENT_ITEM,
+                Approval.object_id == content_id,
+                Approval.status == ApprovalStatus.APPROVED,
+                Approval.subject_snapshot["content_version_id"].as_string() == current_version_id,
+            )
+            .order_by(Approval.resolved_at.desc().nullslast())
+            .with_for_update()
+        )
+        if approved_base_approval is None:
+            raise ContentAppError(
+                "CONTENT_APPROVAL_NOT_FOUND",
+                "Текущая утверждённая версия не найдена в истории согласований.",
+                409,
+            )
     for stale in pending_approvals:
         if approval is not None and stale.id != approval.id:
             stale.status = ApprovalStatus.REVISION_REQUESTED
@@ -848,10 +890,13 @@ async def request_revision(
                 "Для этой версии уже создана задача доработки.",
                 409,
             )
-        from app.core.errors import AppError
+        if not approved_base:
+            from app.core.errors import AppError
 
-        raise AppError("CONTENT_APPROVAL_NOT_FOUND", "Ожидающее согласование не найдено.", 404)
-    if str(item.current_version_id) != str(approval.subject_snapshot.get("content_version_id")):
+            raise AppError("CONTENT_APPROVAL_NOT_FOUND", "Ожидающее согласование не найдено.", 404)
+    if approval is not None and str(item.current_version_id) != str(
+        approval.subject_snapshot.get("content_version_id")
+    ):
         from app.core.errors import AppError
 
         raise AppError(
@@ -860,6 +905,7 @@ async def request_revision(
             409,
         )
     if item.content_type is ContentType.SOCIAL_POST_PACK:
+        assert approval is not None
         post_snapshots = approval.subject_snapshot.get("posts", [])
         if post_snapshots:
             child_ids = [UUID(str(post["content_item_id"])) for post in post_snapshots]
@@ -881,13 +927,17 @@ async def request_revision(
                     "Согласование содержит устаревшую версию поста.",
                     409,
                 )
-    existing = await session.scalar(
-        select(Task).where(
-            Task.task_type == TaskType.CONTENT_REVISION,
-            Task.input_data["approval_id"].as_string() == str(approval.id),
-            Task.status.in_([TaskStatus.READY, TaskStatus.IN_PROGRESS]),
-        )
+    existing_query = select(Task).where(
+        Task.task_type == TaskType.CONTENT_REVISION,
+        Task.input_data["content_item_id"].as_string() == str(item.id),
+        Task.input_data["base_content_version_id"].as_string() == current_version_id,
+        Task.status.in_([TaskStatus.READY, TaskStatus.IN_PROGRESS]),
     )
+    if approval is not None:
+        existing_query = existing_query.where(
+            Task.input_data["approval_id"].as_string() == str(approval.id)
+        )
+    existing = await session.scalar(existing_query)
     if existing:
         raise ContentAppError(
             "CONTENT_REVISION_ALREADY_REQUESTED",
@@ -999,10 +1049,11 @@ async def request_revision(
             "message_brief": plan_item.message_brief,
             "original_text": current_version.content,
         }
-    approval.status = ApprovalStatus.REVISION_REQUESTED
-    approval.reviewed_by_user_id = user.id
-    approval.comment = payload.comment
-    approval.resolved_at = datetime.now(UTC)
+    if approval is not None:
+        approval.status = ApprovalStatus.REVISION_REQUESTED
+        approval.reviewed_by_user_id = user.id
+        approval.comment = payload.comment
+        approval.resolved_at = datetime.now(UTC)
     task = await TaskService(session).create_task(
         TaskCreate(
             campaign_id=item.campaign_id,
@@ -1013,7 +1064,12 @@ async def request_revision(
             input_data={
                 "content_item_id": str(item.id),
                 "base_content_version_id": str(item.current_version_id),
-                "approval_id": str(approval.id),
+                **({"approval_id": str(approval.id)} if approval is not None else {}),
+                **(
+                    {"approved_base_approval_id": str(approved_base_approval.id)}
+                    if approved_base_approval is not None
+                    else {}
+                ),
                 "revision_comment": payload.comment,
                 "requested_by_user_id": str(user.id),
                 "original_task_id": str(item.source_task_id),
@@ -1027,12 +1083,18 @@ async def request_revision(
     await session.commit()
     await ActivityLogService(session).record(
         "CONTENT_REVISION_REQUESTED",
-        operation_key=f"revision-request:{approval.id}",
+        operation_key=f"revision-request:{item.id}:{current_version_id}:{task.id}",
         campaign_id=item.campaign_id,
         task_id=task.id,
         user_id=user.id,
         content_item_id=item.id,
-        approval_id=approval.id,
+        approval_id=(
+            approval.id
+            if approval is not None
+            else approved_base_approval.id
+            if approved_base_approval
+            else None
+        ),
         metadata={"revision_comment": payload.comment},
     )
     await session.commit()

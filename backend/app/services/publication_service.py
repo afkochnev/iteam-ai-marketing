@@ -839,6 +839,93 @@ class PublicationService:
         await self.session.refresh(publication)
         return await self._response(publication)
 
+    async def replace_scheduled_version(
+        self, publication_id: UUID, user: User
+    ) -> PublicationResponse:
+        """Atomically cancel a scheduled old version and schedule its approved replacement."""
+
+        old = await self._locked(publication_id)
+        if old.status is PublicationStatus.PUBLISHED:
+            raise AppError(
+                "PUBLISHED_PUBLICATION_IMMUTABLE",
+                "Опубликованную запись нельзя заменить.",
+                409,
+            )
+        if old.status is not PublicationStatus.SCHEDULED or old.scheduled_at is None:
+            raise AppError(
+                "PUBLICATION_NOT_SCHEDULED",
+                "Заменить можно только запланированную публикацию.",
+                409,
+            )
+
+        item = await self._ensure_content_version_approved(
+            old.content_item_id, old.content_version_id, old.channel
+        )
+        if item.current_version_id is None or item.current_version_id == old.content_version_id:
+            raise AppError(
+                "PUBLICATION_REPLACEMENT_VERSION_INVALID",
+                "Требуется новая, отдельно утверждённая версия материала.",
+                409,
+            )
+        new_version = await self.session.get(ContentVersion, item.current_version_id)
+        if new_version is None or new_version.content_item_id != item.id:
+            raise AppError(
+                "PUBLICATION_REPLACEMENT_VERSION_INVALID",
+                "Утверждённая версия материала не найдена.",
+                409,
+            )
+        await self._ensure_content_version_approved(item.id, new_version.id, old.channel)
+        # Validate the old schedule against the immutable plan before carrying it forward.
+        await self._ensure_plan_snapshot(old, item)
+        active_or_published = await self.session.scalar(
+            select(Publication.id)
+            .where(
+                Publication.content_item_id == item.id,
+                Publication.content_version_id == new_version.id,
+                Publication.channel == old.channel,
+                Publication.status.in_((*ACTIVE_PUBLICATION_STATUSES, PublicationStatus.PUBLISHED)),
+            )
+            .with_for_update()
+        )
+        if active_or_published is not None:
+            raise AppError(
+                "PUBLICATION_ALREADY_EXISTS",
+                "Для утверждённой версии уже существует публикация.",
+                409,
+            )
+
+        replacement = Publication(
+            campaign_id=old.campaign_id,
+            content_item_id=old.content_item_id,
+            content_version_id=new_version.id,
+            channel=old.channel,
+            status=PublicationStatus.SCHEDULED,
+            scheduled_at=old.scheduled_at,
+            approved_for_publish_at=utc_now(),
+            approved_for_publish_by=user.id,
+        )
+        old.status = PublicationStatus.CANCELLED
+        self.session.add(replacement)
+        await self.session.flush()
+        await ActivityLogService(self.session).record(
+            "PUBLICATION_VERSION_REPLACED",
+            operation_key=f"publication-version-replaced:{old.id}:{replacement.id}",
+            campaign_id=old.campaign_id,
+            user_id=user.id,
+            content_item_id=old.content_item_id,
+            metadata={
+                "old_publication_id": str(old.id),
+                "new_publication_id": str(replacement.id),
+                "old_content_version_id": str(old.content_version_id),
+                "new_content_version_id": str(replacement.content_version_id),
+                "channel": old.channel.value,
+                "scheduled_at": old.scheduled_at.isoformat(),
+            },
+        )
+        await self.session.commit()
+        await self.session.refresh(replacement)
+        return await self._response(replacement)
+
     async def claim_for_publish(
         self, publication_id: UUID, user: User | None = None
     ) -> PublicationResponse:

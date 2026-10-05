@@ -77,7 +77,7 @@ export default function Home() {
   );
   const attentionTasks = useMemo(
     () => tasks
-      .filter((task) => attentionStatuses.has(task.status))
+      .filter((task) => task.classification === "actionable" && attentionStatuses.has(task.status))
       .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
       .slice(0, 4),
     [tasks],
@@ -88,7 +88,7 @@ export default function Home() {
   const readyTasks = status?.tasks.READY ?? tasks.filter((task) => task.status === "READY").length;
   const inProgressTasks = status?.tasks.IN_PROGRESS ?? tasks.filter((task) => task.status === "IN_PROGRESS").length;
   const pendingApprovals = status?.pending_approvals ?? approvals.filter((approval) => approval.status === "PENDING").length;
-  const attentionCount = tasks.filter((task) => attentionStatuses.has(task.status)).length;
+  const attentionCount = tasks.filter((task) => task.classification === "actionable" && attentionStatuses.has(task.status)).length;
 
   async function handleLogout() {
     await logout();

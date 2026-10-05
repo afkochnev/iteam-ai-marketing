@@ -22,7 +22,8 @@ export type TaskStatus = "NEW" | "BLOCKED" | "READY" | "IN_PROGRESS" | "WAITING_
 export type TaskPriority = "LOW" | "NORMAL" | "HIGH" | "URGENT";
 export type TaskType = "CAMPAIGN_PLANNING" | "KNOWLEDGE_RESEARCH" | "WRITE_ARTICLE" | "CREATE_SOCIAL_POSTS" | "CONTENT_REVISION" | "MANUAL";
 export interface TaskReference { id: string; title: string; status: TaskStatus; }
-export interface TaskListItem { id: string; campaign_id: string; campaign: { id: string; name: string }; task_type: TaskType; title: string; assigned_agent: { id: string; name: string; slug: string } | null; priority: TaskPriority; status: TaskStatus; deadline: string | null; created_at: string; updated_at: string; }
+export type TaskClassification = "actionable" | "superseded" | "historical";
+export interface TaskListItem { id: string; campaign_id: string; campaign: { id: string; name: string }; task_type: TaskType; title: string; assigned_agent: { id: string; name: string; slug: string } | null; priority: TaskPriority; status: TaskStatus; deadline: string | null; created_at: string; updated_at: string; classification: TaskClassification; classification_label: string | null; }
 export interface Task extends TaskListItem { parent_task_id: string | null; parent_task: TaskReference | null; description: string | null; assigned_agent_id: string | null; input_data: Record<string, unknown>; output_data: Record<string, unknown>; requires_approval: boolean; error_message: string | null; retry_count: number; started_at: string | null; completed_at: string | null; dependencies: TaskReference[]; dependents: TaskReference[]; }
 export interface TaskInput { campaign_id: string; parent_task_id?: string | null; task_type: TaskType; title: string; description?: string | null; assigned_agent_id?: string | null; priority: TaskPriority; input_data?: Record<string, unknown>; requires_approval?: boolean; deadline?: string | null; dependency_ids?: string[]; }
 export type AgentRunStatus = "QUEUED" | "RUNNING" | "WAITING_APPROVAL" | "COMPLETED" | "FAILED" | "CANCELLED";
@@ -191,6 +192,7 @@ export const publicationsApi = {
   approve: (id: string) => request<Publication>(`/publications/${id}/approve`, { method: "POST" }),
   schedule: (id: string, scheduled_at: string) => request<Publication>(`/publications/${id}/schedule`, { method: "POST", body: JSON.stringify({ scheduled_at }) }),
   cancel: (id: string) => request<Publication>(`/publications/${id}/cancel`, { method: "POST" }),
+  replaceScheduledVersion: (id: string) => request<Publication>(`/publications/${id}/replace-scheduled-version`, { method: "POST" }),
   publishNow: (id: string) => request<Publication>(`/publications/${id}/publish-now`, { method: "POST" }),
   retry: (id: string) => request<Publication>(`/publications/${id}/retry`, { method: "POST" }),
   reconcilePublished: (id: string, payload: { external_id: string; external_url?: string; published_at?: string; note?: string }) => request<Publication>(`/publications/${id}/reconcile/published`, { method: "POST", body: JSON.stringify(payload) }),

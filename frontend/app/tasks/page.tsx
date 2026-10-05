@@ -17,7 +17,7 @@ function TaskRow({ task }: { task: TaskListItem }) {
       <Link className="task-row-title" href={`/tasks/${task.id}`}>{task.title}</Link>
       <div className="row-meta"><Link href={`/campaigns/${task.campaign_id}`}>{task.campaign.name}</Link><span>{TASK_TYPE_LABELS[task.task_type]}</span><span>{task.assigned_agent?.name ?? "Исполнитель не назначен"}</span><span>Создана {taskDate(task.created_at)}</span></div>
     </div>
-    <div className="row-meta"><StatusBadge status={task.status} label={TASK_STATUS_LABELS[task.status]} /><span title="Приоритет задачи">{TASK_PRIORITY_LABELS[task.priority]}</span>{task.deadline && <span>Срок: {taskDate(task.deadline)}</span>}</div>
+    <div className="row-meta"><StatusBadge status={task.status} label={TASK_STATUS_LABELS[task.status]} />{task.classification_label && <span className="status-badge" data-classification={task.classification}>{task.classification_label}</span>}<span title="Приоритет задачи">{TASK_PRIORITY_LABELS[task.priority]}</span>{task.deadline && <span>Срок: {taskDate(task.deadline)}</span>}</div>
   </article>;
 }
 
@@ -58,20 +58,20 @@ export default function TasksPage() {
       const rank = (status: string) => status === "FAILED" ? 0 : status === "BLOCKED" ? 1 : status === "READY" ? 2 : status === "IN_PROGRESS" ? 3 : 4;
       return rank(a.status) - rank(b.status) || new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
     }), [tasks, filters]);
-  const attentionTasks = visible.filter((task) => attention.has(task.status));
+  const attentionTasks = visible.filter((task) => task.classification === "actionable" && attention.has(task.status));
   const readyTasks = visible.filter((task) => task.status === "READY");
   const activeTasks = visible.filter((task) => active.has(task.status));
-  const historyTasks = visible.filter((task) => ["COMPLETED", "CANCELLED", "APPROVED"].includes(task.status));
+  const historyTasks = visible.filter((task) => task.classification !== "actionable" || ["COMPLETED", "CANCELLED", "APPROVED"].includes(task.status));
   const clearFilters = () => setFilters({});
 
   return <main className="page">
     <PageBreadcrumbs items={[{ label: "Задачи" }]} />
     <header className="page-header"><div><p className="eyebrow">Рабочий процесс</p><h1>Задачи</h1><p className="page-subtitle">Сначала показываем то, что требует решения, затем готовую и текущую работу. Завершённые задачи доступны в истории.</p></div><Link className="button-link" href="/tasks/new">Новая задача</Link></header>
     <div className="summary-grid" aria-label="Сводка по задачам">
-      <a className="metric-card" href="#tasks-attention" title="Ошибки и задачи, ожидающие зависимость"><strong>{tasks.filter((task) => attention.has(task.status)).length}</strong><span>Требуют внимания</span></a>
+      <a className="metric-card" href="#tasks-attention" title="Ошибки и задачи, ожидающие зависимость"><strong>{tasks.filter((task) => task.classification === "actionable" && attention.has(task.status)).length}</strong><span>Требуют внимания</span></a>
       <a className="metric-card" href="#tasks-ready" title="Можно запустить следующим шагом"><strong>{tasks.filter((task) => task.status === "READY").length}</strong><span>Готовы к выполнению</span></a>
       <a className="metric-card" href="#tasks-active" title="Система или исполнитель уже работает"><strong>{tasks.filter((task) => active.has(task.status)).length}</strong><span>В работе и ожидании</span></a>
-      <a className="metric-card" href="#tasks-history" title="Успешно завершены, отменены или утверждены"><strong>{tasks.filter((task) => ["COMPLETED", "CANCELLED", "APPROVED"].includes(task.status)).length}</strong><span>В истории</span></a>
+      <a className="metric-card" href="#tasks-history" title="Завершённые, отменённые, superseded и исторические задачи"><strong>{tasks.filter((task) => task.classification !== "actionable" || ["COMPLETED", "CANCELLED", "APPROVED"].includes(task.status)).length}</strong><span>В истории</span></a>
     </div>
     <section className="section-block" aria-label="Фильтры задач">
       <div className="filters">

@@ -17,6 +17,7 @@ from app.schemas.task import (
     task_to_response,
 )
 from app.services.agent_run_service import AgentRunService
+from app.services.task_classification_service import classify_tasks
 from app.services.task_service import TaskService
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
@@ -39,7 +40,16 @@ async def list_tasks(
         task_type=task_type,
         priority=priority,
     )
-    return [task_to_list_item(task) for task in tasks]
+    classifications = await classify_tasks(session, tasks)
+    return [
+        task_to_list_item(task).model_copy(
+            update={
+                "classification": classifications[task.id][0],
+                "classification_label": classifications[task.id][1],
+            }
+        )
+        for task in tasks
+    ]
 
 
 @router.post("", response_model=TaskResponse, status_code=status.HTTP_201_CREATED)
