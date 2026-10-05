@@ -9,6 +9,8 @@ class Settings(BaseSettings):
     app_secret: str = "development-only-change-me"
     database_url: str = "postgresql+asyncpg://iteam:iteam@postgres:5432/iteam"
     redis_url: str = "redis://redis:6379/0"
+    celery_role: str = "backend"
+    celery_beat_role: str = "ai"
     frontend_url: str = "http://localhost:3000"
     jwt_secret: str = "development-only-jwt-secret-change-me"
     jwt_algorithm: str = "HS256"
@@ -91,6 +93,28 @@ class Settings(BaseSettings):
 
         ensure_safe_test_redis_url(self.redis_url)
 
+    def validate_ai_worker_capabilities(self) -> None:
+        """Fail closed if an AI worker receives publication capability."""
+        if self.celery_role != "ai_worker":
+            return
+        has_publication_credentials = any(
+            value is not None and bool(str(value).strip())
+            for value in (
+                self.telegram_bot_token,
+                self.telegram_target_chat_id,
+                self.vk_access_token,
+                self.vk_owner_id,
+            )
+        )
+        if (
+            self.telegram_publishing_enabled
+            or self.vk_publishing_enabled
+            or has_publication_credentials
+        ):
+            raise ValueError(
+                "AI worker must have publication providers disabled and their credentials absent."
+            )
+
     def validate_production(self) -> None:
         self.validate_redis_isolation()
         numeric_errors: list[str] = []
@@ -164,7 +188,7 @@ class Settings(BaseSettings):
                 + ", ".join(sorted(set(errors)))
             )
 
-    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore", env_ignore_empty=True)
 
 
 @lru_cache

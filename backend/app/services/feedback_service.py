@@ -299,7 +299,7 @@ class FeedbackService:
         try:
             from app.workers.feedback_worker import generate_feedback_analysis
 
-            result = generate_feedback_analysis.delay(str(run.id))
+            result = generate_feedback_analysis.apply_async(args=[str(run.id)], queue="ai")
             run.queue_job_id = result.id
             await self.session.commit()
         except Exception as exc:

@@ -116,7 +116,7 @@ class KnowledgeService:
         try:
             from app.workers.knowledge_worker import index_knowledge_item
 
-            index_knowledge_item.delay(str(item.id))
+            index_knowledge_item.apply_async(args=[str(item.id)], queue="ai")
         except Exception as exc:
             logger.exception("Knowledge indexing enqueue failed")
             item.status = KnowledgeItemStatus.FAILED

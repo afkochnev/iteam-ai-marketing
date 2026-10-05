@@ -45,14 +45,136 @@ services:
       timeout: 5s
       retries: 10
 
-  worker:
+  ai_worker:
     build:
       context: ./backend
       args:
         BUILD_SHA: ${BUILD_SHA:-unknown}
-    command: celery -A app.workers.celery_app:celery_app worker --beat --loglevel=INFO
+    command: celery -A app.workers.celery_app:celery_app worker --queues=ai --loglevel=INFO
     env_file: .env
+    environment:
+      CELERY_ROLE: ai_worker
+      TELEGRAM_PUBLISHING_ENABLED: "false"
+      TELEGRAM_BOT_TOKEN: ""
+      TELEGRAM_TARGET_CHAT_ID: ""
+      VK_PUBLISHING_ENABLED: "false"
+      VK_ACCESS_TOKEN: ""
+      VK_OWNER_ID: ""
+    restart: unless-stopped
     stop_grace_period: 210s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  ai_scheduler:
+    build:
+      context: ./backend
+      args:
+        BUILD_SHA: ${BUILD_SHA:-unknown}
+    command: celery -A app.workers.celery_app:celery_app beat --loglevel=INFO --schedule=/tmp/celerybeat-ai
+    env_file: .env
+    environment:
+      CELERY_ROLE: ai_scheduler
+      CELERY_BEAT_ROLE: ai
+      TELEGRAM_PUBLISHING_ENABLED: "false"
+      TELEGRAM_BOT_TOKEN: ""
+      TELEGRAM_TARGET_CHAT_ID: ""
+      VK_PUBLISHING_ENABLED: "false"
+      VK_ACCESS_TOKEN: ""
+      VK_OWNER_ID: ""
+      OPENAI_API_KEY: ""
+      OPENAI_VECTOR_STORE_ID: ""
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  publication_worker:
+    profiles: [publishing]
+    build:
+      context: ./backend
+      args:
+        BUILD_SHA: ${BUILD_SHA:-unknown}
+    command: celery -A app.workers.celery_app:celery_app worker --queues=publication --loglevel=INFO
+    env_file: .env
+    environment:
+      CELERY_ROLE: publication_worker
+      OPENAI_API_KEY: ""
+      OPENAI_VECTOR_STORE_ID: ""
+    restart: unless-stopped
+    stop_grace_period: 210s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  publication_control_worker:
+    profiles: [publishing]
+    build:
+      context: ./backend
+      args:
+        BUILD_SHA: ${BUILD_SHA:-unknown}
+    command: celery -A app.workers.celery_app:celery_app worker --queues=publication_control --loglevel=INFO
+    env_file: .env
+    environment:
+      CELERY_ROLE: publication_control_worker
+      TELEGRAM_BOT_TOKEN: ""
+      TELEGRAM_TARGET_CHAT_ID: ""
+      VK_ACCESS_TOKEN: ""
+      VK_OWNER_ID: ""
+      OPENAI_API_KEY: ""
+      OPENAI_VECTOR_STORE_ID: ""
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  publication_scheduler:
+    profiles: [publishing]
+    build:
+      context: ./backend
+      args:
+        BUILD_SHA: ${BUILD_SHA:-unknown}
+    command: celery -A app.workers.celery_app:celery_app beat --loglevel=INFO --schedule=/tmp/celerybeat-publication
+    env_file: .env
+    environment:
+      CELERY_ROLE: publication_scheduler
+      CELERY_BEAT_ROLE: publication
+      TELEGRAM_PUBLISHING_ENABLED: "false"
+      TELEGRAM_BOT_TOKEN: ""
+      TELEGRAM_TARGET_CHAT_ID: ""
+      VK_PUBLISHING_ENABLED: "false"
+      VK_ACCESS_TOKEN: ""
+      VK_OWNER_ID: ""
+      OPENAI_API_KEY: ""
+      OPENAI_VECTOR_STORE_ID: ""
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  metrics_worker:
+    profiles: [publishing]
+    build:
+      context: ./backend
+      args:
+        BUILD_SHA: ${BUILD_SHA:-unknown}
+    command: celery -A app.workers.celery_app:celery_app worker --queues=metrics --loglevel=INFO
+    env_file: .env
+    environment:
+      CELERY_ROLE: metrics_worker
+      OPENAI_API_KEY: ""
+      OPENAI_VECTOR_STORE_ID: ""
+    restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy

@@ -13,7 +13,9 @@ Production references: [deployment](docs/deployment.md), [security](docs/securit
 
 - `frontend`: Next.js + React + TypeScript.
 - `backend`: FastAPI; здесь будут REST API, бизнес-логика и интеграции.
-- `worker`: Celery worker из того же backend image.
+- `ai_worker` и `ai_scheduler`: изолированный AI execution и READY-task dispatch.
+- `publication_worker`, `publication_control_worker`, `publication_scheduler` и
+  `metrics_worker`: отдельные службы профиля `publishing`, выключенные по умолчанию.
 - `postgres`: основное хранилище будущих бизнес-сущностей.
 - `redis`: broker/result backend фоновых задач.
 
@@ -25,10 +27,18 @@ Production references: [deployment](docs/deployment.md), [security](docs/securit
 
 ```bash
 cp .env.example .env
-docker compose up --build
-docker compose exec backend alembic upgrade head
+docker compose up -d postgres redis
+docker compose run --rm --no-deps backend alembic upgrade head
+docker compose up --build -d
 docker compose exec backend python -m app.seed
 ```
+
+Обычный Compose runtime автоматически запускает только AI worker/scheduler.
+Публикационные службы включаются отдельно командой
+`docker compose --profile publishing up -d`; запуск AI-инфраструктуры сам по себе
+не включает отправку Telegram/VK. AI worker слушает только очередь `ai` и не
+получает Telegram/VK credentials. `ai_live_test` и `unrouted` штатными worker-ами
+не читаются.
 
 После запуска:
 
@@ -74,11 +84,11 @@ npm test
 npm run build
 ```
 
-## Worker
+## AI worker (ручной запуск вне Compose)
 
 ```bash
 cd backend
-celery -A app.workers.celery_app:celery_app worker --loglevel=INFO
+CELERY_ROLE=ai_worker celery -A app.workers.celery_app:celery_app worker --queues=ai --loglevel=INFO
 ```
 
 ## Миграции и seed
@@ -244,7 +254,7 @@ READY/FAILED → ARCHIVED
 ```
 
 Поддерживаются `.pdf`, `.docx`, `.txt` и `.md`, размер ограничивает `KNOWLEDGE_MAX_UPLOAD_MB`. HTTP endpoint не ждёт индексацию: worker получает только KnowledgeItem ID, attach выполняется идемпотентно, provider auto chunking остаётся включённым. Таймаут и polling задаются `KNOWLEDGE_INDEX_TIMEOUT_SECONDS` и `KNOWLEDGE_INDEX_POLL_INTERVAL_SECONDS`. Archive удаляет attachment из active Vector Store и исключает документ из retrieval, не удаляя локальный audit record или OpenAI File.
-Каждый attach/status вызов также ограничен общим timeout. Потерянный worker обнаруживается задачей `recover_stuck_tasks`: stale `INDEXING` переводится в `FAILED` с кодом `KNOWLEDGE_INDEX_STALE`, после чего Admin может безопасно выполнить retry без создания нового KnowledgeItem.
+Каждый attach/status вызов также ограничен общим timeout. Потерянный AI worker обнаруживается задачей `recover_stuck_ai_tasks`: stale `INDEXING` переводится в `FAILED` с кодом `KNOWLEDGE_INDEX_STALE`, после чего Admin может безопасно выполнить retry без создания нового KnowledgeItem.
 
 Knowledge API:
 
@@ -289,7 +299,7 @@ Task UI показывает verified summary, gaps и provenance каждого
 
 ## Environment
 
-Скопируйте `.env.example` в `.env`, замените `JWT_SECRET`, `ADMIN_PASSWORD` и остальные placeholder-значения. Не коммитьте реальные секреты. `OPENAI_API_KEY` передаётся только backend и worker через server-side `.env`; frontend получает только `NEXT_PUBLIC_API_URL`.
+Скопируйте `.env.example` в `.env`, замените `JWT_SECRET`, `ADMIN_PASSWORD` и остальные placeholder-значения. Не коммитьте реальные секреты. `OPENAI_API_KEY` передаётся backend и AI worker через server-side `.env`; AI scheduler очищает provider credentials, а frontend получает только `NEXT_PUBLIC_API_URL`. Telegram/VK credentials доступны backend и только opt-in publishing workers; AI worker получает пустые provider credentials и завершается при обнаружении publishing capability.
 
 ## Тестовая база данных
 
@@ -315,7 +325,7 @@ database.
 
 Test startup also refuses Redis DB0 and derives DB15 when `TEST_REDIS_URL` is
 not set. Celery uses an in-process memory broker and result backend in test
-context, so `.delay()` and `.apply_async()` cannot publish into any Redis
+context, so `.apply_async()` cannot publish into any Redis
 queue. The non-zero Redis URL is retained only for application readiness
 checks that explicitly ping Redis.
 
@@ -345,19 +355,22 @@ Telegram-публикация выполняется только для отд�
 только переводит запись в `PUBLISHING` и ставит Celery-задачу; HTTP API не вызывает
 Telegram синхронно. Планировщик подбирает только просроченные `SCHEDULED` записи.
 
-Для включения провайдера задайте на backend/worker `TELEGRAM_PUBLISHING_ENABLED=true`,
-`TELEGRAM_BOT_TOKEN` и `TELEGRAM_TARGET_CHAT_ID`. Токен не хранится в PostgreSQL,
+Для включения провайдера настройте backend и opt-in `publication_worker`
+(`docker compose --profile publishing up -d`) с
+`TELEGRAM_PUBLISHING_ENABLED=true`, `TELEGRAM_BOT_TOKEN` и
+`TELEGRAM_TARGET_CHAT_ID`. AI worker никогда не получает эти значения. Токен не хранится в PostgreSQL,
 ActivityLog или API-ответах. Ошибки сети с неоднозначной доставкой переводят запись в
 `TELEGRAM_RECONCILIATION_REQUIRED`; автоматический повтор в этом состоянии не выполняется,
 чтобы не дублировать сообщение.
 
 ## Automatic Task Dispatch and Revisions
 
-Celery Beat запускает application `TaskDispatcherService`. Он выбирает READY AI
+`ai_scheduler` запускает application `TaskDispatcherService`. Он выбирает READY AI
 tasks через PostgreSQL `FOR UPDATE SKIP LOCKED` и ставит единичный AgentRun в
-очередь. Автоматически выполняются KNOWLEDGE_RESEARCH, WRITE_ARTICLE и
-CREATE_SOCIAL_POSTS; ручные задачи и стратегическое планирование остаются
-явными human actions.
+очередь `ai`; `ai_worker` слушает только эту очередь. Автоматически выполняются
+KNOWLEDGE_RESEARCH, WRITE_ARTICLE, CREATE_SOCIAL_POSTS и CONTENT_REVISION.
+Publication dispatch/recovery и metrics имеют отдельные очереди и доступны только
+через Compose profile `publishing`.
 
 Для Article и Social Post Pack доступен `request-revision`. Backend фиксирует
 immutable target/version и комментарий пользователя, создаёт CONTENT_REVISION;

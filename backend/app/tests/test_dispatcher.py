@@ -99,17 +99,20 @@ async def test_dispatcher_enqueue_failure_is_retryable(
     task, _campaign, _article = await smm_fixture(db_session)
     from app.workers import agent_worker
 
-    def fail(_run_id: str):
+    def fail(*, args: list[str], countdown: int, queue: str):
+        assert len(args) == 1 and countdown == 0 and queue == "ai"
         raise RuntimeError("temporary broker outage")
 
-    monkeypatch.setattr(agent_worker.execute_agent_run, "delay", fail)
+    monkeypatch.setattr(agent_worker.execute_agent_run, "apply_async", fail)
     assert await TaskDispatcherService(db_session).dispatch_ready_tasks() == []
     assert (await TaskService(db_session).get_task(task.id)).status is TaskStatus.READY
     failed_run = await db_session.scalar(select(AgentRun).where(AgentRun.task_id == task.id))
     assert failed_run is not None and failed_run.status is AgentRunStatus.FAILED
 
     monkeypatch.setattr(
-        agent_worker.execute_agent_run, "delay", lambda _run_id: type("Job", (), {"id": "job"})()
+        agent_worker.execute_agent_run,
+        "apply_async",
+        lambda *, args, countdown, queue: type("Job", (), {"id": "job"})(),
     )
     assert await TaskDispatcherService(db_session).dispatch_ready_tasks() == [task.id]
 
