@@ -15,6 +15,7 @@ describe("Login page", () => {
 
   it("renders and validates required fields", async () => {
     render(<LoginPage />);
+    expect(screen.getByRole("link", { name: "Зарегистрироваться" })).toHaveAttribute("href", "/register");
     expect(screen.getByLabelText("Email")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Войти" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Введите email и пароль.");

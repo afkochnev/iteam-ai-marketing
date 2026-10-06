@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db_session
 from app.core.errors import AppError
-from app.core.security import decode_access_token
+from app.core.security import decode_access_token, decode_auth_version
 from app.models.user import User, UserRole
 from app.repositories.users import UserRepository
 
@@ -24,12 +24,13 @@ async def get_current_user(
         )
     try:
         user_id = decode_access_token(access_token)
+        auth_version = decode_auth_version(access_token)
     except (jwt.InvalidTokenError, ValueError):
         raise AppError(
             "AUTHENTICATION_REQUIRED", "Требуется авторизация.", status.HTTP_401_UNAUTHORIZED
         ) from None
     user = await UserRepository(session).get_by_id(user_id)
-    if user is None:
+    if user is None or user.auth_version != auth_version:
         raise AppError(
             "AUTHENTICATION_REQUIRED", "Требуется авторизация.", status.HTTP_401_UNAUTHORIZED
         )

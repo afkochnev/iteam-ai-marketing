@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
@@ -21,5 +22,5 @@ export default function LoginPage() {
       <input id="email" name="email" type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} />
       <label htmlFor="password">Пароль</label><input id="password" name="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} />
       {error && <p role="alert" className="error">{error}</p>}<button type="submit" disabled={submitting}>{submitting ? "Входим…" : "Войти"}</button>
-    </form></section></main>;
+    </form><p><Link href="/register">Зарегистрироваться</Link></p></section></main>;
 }

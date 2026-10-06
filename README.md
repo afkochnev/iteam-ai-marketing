@@ -357,3 +357,15 @@ Production migration выполняется отдельным one-shot `alembic
 запуска backend/worker/Beat. Для проверки перед release используйте
 `scripts/release_check.sh`, после запуска — `scripts/smoke.sh`. Backup/restore,
 TLS/reverse-proxy assumptions и rollback policy описаны в `docs/`.
+
+### Self-registration and account passwords
+
+Self-registration defaults to disabled (`SELF_REGISTRATION_ENABLED=false`).
+For local normal operations, explicitly set `SELF_REGISTRATION_ENABLED=true` in
+the runtime `.env` and restart the backend when applying the reviewed release.
+Registration creates MANAGER accounts and directs the user to login. Production
+operators must opt in explicitly. Passwords require 12–128 characters and cannot
+be blank. The profile page changes the password and keeps the current session;
+other sessions are invalidated. Migration `20261006_0021` backfills existing
+users with auth_version 1 without changing their hashes or roles. JWTs issued
+before this release require one fresh login.

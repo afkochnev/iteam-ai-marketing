@@ -29,6 +29,16 @@ describe("Campaigns UI", () => {
   afterEach(() => cleanup());
   beforeEach(() => { vi.clearAllMocks(); list.mockResolvedValue([campaign]); get.mockResolvedValue(campaign); workspace.mockResolvedValue({ campaign, director: { strategy_status: "ACTIVE", article_count: 0, approved_article_count: 0, plan_status: null, plan_item_count: 0, plan_items_with_posts: 0, plan_items_without_posts: 0, social_post_count: 0, posts_waiting_approval: 0, scheduled_publication_count: 0, published_count: 0, failed_task_count: 0, blocked_task_count: 0, next_step: { title: "Проверить материалы", description: "Следующее действие", href: "/content", entity_type: "article", entity_id: null } }, knowledge: { store_ready: true, source_count: 0, item_count: 0, ready_item_count: 0, processing_item_count: 0, failed_item_count: 0, campaign_packs: [], has_current_strategy_pack: false }, articles: [], social_posts: [], publication_plan: null, other_plans: [], publications: [], attention_tasks: [], feedback: { new_feedback_count: 0, new_metrics_count: 0 } }); agentsList.mockResolvedValue([]); agentRunGet.mockResolvedValue({ id: "run-1", task_id: "task-1", agent_id: "agent-1", campaign_id: campaign.id, status: "COMPLETED", model: "test", created_at: campaign.created_at }); agentRunList.mockResolvedValue([{ id: "run-created", status: "COMPLETED", created_at: campaign.created_at }]); taskCreate.mockResolvedValue({ id: "task-created", status: "READY" }); taskGet.mockResolvedValue({ id: "task-created", status: "COMPLETED", output_data: { content_item_id: "post-created" } }); taskRun.mockResolvedValue({ id: "run-created", status: "QUEUED" }); taskList.mockResolvedValue([]); approvalList.mockResolvedValue([]); contentList.mockResolvedValue([]); activityList.mockResolvedValue([]); publicationList.mockResolvedValue([]); publicationCalendar.mockResolvedValue([]); feedbackList.mockResolvedValue([]); feedbackAnalyses.mockResolvedValue([]); performance.mockResolvedValue(null); plansList.mockResolvedValue([]); vi.spyOn(window, "confirm").mockReturnValue(true); });
 
+  it("offers ARTICLE actions with shared card spacing", async () => {
+    const value = await workspace();
+    workspace.mockResolvedValue({ ...value, articles: [{ id: "article-24", title: "Article 24", status: "APPROVED", campaign_role: "Источник", plan_item_count: 0, social_post_count: 0, scheduled_publication_count: 0, published_count: 0 }] });
+    const { container } = render(<CampaignDetailsPage />);
+    expect(await screen.findByRole("link", { name: "Редактировать" })).toHaveAttribute("href", "/content/article-24#edit");
+    expect(screen.getByRole("link", { name: "Отправить на доработку" })).toHaveAttribute("href", "/content/article-24#revision");
+    expect(screen.getByRole("link", { name: "Открыть" })).toHaveAttribute("href", "/content/article-24");
+    expect(container.querySelector(".article-assets.content-card-stack .article-asset")).toBeInTheDocument();
+  });
+
   it("renders campaign list and empty state", async () => {
     const first = render(<CampaignsPage />);
     expect(await screen.findByText("AI-диагностика")).toBeInTheDocument();
@@ -234,6 +244,7 @@ describe("Campaigns UI", () => {
     expect(await screen.findByText("Ожидают согласования: 3")).toBeInTheDocument();
     expect(screen.getByText("Пакет")).toBeInTheDocument();
     expect(screen.getByText(/Постов: 1/)).toBeInTheDocument();
+    expect(screen.getByText("Пост").closest(".content-card")?.parentElement).toHaveClass("content-card-stack");
   });
 
   it("renders backend workflow statuses and activity timeline", async () => {

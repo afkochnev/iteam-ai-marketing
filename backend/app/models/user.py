@@ -1,6 +1,6 @@
 from enum import StrEnum
 
-from sqlalchemy import Boolean, Enum, Index, String, func, text
+from sqlalchemy import Boolean, Enum, Index, Integer, String, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base, UUIDTimestampMixin
@@ -13,6 +13,10 @@ class UserRole(StrEnum):
 
 class User(UUIDTimestampMixin, Base):
     __tablename__ = "users"
+
+    auth_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text("1")
+    )
 
     email: Mapped[str] = mapped_column(String(320), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(512), nullable=False)

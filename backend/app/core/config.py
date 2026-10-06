@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     smm_agent_output_repair_attempts: int = 1
     agent_retry_backoff_seconds: int = 5
     task_stuck_after_seconds: int = 600
+    self_registration_enabled: bool = False
+    rate_limit_registration_per_minute: int = 5
+    rate_limit_password_change_per_minute: int = 5
     rate_limit_login_per_minute: int = 10
     rate_limit_ai_actions_per_minute: int = 30
     rate_limit_uploads_per_minute: int = 10

@@ -313,3 +313,6 @@ form { display: grid; gap: .75rem; }
 [id] { scroll-margin-top: 6rem; }
 .plan-item:target, #publication:target, #approval:target { outline: 3px solid var(--accent, #376344); outline-offset: 4px; background: #eef7ed; }
 .plan-item:focus-visible { outline: 3px solid #376344; outline-offset: 4px; }
+
+/* A shared container owns spacing between independent content objects. */
+.content-card-stack { display: flex; flex-direction: column; gap: 1rem; min-width: 0; }
