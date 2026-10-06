@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import TaskDetailsPage from "../app/tasks/[id]/page";
@@ -32,6 +32,16 @@ describe("Tasks UI", () => {
     expect(await screen.findByText("Старая ошибка")).toBeInTheDocument();
     expect(screen.getByText("Заменена успешным выполнением")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: /Требуют внимания/ })).toHaveTextContent("1");
+  });
+
+  it("opens task history on direct hash navigation after async loading", async () => {
+    window.history.replaceState(null, "", "/tasks#tasks-history");
+    mocks.list.mockResolvedValue([{ ...task, status: "COMPLETED" }]);
+    const view = render(<TasksPage />);
+    try {
+      await waitFor(() => expect(document.getElementById("tasks-history")).toHaveAttribute("open"));
+      expect(document.activeElement?.id).toBe("tasks-history");
+    } finally { view.unmount(); window.history.replaceState(null, "", "/"); }
   });
 
   it("creates task and redirects", async () => { mocks.create.mockResolvedValue(task); render(<NewTaskPage />); await screen.findByText("Кампания"); fireEvent.change(screen.getByLabelText("Кампания *"), { target: { value: "campaign-1" } }); fireEvent.change(screen.getByLabelText("Название *"), { target: { value: "Первая задача" } }); fireEvent.click(screen.getByRole("button", { name: "Создать задачу" })); await waitFor(() => expect(mocks.create).toHaveBeenCalled()); expect(mocks.push).toHaveBeenCalledWith("/tasks/task-1"); });
@@ -69,12 +79,13 @@ describe("Tasks UI", () => {
     expect(await screen.findByText("test-model")).toBeInTheDocument();
   });
 
-  it("shows Writer AI run and hides it for blocked tasks", async () => {
+  it("shows autonomous Writer waiting state without a manual launch", async () => {
     const assigned = { id: "agent-1", name: "Writer", slug: "writer" };
     mocks.get.mockResolvedValue({ ...task, task_type: "WRITE_ARTICLE", assigned_agent: assigned });
     const unsupported = render(<TaskDetailsPage />);
     await screen.findByText("Написание статьи");
-    expect(screen.queryByRole("button", { name: "Запустить AI" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Запустить AI" })).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("ожидает автоматического запуска");
     unsupported.unmount();
     mocks.get.mockResolvedValue({ ...task, status: "BLOCKED", assigned_agent: assigned });
     render(<TaskDetailsPage />);
@@ -123,18 +134,41 @@ describe("Tasks UI", () => {
     await waitFor(() => expect(mocks.retry).toHaveBeenCalledWith("task-1"));
   });
 
-  it("runs Knowledge Keeper and renders verified KnowledgePack", async () => {
+  it("observes autonomous Knowledge Keeper and renders verified KnowledgePack", async () => {
     const keeper = { id: "keeper-1", name: "Knowledge Keeper", slug: "knowledge_keeper" };
     mocks.get.mockResolvedValue({ ...task, task_type: "KNOWLEDGE_RESEARCH", assigned_agent_id: keeper.id, assigned_agent: keeper });
     mocks.packList.mockResolvedValue([{ id: "pack-1", campaign_id: task.campaign_id, task_id: task.id, agent_run_id: "run-1", created_by_agent_id: keeper.id, strategy_version: 1, status: "READY", research_query: "управленческий ритм", summary: "Материалы найдены", gaps: [], metadata: {}, created_at: task.created_at, items: [{ knowledge_item_id: "knowledge-1", source_title: "Ручные загрузки", filename: "management.md", file_id: "file-1", excerpt: "Проверенный фрагмент", relevance_score: 0.91, selection_reason: "Раскрывает тему", position: 1, result_key: "a".repeat(64) }] }]);
     mocks.run.mockResolvedValue({});
     render(<TaskDetailsPage />);
-    fireEvent.click(await screen.findByRole("button", { name: "Запустить AI" }));
-    await waitFor(() => expect(mocks.run).toHaveBeenCalledWith("task-1"));
+    expect(await screen.findByText("Задача создана и ожидает автоматического запуска")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Запустить AI" })).not.toBeInTheDocument();
+    expect(mocks.run).not.toHaveBeenCalled();
     expect(await screen.findByText("Пакет знаний")).toBeInTheDocument();
     expect(screen.getByText(/management\.md/)).toBeInTheDocument();
     expect(screen.getByText(/0.910/)).toBeInTheDocument();
     expect(screen.getByText("Проверенный фрагмент")).toBeInTheDocument();
+  });
+
+  it.each(["KNOWLEDGE_RESEARCH", "WRITE_ARTICLE", "CREATE_SOCIAL_POSTS", "CONTENT_REVISION"])("does not manually run READY AUTO task %s", async (taskType) => {
+    mocks.get.mockResolvedValue({ ...task, task_type: taskType, assigned_agent: { id: "agent", name: "Agent", slug: "smm_manager" } });
+    render(<TaskDetailsPage />);
+    expect(await screen.findByText("Задача создана и ожидает автоматического запуска")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Запустить AI" })).not.toBeInTheDocument();
+    expect(mocks.run).not.toHaveBeenCalled();
+  });
+  it("polls a READY AUTO task before the scheduler has created its first run", async () => {
+    vi.useFakeTimers();
+    try {
+      mocks.get.mockResolvedValue({ ...task, task_type: "CONTENT_REVISION" }); mocks.runList.mockResolvedValue([]);
+      render(<TaskDetailsPage />);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(screen.getByRole("status")).toHaveTextContent("ожидает автоматического запуска");
+      mocks.get.mockResolvedValue({ ...task, task_type: "CONTENT_REVISION", status: "IN_PROGRESS" });
+      mocks.runList.mockResolvedValue([{ id: "run-new", task_id: task.id, status: "RUNNING", created_at: task.created_at }]);
+      await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
+      expect(screen.getByText("Выполняется")).toBeInTheDocument();
+      expect(mocks.run).not.toHaveBeenCalled();
+    } finally { cleanup(); vi.useRealTimers(); }
   });
 
   it("renders insufficient gaps and research retry", async () => {

@@ -309,3 +309,7 @@ form { display: grid; gap: .75rem; }
   .change-list dd { grid-template-columns: 1fr; gap: .25rem; }
   th, td { padding: .6rem; }
 }
+
+[id] { scroll-margin-top: 6rem; }
+.plan-item:target, #publication:target, #approval:target { outline: 3px solid var(--accent, #376344); outline-offset: 4px; background: #eef7ed; }
+.plan-item:focus-visible { outline: 3px solid #376344; outline-offset: 4px; }

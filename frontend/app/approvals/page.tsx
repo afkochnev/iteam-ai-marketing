@@ -1,7 +1,7 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useState } from "react";
+import Link from "@/components/hash-link";
+import { useCallback, useEffect, useState } from "react";
 
 import { PageBreadcrumbs } from "@/components/page-breadcrumbs";
 import { StatusBadge } from "@/components/status-badge";
@@ -18,16 +18,19 @@ const approvalStatus: Record<Approval["status"], string> = {
 export default function ApprovalsPage() {
   const [items, setItems] = useState<Approval[]>([]);
   const [error, setError] = useState("");
-  useEffect(() => { void approvalsApi.list().then(setItems).catch((reason: Error) => setError(reason.message)); }, []);
+  const [loading, setLoading] = useState(true);
+  const load = useCallback(() => { setLoading(true); setError(""); void approvalsApi.list().then(setItems).catch((reason: Error) => setError(reason.message)).finally(() => setLoading(false)); }, []);
+  useEffect(() => { const timer = window.setTimeout(load, 0); return () => window.clearTimeout(timer); }, [load]);
 
   return <main className="page">
     <PageBreadcrumbs items={[{ label: "Согласования" }]} />
     <header className="page-header"><div><p className="eyebrow">Решения человека</p><h1>Согласования</h1><p className="page-subtitle">Проверяйте стратегию кампании и версии материалов до следующего этапа.</p></div><Link className="button-link secondary" href="/campaigns">К кампаниям</Link></header>
-    {error && <div className="empty-state" role="alert"><h2>Не удалось загрузить согласования</h2><p>{error}</p></div>}
-    {!error && !items.length && <p className="empty-state">Согласований пока нет.</p>}
+    {error && <div className="empty-state" role="alert"><h2>Не удалось загрузить согласования</h2><p>{error}</p><button onClick={load}>Повторить загрузку</button></div>}
+    {loading && <p role="status">Загружаем согласования…</p>}
+    {!loading && !error && !items.length && <p className="empty-state">Согласований пока нет. <Link href="/content">Открыть контент</Link></p>}
     {!error && items.length > 0 && <div className="content-stack">{items.map((item) => {
       const isContent = item.object_type === "CONTENT_ITEM";
-      return <article className="content-card" key={item.id}><div className="card-heading"><div><p className="eyebrow">{isContent ? "Материал" : "Стратегия кампании"} · версия {item.subject_version}</p><h2><Link href={isContent ? `/content/${item.object_id}` : `/campaigns/${item.object_id}`}>{isContent ? "Открыть материал" : "Открыть кампанию"}</Link></h2><p className="muted">Создано {formatDateTime(item.created_at)}</p></div><StatusBadge status={item.status} label={approvalStatus[item.status]} /></div>{item.comment && <p>{item.comment}</p>}</article>;
+      return <article className="content-card" key={item.id}><div className="card-heading"><div><p className="eyebrow">{isContent ? "Материал" : "Стратегия кампании"} · версия {item.subject_version}</p><h2><Link href={isContent ? `/content/${item.object_id}#approval` : `/campaigns/${item.object_id}#strategy`}>{isContent ? "Открыть материал" : "Открыть кампанию"}</Link></h2><p className="muted">Создано {formatDateTime(item.created_at)}</p></div><StatusBadge status={item.status} label={approvalStatus[item.status]} /></div>{item.comment && <p>{item.comment}</p>}</article>;
     })}</div>}
   </main>;
 }

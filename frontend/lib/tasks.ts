@@ -8,3 +8,5 @@ export const TASK_STATUSES = Object.keys(TASK_STATUS_LABELS) as TaskStatus[];
 export const TASK_PRIORITIES = Object.keys(TASK_PRIORITY_LABELS) as TaskPriority[];
 export const TASK_TYPES = Object.keys(TASK_TYPE_LABELS) as TaskType[];
 export function taskDate(value: string | null | undefined) { return value?.trim() ? formatDateTime(value) : "—"; }
+
+export const AUTO_TASK_TYPES: TaskType[] = ["KNOWLEDGE_RESEARCH", "WRITE_ARTICLE", "CREATE_SOCIAL_POSTS", "CONTENT_REVISION"];

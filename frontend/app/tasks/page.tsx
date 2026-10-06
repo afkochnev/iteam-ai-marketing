@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 
+import { useHashTarget } from "@/components/use-hash-target";
 import { PageBreadcrumbs } from "@/components/page-breadcrumbs";
 import { StatusBadge } from "@/components/status-badge";
 import { agentsApi, campaignsApi, tasksApi, type AgentListItem, type CampaignListItem, type TaskListItem } from "@/lib/api";
@@ -47,6 +48,7 @@ export default function TasksPage() {
       .finally(() => setLoading(false));
   }, []);
 
+  useHashTarget(loading ? null : tasks);
   const filter = (key: string, value: string) => setFilters((current) => ({ ...current, [key]: value }));
   const visible = useMemo(() => tasks
     .filter((task) => !filters.campaign_id || task.campaign_id === filters.campaign_id)
