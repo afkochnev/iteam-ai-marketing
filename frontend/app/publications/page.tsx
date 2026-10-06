@@ -65,6 +65,7 @@ export default function PublicationsPage() {
   }, [authLoading, user, router, load]);
   const upcoming = rows.filter((item) => item.status === "SCHEDULED" && item.scheduled_at)
     .sort((a, b) => Date.parse(a.scheduled_at!) - Date.parse(b.scheduled_at!));
+  const active = rows.filter((item) => ["DRAFT", "WAITING_APPROVAL", "APPROVED", "PUBLISHING"].includes(item.status));
   const published = rows.filter((item) => item.status === "PUBLISHED");
   const attention = rows.filter((item) => item.status !== "CANCELLED" && (item.status === "FAILED" || item.failure_code));
   const ready = candidates.filter((item) => item.planApproved);
@@ -76,10 +77,26 @@ export default function PublicationsPage() {
     <PageBreadcrumbs items={[{ label: "Публикации" }]} />
     <header className="page-header"><div><p className="eyebrow">Расписание и факт доставки</p><h1>Публикации</h1><p className="page-subtitle">Утверждённые посты, расписание и история отправки. Время показано в часовом поясе браузера.</p></div><Link className="button-link secondary" href="/campaigns">К кампаниям</Link></header>
     <p className="notice">Планирование не означает отправку. Доставка требует отдельного разрешения человека и доступного publishing runtime.</p>
-    <div className="summary-grid metric-cards"><a className="metric-card" href="#ready"><strong>{ready.length}</strong><span>Готовы к планированию</span></a><a className="metric-card" href="#upcoming"><strong>{upcoming.length}</strong><span>Запланировано</span></a><a className="metric-card" href="#published"><strong>{published.length}</strong><span>Опубликовано</span></a><a className="metric-card" href="#attention"><strong>{attention.length}</strong><span>Требуют проверки</span></a></div>
+    <div className="summary-grid metric-cards"><a className="metric-card" href="#ready"><strong>{ready.length}</strong><span>Готовы к планированию</span></a><a className="metric-card" href="#active"><strong>{active.length}</strong><span>Требуют действия / В процессе</span></a><a className="metric-card" href="#upcoming"><strong>{upcoming.length}</strong><span>Запланировано</span></a><a className="metric-card" href="#published"><strong>{published.length}</strong><span>Опубликовано</span></a><a className="metric-card" href="#attention"><strong>{attention.length}</strong><span>Требуют проверки</span></a></div>
     {loading ? <p role="status">Загружаем календарь…</p> : error ? <div className="empty-state" role="alert"><h2>Не удалось загрузить календарь</h2><p>{error}</p><button onClick={() => void load()}>Повторить</button> <Link href="/content">Открыть контент</Link></div> : <>
       <section className="section-block" id="ready"><h2>Готовы к планированию</h2>{ready.length ? <div className="content-stack">{ready.map((item) => <article className="content-card" key={item.id}><h3><Link href={`/content/${item.id}`}>{item.title}</Link></h3><p><Link href={`/campaigns/${item.campaign.id}`}>{item.campaign.name}</Link> · {item.plan_channel ?? item.channel} · утверждена версия v{item.approved_version_number ?? item.current_version_number}{item.plan_scheduled_at ? ` · ${formatDateTime(item.plan_scheduled_at)}` : ""}</p><Link className="button-link" href={`/content/${item.id}#publication`}>Открыть пост и запланировать</Link></article>)}</div> : <p className="empty-state">Готовых к планированию постов пока нет. <Link href="/content">Проверить контент и согласования</Link></p>}
         {needsPlan.length > 0 && <div><h3>Утверждённые посты без утверждённого пункта плана</h3>{needsPlan.map((item) => <p key={item.id}><Link href={`/content/${item.id}`}>{item.title}</Link> · <Link href={`/campaigns/${item.campaign.id}#publication-plan`}>Открыть кампанию и проверить медиаплан</Link></p>)}</div>}
+      </section>
+      <section className="section-block" id="active" aria-labelledby="active-heading">
+        <h2 id="active-heading">Требуют действия / В процессе</h2>
+        {active.length ? <div className="content-stack">{active.map((item) => <article className="content-card" key={item.publication_id}>
+          <div className="card-heading"><div>
+            <h3><Link href={`/content/${item.content_item_id}`}>{item.title}</Link></h3>
+            <p className="row-meta"><Link href={`/campaigns/${item.campaign.id}`}>{item.campaign.name}</Link><span>{item.channel}{item.scheduled_at ? ` · ${formatDateTime(item.scheduled_at)}` : ""}</span>{version(item)}</p>
+          </div><StatusBadge status={item.status} label={PUBLICATION_STATUS_LABELS[item.status]} /></div>
+          {delivery(item)}
+          {item.status === "PUBLISHING" ? <>
+            <p role="status">Отправка выполняется / результат ещё не подтверждён. Повторная отправка недоступна.</p>
+            <Link href={`/campaigns/${item.campaign.id}#publications`}>Проверить состояние отправки в кампании</Link>
+          </> : <Link href={`/campaigns/${item.campaign.id}#publications`}>
+            {item.status === "APPROVED" ? "Открыть кампанию и назначить публикацию" : "Открыть кампанию и согласовать публикацию"}
+          </Link>}
+        </article>)}</div> : <p className="empty-state">Публикаций, требующих действия или находящихся в процессе отправки, нет.</p>}
       </section>
       <section className="section-block" id="upcoming"><h2>Предстоящие</h2>{upcoming.length ? <div className="content-stack">{upcoming.map((item) => <article className="content-card" key={item.publication_id}><div className="card-heading"><div><h3><Link href={`/content/${item.content_item_id}`}>{item.title}</Link></h3><p className="row-meta"><Link href={`/campaigns/${item.campaign.id}`}>{item.campaign.name}</Link><span>{item.channel === "VK" ? "VK" : "Telegram"} · {formatDateTime(item.scheduled_at!)}</span>{version(item)}</p></div><StatusBadge status={item.status} label={PUBLICATION_STATUS_LABELS[item.status]} /></div>{delivery(item)}<Link href={`/content/${item.content_item_id}#publication`}>Проверить пост и запланированную версию</Link></article>)}</div> : <p className="empty-state">Запланированных публикаций пока нет. <a href="#ready">Проверить готовые посты</a></p>}</section>
       <section className="section-block" id="attention"><h2>Ошибки отправки</h2>{attention.length ? <div className="content-stack">{attention.map((item) => <article className="content-card" key={item.publication_id}><h3><Link href={`/content/${item.content_item_id}`}>{item.title}</Link></h3><p><Link href={`/campaigns/${item.campaign.id}`}>{item.campaign.name}</Link> · {item.failure_code ?? "Статус требует проверки"}</p>{version(item)}<StatusBadge status={item.status} label={PUBLICATION_STATUS_LABELS[item.status]} />{delivery(item)}<Link href={`/campaigns/${item.campaign.id}#publications`}>Открыть кампанию: повтор или проверка результата отправки</Link></article>)}</div> : <p className="empty-state">Ошибок отправки нет.</p>}</section>

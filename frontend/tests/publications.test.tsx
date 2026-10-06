@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import PublicationsPage from "../app/publications/page";
@@ -42,8 +42,28 @@ describe("publication operator actions", () => {
     mocks.plans.mockResolvedValue([{ status: "APPROVED", items: [{ id: "plan-item-1", status: "PLANNED" }] }]);
     mocks.publications.mockResolvedValue([{ id: "cancelled", content_item_id: "post-ready", content_version_id: "v2", status: "CANCELLED", channel: "VK", scheduled_at: "2026-10-05T12:00:00Z" }]);
     render(<PublicationsPage />); expect(await screen.findByRole("link", { name: "Открыть пост и запланировать" })).toHaveAttribute("href", "/content/post-ready#publication");
+    expect(within(screen.getByRole("region", { name: "Требуют действия / В процессе" })).queryByText("v2")).not.toBeInTheDocument();
     expect(screen.getByText(/утверждена версия v3/)).toBeInTheDocument(); expect(screen.getByText(/Запланированных публикаций пока нет/)).toBeInTheDocument();
   });
+  it.each(["DRAFT", "WAITING_APPROVAL", "APPROVED", "PUBLISHING"])("shows %s with exact operational metadata and the existing next step", async (status) => {
+    mocks.content.mockResolvedValue([{ id: "post-active", title: "Active post", content_type: "SOCIAL_POST", status: "APPROVED", current_version_id: "exact-v4", approved_version_id: "exact-v4" }]);
+    mocks.publications.mockResolvedValue([{ id: "active", content_item_id: "post-active", content_version_id: "exact-v4", status, channel: "VK", scheduled_at: "2026-10-06T12:00:00Z", provider_enabled: false }]);
+    render(<PublicationsPage />);
+    const section = await screen.findByRole("region", { name: "Требуют действия / В процессе" });
+    const row = within(section);
+    expect(await row.findByRole("link", { name: "Active post" })).toHaveAttribute("href", "/content/post-active");
+    expect(row.getByRole("link", { name: "Запуск" })).toHaveAttribute("href", "/campaigns/campaign-1");
+    expect(row.getByText("exact-v4")).toBeInTheDocument();
+    expect(row.getByText(/VK ·/)).toBeInTheDocument();
+    expect(row.getByText("Автоматическая отправка сейчас отключена")).toBeInTheDocument();
+    expect(row.getByText(({ DRAFT: "Черновик", WAITING_APPROVAL: "Ожидает согласования", APPROVED: "Разрешена к публикации", PUBLISHING: "Отправляется" })[status]!)).toBeInTheDocument();
+    const name = status === "PUBLISHING" ? "Проверить состояние отправки в кампании" : status === "APPROVED" ? "Открыть кампанию и назначить публикацию" : "Открыть кампанию и согласовать публикацию";
+    expect(row.getByRole("link", { name })).toHaveAttribute("href", "/campaigns/campaign-1#publications");
+    expect(row.queryByRole("button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Открыть пост и запланировать" })).not.toBeInTheDocument();
+    if (status === "PUBLISHING") expect(row.getByRole("status")).toHaveTextContent("результат ещё не подтверждён");
+  });
+
   it("shows scheduled exact version and disabled delivery, and includes undated reconciliation failures", async () => {
     mocks.publications.mockResolvedValue([{ id: "scheduled", content_item_id: "post-1", content_version_id: "exact-approved-v2", status: "SCHEDULED", channel: "TELEGRAM", scheduled_at: "2026-10-06T12:00:00Z", provider_enabled: false }, { id: "failed", content_item_id: "post-2", content_version_id: "old-v1", status: "FAILED", channel: "VK", scheduled_at: null, provider_enabled: false, failure_code: "VK_RECONCILIATION_REQUIRED" }]);
     mocks.content.mockResolvedValue([{ id: "post-1", title: "Scheduled title" }, { id: "post-2", title: "Failed title" }]);
