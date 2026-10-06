@@ -1,11 +1,11 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import PublicationsPage from "../app/publications/page";
 
-const mocks = vi.hoisted(() => ({ campaigns: vi.fn(), calendar: vi.fn(), publications: vi.fn(), content: vi.fn(), plans: vi.fn() }));
-vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: vi.fn() }) }));
-vi.mock("@/components/auth-provider", () => ({ useAuth: () => ({ user: { role: "ADMIN" }, loading: false }) }));
+const mocks = vi.hoisted(() => ({ user: { role: "ADMIN" }, router: { replace: vi.fn() }, campaigns: vi.fn(), calendar: vi.fn(), publications: vi.fn(), content: vi.fn(), plans: vi.fn() }));
+vi.mock("next/navigation", () => ({ useRouter: () => mocks.router }));
+vi.mock("@/components/auth-provider", () => ({ useAuth: () => ({ user: mocks.user, loading: false }) }));
 vi.mock("@/lib/api", async (original) => {
   const actual = await original<typeof import("@/lib/api")>();
   return { ...actual, campaignsApi: { ...actual.campaignsApi, list: mocks.campaigns }, contentApi: { ...actual.contentApi, list: mocks.content }, publicationPlansApi: { ...actual.publicationPlansApi, list: mocks.plans }, publicationsApi: { ...actual.publicationsApi, calendar: mocks.calendar, listCampaign: mocks.publications } };
@@ -83,4 +83,68 @@ describe("publication operator actions", () => {
     const { fireEvent } = await import("@testing-library/react"); fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
     expect(await screen.findByRole("link", { name: "Проверить контент и согласования" })).toHaveAttribute("href", "/content"); expect(mocks.campaigns.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
+});
+
+describe("partial read failures", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.campaigns.mockResolvedValue([{ id: "campaign-1", name: "Запуск", status: "ACTIVE" }]);
+    mocks.calendar.mockResolvedValue([{ publication_id: "s", content_item_id: "p", content_version_id: "exact-v1", title: "Surviving post", status: "SCHEDULED", channel: "VK", scheduled_at: "2026-10-06T12:00:00Z" }]);
+    mocks.publications.mockResolvedValue([{ id: "s", content_item_id: "p", content_version_id: "exact-v1", status: "SCHEDULED", channel: "VK", scheduled_at: "2026-10-06T12:00:00Z" }]);
+    mocks.content.mockResolvedValue([{ id: "p", title: "Surviving post" }]); mocks.plans.mockResolvedValue([]);
+  });
+  it.each(["calendar", "publications", "content", "plans"] as const)("keeps rows and warns on %s failure; retry is read-only", async (kind) => {
+    mocks[kind].mockRejectedValueOnce(new Error("Failed to fetch"));
+    render(<PublicationsPage />);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Не удалось обновить этот раздел");
+    expect(screen.getByText("exact-v1")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Surviving post" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Не удалось загрузить календарь" })).not.toBeInTheDocument();
+    if (kind !== "calendar") expect(screen.queryByText(/Готовых к планированию постов пока нет/)).not.toBeInTheDocument();
+    if (kind === "publications" || kind === "calendar") expect(screen.queryByText("Ошибок отправки нет.")).not.toBeInTheDocument();
+    const spy = vi.spyOn(globalThis, "fetch");
+    fireEvent.click(screen.getByRole("button", { name: /Повторить загрузку/ }));
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(mocks[kind]).toHaveBeenCalledTimes(2);
+    expect(mocks.campaigns).toHaveBeenCalledTimes(2);
+    expect(mocks.content).toHaveBeenLastCalledWith({ campaign_id: "campaign-1", content_type: "SOCIAL_POST" });
+    expect(spy).not.toHaveBeenCalled(); spy.mockRestore();
+  });
+  it("preserves prior rows when publication refresh fails", async () => {
+    mocks.plans.mockRejectedValueOnce(new Error("offline")); render(<PublicationsPage />);
+    expect(await screen.findByText("exact-v1")).toBeInTheDocument();
+    mocks.publications.mockRejectedValueOnce(new Error("offline")); mocks.calendar.mockRejectedValueOnce(new Error("offline"));
+    fireEvent.click(screen.getByRole("button", { name: /Повторить загрузку/ }));
+    await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(2));
+    expect(screen.getByText("exact-v1")).toBeInTheDocument();
+  });
+  it("does not infer scheduling readiness from incomplete publication and plan reads", async () => {
+    mocks.publications.mockRejectedValueOnce(new Error("offline")); mocks.plans.mockRejectedValueOnce(new Error("offline"));
+    mocks.content.mockResolvedValue([{ id: "ready", title: "Ready", content_type: "SOCIAL_POST", status: "APPROVED", current_version_id: "v", approved_version_id: "v" }]);
+    render(<PublicationsPage />);
+    await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(2));
+    expect(screen.queryByRole("link", { name: "Открыть пост и запланировать" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Готовых к планированию постов пока нет/)).not.toBeInTheDocument();
+  });
+  it("keeps another campaign's rows when all reads for one campaign fail", async () => {
+    mocks.campaigns.mockResolvedValue([{ id: "campaign-1", name: "Запуск" }, { id: "campaign-2", name: "Second" }]);
+    for (const kind of ["calendar", "publications", "content", "plans"] as const) {
+      const value = await mocks[kind](); mocks[kind].mockClear();
+      mocks[kind].mockImplementation((arg) => (typeof arg === "string" ? arg : arg.campaign_id) === "campaign-2" ? Promise.reject(new Error("offline")) : Promise.resolve(value));
+    }
+    render(<PublicationsPage />);
+    await waitFor(() => expect(screen.getAllByRole("alert")).toHaveLength(4));
+    expect(screen.getByText("exact-v1")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Surviving post" })).toBeInTheDocument();
+  });
+  it("prefers fresh calendar versions over a failed list refresh cache", async () => {
+    mocks.plans.mockRejectedValueOnce(new Error("offline")); render(<PublicationsPage />);
+    expect(await screen.findByText("exact-v1")).toBeInTheDocument();
+    mocks.publications.mockRejectedValueOnce(new Error("offline"));
+    mocks.calendar.mockResolvedValue([{ publication_id: "s", content_item_id: "p", content_version_id: "fresh-v2", title: "Surviving post", status: "SCHEDULED", channel: "VK", scheduled_at: "2026-10-06T12:00:00Z" }]);
+    fireEvent.click(screen.getByRole("button", { name: /Повторить загрузку/ }));
+    expect(await screen.findByText("fresh-v2")).toBeInTheDocument();
+    expect(screen.queryByText("exact-v1")).not.toBeInTheDocument();
+  });
+
 });
