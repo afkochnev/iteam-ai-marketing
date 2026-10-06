@@ -148,3 +148,18 @@ describe("partial read failures", () => {
   });
 
 });
+
+it("shows overdue exact version, elapsed time and human decision routes without delivery actions", async () => {
+  mocks.campaigns.mockResolvedValue([{ id: "campaign-1", name: "Запуск" }]); mocks.calendar.mockResolvedValue([]); mocks.plans.mockResolvedValue([]);
+  mocks.content.mockResolvedValue([{ id: "overdue-post", title: "Overdue post" }]);
+  mocks.publications.mockResolvedValue([{ id: "overdue-id", content_item_id: "overdue-post", content_version_id: "exact-overdue-v1", status: "SCHEDULED", channel: "VK", scheduled_at: "2026-10-01T12:00:00Z", is_overdue: true, lateness_seconds: 7200, provider_enabled: false }]);
+  render(<PublicationsPage />);
+  const section = await screen.findByRole("region", { name: "Просрочены / Требуют решения" });
+  expect(await within(section).findByText("exact-overdue-v1")).toBeInTheDocument();
+  expect(within(section).getByText(/Просрочка: 120 мин/)).toBeInTheDocument();
+  expect(within(section).getByRole("alert")).toHaveTextContent("автоматическая отправка остановлена до решения");
+  expect(within(section).getByRole("link", { name: /Опубликовать сейчас \/ Отменить/ })).toHaveAttribute("href", "/campaigns/campaign-1#publication-overdue-id");
+  expect(within(section).getByText(/требует изменения медиаплана/)).toBeInTheDocument();
+  expect(within(section).queryByRole("button")).not.toBeInTheDocument();
+  expect(document.querySelector('#upcoming')?.querySelectorAll('article')).toHaveLength(0);
+});

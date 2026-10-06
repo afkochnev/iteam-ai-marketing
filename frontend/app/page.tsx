@@ -117,6 +117,14 @@ export default function Home() {
         </div>
       )}
 
+      {status && <section aria-label="Операционные предупреждения">
+        {(status.overdue_publications ?? 0) > 0 && <p role="alert">Просроченные публикации: {status.overdue_publications}. <Link href="/publications#overdue">Принять решение о расписании</Link></p>}
+        {((status.publications?.failed ?? 0) > 0 || (status.publications?.reconciliation_required ?? 0) > 0) && <p role="alert">Есть ошибки отправки или неподтверждённая доставка. <Link href="/publications#attention">Проверить результат; не повторять отправку вслепую</Link></p>}
+        {(status.stalled_ready_auto_ai_tasks ?? 0) > 0 && <p role="alert">READY AI-задачи долго не начинают выполнение: {status.stalled_ready_auto_ai_tasks}. <Link href="/tasks?status=READY">Проверить задачи и AI runtime</Link>. Работа workers не подтверждена этим показателем.</p>}
+        {(status.publications?.provider_disabled ?? 0) > 0 && <p role="alert">Provider отключён для запланированных публикаций: {status.publications?.provider_disabled}. Согласование не означает доступность доставки. <Link href="/publications">Проверить каналы</Link></p>}
+        {status.publishing_providers_enabled && <p>Publishing providers: Telegram {status.publishing_providers_enabled.telegram ? "enabled" : "disabled"}; VK {status.publishing_providers_enabled.vk ? "enabled" : "disabled"}. Runtime heartbeat не подтверждён.</p>}
+      </section>}
+
       <div className="summary-grid dashboard-summary" aria-label="Сводка">
         <Link className="metric-card" href="/campaigns?status=ACTIVE">
           <strong>{loading ? "—" : campaigns.filter((campaign) => campaign.status === "ACTIVE").length}</strong>

@@ -1,6 +1,6 @@
 from functools import lru_cache
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = None
     telegram_target_chat_id: str | None = None
     telegram_request_timeout_seconds: int = 30
+    publication_auto_dispatch_max_lateness_seconds: int = Field(default=3600, ge=1)
     publication_max_retries: int = 3
     publication_publishing_stale_seconds: int = 600
     vk_publishing_enabled: bool = False

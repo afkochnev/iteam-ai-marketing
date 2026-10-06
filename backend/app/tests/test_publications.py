@@ -1367,8 +1367,10 @@ async def test_vk_provider_send_follows_durable_claim_and_blocks_duplicate_task(
 async def test_scheduled_dispatch_only_claims_due_publications(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from app.core.config import settings
     from app.workers import dispatcher_worker
 
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
     user, _campaign, post, version = await _approved_post(db_session)
     service = PublicationService(db_session)
     due = await service.create(
@@ -1487,9 +1489,11 @@ async def test_publication_dispatch_two_workers_claim_due_once(
 ) -> None:
     import asyncio
 
+    from app.core.config import settings
     from app.core.database import async_session_factory
     from app.workers import dispatcher_worker
 
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
     user, _campaign, post, version = await _approved_post(db_session)
     service = PublicationService(db_session)
     publication = await service.create(

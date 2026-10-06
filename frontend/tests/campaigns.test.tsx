@@ -530,4 +530,19 @@ describe("Plan-bound publication scheduling", () => {
     expect(await screen.findByText("Запланированных публикаций нет.")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Запланировать публикацию" })).not.toBeInTheDocument();
   });
+  it.each([true, false])("offers explicit overdue plan publish only after human confirmation (%s)", async (confirm) => {
+    publicationList.mockResolvedValue([{ ...scheduled, is_overdue: true, lateness_seconds: 7200, provider_enabled: true }]);
+    vi.spyOn(window, "confirm").mockReturnValue(confirm);
+    publicationPublishNow.mockResolvedValue({});
+    render(<CampaignDetailsPage />);
+    const button = await screen.findByRole("button", { name: "Опубликовать сейчас" });
+    expect(screen.queryByRole("button", { name: "Назначить / перенести" })).not.toBeInTheDocument();
+    fireEvent.click(button);
+    expect(window.confirm).toHaveBeenCalled();
+    expect(screen.queryByText("Запланированных публикаций нет.")).not.toBeInTheDocument();
+    if (confirm) await waitFor(() => expect(publicationPublishNow).toHaveBeenCalledWith(scheduled.id));
+    else expect(publicationPublishNow).not.toHaveBeenCalled();
+    expect(publicationSchedule).not.toHaveBeenCalled();
+  });
+
 });

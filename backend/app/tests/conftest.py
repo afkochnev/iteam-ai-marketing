@@ -130,3 +130,22 @@ async def client(db_session: AsyncSession) -> AsyncIterator[AsyncClient]:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as test_client:
         yield test_client
     app.dependency_overrides.clear()
+
+
+@pytest.fixture(autouse=True)
+def block_live_provider_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Fail before any test can resolve a real provider (mock transports still work)."""
+    import socket
+
+    original = socket.getaddrinfo
+
+    def guarded(host, *args, **kwargs):
+        name = host.decode() if isinstance(host, bytes) else str(host)
+        if any(
+            name == domain or name.endswith("." + domain)
+            for domain in ["openai.com", "telegram.org", "vk.com"]
+        ):
+            raise AssertionError("Live provider network access is forbidden in tests")
+        return original(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", guarded)

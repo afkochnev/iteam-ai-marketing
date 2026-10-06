@@ -1,7 +1,7 @@
 # MVP production deployment
 
 The supported deployment is the Compose topology: PostgreSQL, Redis, FastAPI
-backend, Celery worker with Beat, and Next.js frontend behind a TLS-terminating
+backend, physically separate Celery workers and schedulers, and Next.js frontend behind a TLS-terminating
 reverse proxy. Use managed PostgreSQL/Redis when available; this repository
 does not provide cloud-specific infrastructure.
 
@@ -12,7 +12,7 @@ does not provide cloud-specific infrastructure.
 3. Build pinned images and run `alembic upgrade head` as a one-shot migration
    step. Do not let every application container migrate concurrently.
 4. Start backend and verify `/health/ready`.
-5. Start worker, then Beat, and verify task registration and both schedules.
+5. Use `scripts/runtime-up.sh normal` for the full reviewed operational topology; verify separate AI and publication schedules.
 6. Start frontend/reverse proxy and verify TLS and browser access.
 
 Production validation rejects placeholder secrets, insecure cookies, local-only
@@ -34,5 +34,9 @@ downgraded. If migration fails, keep the new application version stopped,
 restore or repair the database, and rerun migration verification.
 
 The MVP is single-tenant, uses a process-local rate limiter, and has no
-automatic infrastructure backup or external publication. Include these
+automatic infrastructure backup. External publication requires human approval, an enabled provider and the publishing runtime. Include these
 constraints in the deployment review.
+
+## Operational modes
+
+Use [normal operations](normal-operations.md) for the two supported modes: normal (full runtime) and maintenance (core only). All operational services use `unless-stopped`; explicitly stopped services remain stopped until normal mode is selected.

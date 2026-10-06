@@ -4,6 +4,7 @@ x-worker: &worker
     args:
       BUILD_SHA: ${BUILD_SHA:-unknown}
   env_file: .env
+  restart: unless-stopped
   stop_grace_period: 210s
   depends_on:
     postgres:
@@ -13,6 +14,7 @@ x-worker: &worker
 
 services:
   postgres:
+    restart: unless-stopped
     image: postgres:17-alpine
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-iteam}
@@ -29,6 +31,7 @@ services:
       retries: 10
 
   redis:
+    restart: unless-stopped
     image: redis:8-alpine
     command: redis-server --appendonly yes
     volumes:
@@ -40,6 +43,7 @@ services:
       retries: 10
 
   backend:
+    restart: unless-stopped
     build:
       context: ./backend
       args:
@@ -126,6 +130,7 @@ services:
       OPENAI_API_KEY: ""
 
   frontend:
+    restart: unless-stopped
     build:
       context: ./frontend
       args:
