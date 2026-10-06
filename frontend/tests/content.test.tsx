@@ -45,6 +45,14 @@ describe("Content and approvals UI", () => {
     expect(screen.queryByText("Задача создана, но исполнитель сейчас не запущен")).not.toBeInTheDocument();
   });
 
+  it("does not claim a completed revision still awaits approval after exact-version approval", async () => {
+    mocks.get.mockResolvedValue({ ...article, status: "APPROVED", current_version_id: "version-2", approved_version_id: "version-2", current_version: { ...article.current_version, id: "version-2" } });
+    mocks.revisionProgress.mockResolvedValue({ task_id: "revision-task-1", task_status: "COMPLETED", agent_run_status: "COMPLETED", created_content_version_id: "version-2" });
+    render(<ContentDetailPage />);
+    expect(await screen.findByText("Новая версия доработки утверждена")).toBeInTheDocument();
+    expect(screen.queryByText("Новая версия готова и ожидает согласования")).not.toBeInTheDocument();
+  });
+
   it("shows that a completed revision is ready for approval", async () => {
     const now = new Date().toISOString();
     mocks.revisionProgress.mockResolvedValue({ task_id: "revision-task-1", task_status: "COMPLETED", agent_run_id: "run-1", agent_run_status: "COMPLETED", error_code: null, error_message: null, base_content_version_id: "version-1", created_content_version_id: "version-2", created_at: now, updated_at: now });

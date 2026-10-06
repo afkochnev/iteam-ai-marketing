@@ -1,9 +1,11 @@
 "use client";
 
-import Link from "next/link";
+import Link from "@/components/hash-link";
 import { useParams, useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { useHashTarget } from "@/components/use-hash-target";
+import { PublicationDeliveryNotice } from "@/components/publication-delivery-notice";
 import { PageBreadcrumbs } from "@/components/page-breadcrumbs";
 import { StatusBadge } from "@/components/status-badge";
 import { useAuth } from "@/components/auth-provider";
@@ -168,6 +170,7 @@ export default function ContentDetailPage() {
     }
   }
 
+  useHashTarget(item);
   if (authLoading || loading) return <main><p role="status">Загружаем материал…</p></main>;
   if (error || !item) return <main className="page"><PageBreadcrumbs items={[{ label: "Контент", href: "/content" }, { label: "Материал" }]} /><div className="empty-state" role="alert"><h1>Не удалось открыть материал</h1><p>{error || "Материал не найден."}</p><button onClick={() => void load()}>Повторить</button></div></main>;
 
@@ -177,7 +180,11 @@ export default function ContentDetailPage() {
   const revisionIsActive = Boolean(revisionProgress && !revisionIsReady && !revisionIsStopped);
   const revisionIsUnavailable = Boolean(revisionProgress && revisionProgress.task_status === "READY" && revisionProgress.executor_available === false);
   const revisionMessage = revisionIsReady
-    ? "Новая версия готова и ожидает согласования"
+    ? item.approved_version_id === revisionProgress?.created_content_version_id
+      ? "Новая версия доработки утверждена"
+      : (item.current_version_id ?? item.current_version?.id) !== revisionProgress?.created_content_version_id
+        ? "Доработка завершена; проверьте текущую редакцию"
+        : "Новая версия готова и ожидает согласования"
     : revisionIsRunning
       ? "SMM Manager дорабатывает материал…"
       : revisionIsStopped
@@ -219,9 +226,10 @@ export default function ContentDetailPage() {
         </div>}
       </section>
 
-      {item.content_type === "SOCIAL_POST" && item.publication_plan_item_id && <section className="section-block" aria-label="План публикации">
+      {item.content_type === "SOCIAL_POST" && item.publication_plan_item_id && <section id="publication" className="section-block" aria-label="План публикации">
         <div className="section-heading"><h2>План публикации</h2>{plan && <StatusBadge status={plan.status} label={PLAN_STATUS_LABELS[plan.status]} />}</div>
         {planItem ? <><div className="metadata-grid"><div className="metadata-item"><strong>Канал</strong><span>{planItem.channel === "VK" ? "VK" : "Telegram"}</span></div><div className="metadata-item"><strong>Дата и время</strong><span>{formatDateTime(planItem.scheduled_at)}</span></div><div className="metadata-item"><strong>Тема</strong><span>{planItem.topic}</span></div><div className="metadata-item"><strong>Исходная статья</strong><span><Link href={`/content/${planItem.source_content_item_id}`}>{item.source_content_item_title ?? sourceDerivations[0]?.source_content_item_title ?? "Открыть источник"}</Link></span></div></div>
+          {publication?.status === "SCHEDULED" && <PublicationDeliveryNotice providerEnabled={publication.provider_enabled} />}
           {publication ? <><p className="notice">Публикация: <StatusBadge status={publication.status} label={PUBLICATION_STATUS_LABELS[publication.status]} />{publication.scheduled_at && ` · ${formatDateTime(publication.scheduled_at)} · ${publication.channel === "VK" ? "VK" : "Telegram"}`}</p>{hasPublicationVersionConflict && publication.status === "SCHEDULED" && <p className="warning">Запланирована публикация версии v{publicationVersion?.version_number ?? "?"}. Новая редакция v{item.current_version?.version_number} не заменит её автоматически.</p>}{hasPublicationVersionConflict && publication.status === "PUBLISHED" && <p className="subtle">Опубликованная версия v{publicationVersion?.version_number ?? "?"} сохранена в истории. Заменить опубликованную публикацию нельзя.</p>}{canReplaceScheduledPublication && <button disabled={busy} onClick={() => void replaceScheduledPublication()}>{busy ? "Заменяем…" : "Заменить версию в запланированной публикации"}</button>}</> : <><p>Публикация: ещё не запланирована</p>{item.status === "APPROVED" && exactApproved && plan?.status === "APPROVED" && <button disabled={busy} onClick={() => void schedulePublication()}>{busy ? "Планируем…" : "Запланировать публикацию"}</button>}</>}
         </> : <p className="warning">Плановый пункт не найден. Обратитесь к странице кампании.</p>}
       </section>}
