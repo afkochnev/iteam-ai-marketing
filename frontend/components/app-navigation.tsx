@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 
 const links = [
+  { href: "/profile", label: "Профиль" },
   { href: "/", label: "Главная" },
   { href: "/campaigns", label: "Кампании" },
   { href: "/knowledge", label: "База знаний" },
@@ -15,7 +16,7 @@ const links = [
 
 export function AppNavigation({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  if (pathname === "/login") return <>{children}</>;
+  if ((pathname === "/login" || pathname === "/register")) return <>{children}</>;
 
   return (
     <div className="app-shell">

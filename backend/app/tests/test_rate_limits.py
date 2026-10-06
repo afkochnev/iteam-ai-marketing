@@ -49,3 +49,32 @@ async def test_upload_rate_limit_blocks_upload_application_path(client: AsyncCli
         "/api/v1/knowledge/upload",
         files={"file": ("note.txt", b"small", "text/plain")},
     )
+
+
+async def test_registration_rate_limit(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "rate_limit_registration_per_minute", 1)
+    await _assert_429(
+        client,
+        "/api/v1/auth/register",
+        json={
+            "email": "limited@example.com",
+            "password": "secure-password-24",
+            "full_name": "User",
+        },
+    )
+
+
+async def test_password_change_rate_limit(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "rate_limit_password_change_per_minute", 1)
+    await _assert_429(
+        client,
+        "/api/v1/auth/change-password",
+        json={
+            "current_password": "valid-password",
+            "new_password": "secure-password-24",
+        },
+    )

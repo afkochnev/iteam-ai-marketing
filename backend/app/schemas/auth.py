@@ -3,6 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
+from app.core.security import validate_password
 from app.models.user import UserRole
 
 
@@ -38,3 +39,30 @@ class LoginResponse(BaseModel):
 
 class LogoutResponse(BaseModel):
     message: str
+
+
+class RegisterRequest(LoginRequest):
+    model_config = ConfigDict(extra="forbid")
+    full_name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("full_name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("Введите имя.")
+        return value.strip()
+
+    @field_validator("password")
+    @classmethod
+    def check_password(cls, value: str) -> str:
+        return validate_password(value)
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(min_length=1, max_length=1024)
+    new_password: str
+
+    @field_validator("new_password")
+    @classmethod
+    def check_password(cls, value: str) -> str:
+        return validate_password(value)

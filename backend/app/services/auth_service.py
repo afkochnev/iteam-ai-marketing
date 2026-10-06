@@ -17,4 +17,4 @@ class AuthService:
 
     @staticmethod
     def create_access_token(user: User) -> str:
-        return encode_access_token(user.id)
+        return encode_access_token(user.id, user.auth_version)

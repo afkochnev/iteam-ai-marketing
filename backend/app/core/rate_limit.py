@@ -60,6 +60,10 @@ class SimpleRateLimitMiddleware(BaseHTTPMiddleware):
         if request.method != "POST":
             return None, 0
         path = request.url.path
+        if path == "/api/v1/auth/register":
+            return "registration", settings.rate_limit_registration_per_minute
+        if path == "/api/v1/auth/change-password":
+            return "password-change", settings.rate_limit_password_change_per_minute
         if path == "/api/v1/auth/login":
             return "login", settings.rate_limit_login_per_minute
         if path == "/api/v1/knowledge/upload":
