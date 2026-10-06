@@ -97,12 +97,14 @@ async def test_dispatch_catchup_and_disabled_provider(
         assert calendar[0].is_overdue
 
 
+@pytest.mark.parametrize("channel", [ContentChannel.TELEGRAM, ContentChannel.VK])
 @pytest.mark.parametrize("invalid", [None, "authorization", "version", "reconciliation"])
 async def test_explicit_overdue_publish_now_keeps_authorization_and_version_guards(
-    db_session, client, monkeypatch, invalid
+    db_session, client, monkeypatch, invalid, channel
 ):
     monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
-    user, _, _, version, row = await scheduled_fixture(db_session, ContentChannel.TELEGRAM)
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    user, _, _, version, row = await scheduled_fixture(db_session, channel)
     row.scheduled_at = datetime.now(UTC) - timedelta(days=2)
     if invalid == "authorization":
         row.approved_for_publish_by = None
@@ -120,6 +122,9 @@ async def test_explicit_overdue_publish_now_keeps_authorization_and_version_guar
     calls = []
     monkeypatch.setattr(
         dispatcher_worker.publish_telegram_publication, "apply_async", lambda **kw: calls.append(kw)
+    )
+    monkeypatch.setattr(
+        dispatcher_worker.publish_vk_publication, "apply_async", lambda **kw: calls.append(kw)
     )
     assert (await client.post(f"/api/v1/publications/{row.id}/publish-now")).status_code == 401
     app.dependency_overrides[get_current_user] = lambda: user
@@ -272,3 +277,37 @@ async def test_locked_auto_claim_rechecks_disabled_provider(db_session, monkeypa
         await PublicationService(db_session).claim_for_publish(row.id)
     assert blocked.value.code == "PUBLICATION_PROVIDER_DISABLED"
     assert row.status == PublicationStatus.SCHEDULED and row.execution_token is None
+
+
+@pytest.mark.parametrize("channel", [ContentChannel.TELEGRAM, ContentChannel.VK])
+@pytest.mark.parametrize("status", [PublicationStatus.APPROVED, PublicationStatus.SCHEDULED])
+async def test_explicit_publish_now_cannot_bypass_disabled_provider(
+    db_session, client, monkeypatch, channel, status
+):
+    user, _, _, _, row = await scheduled_fixture(db_session, channel)
+    row.status = status
+    row.scheduled_at = datetime.now(UTC) - timedelta(days=2)
+    await db_session.commit()
+    await db_session.refresh(row)
+    publication_id = row.id
+    version_id = row.content_version_id
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", False)
+    monkeypatch.setattr(settings, "vk_publishing_enabled", False)
+    calls = []
+    for worker in [
+        dispatcher_worker.publish_telegram_publication,
+        dispatcher_worker.publish_vk_publication,
+    ]:
+        monkeypatch.setattr(worker, "apply_async", lambda **kw: calls.append(kw))
+    app.dependency_overrides[get_current_user] = lambda: user
+    try:
+        response = await client.post(f"/api/v1/publications/{publication_id}/publish-now")
+        assert response.status_code == 409
+        assert "PUBLICATION_PROVIDER_DISABLED" in response.text
+        await db_session.refresh(row)
+        assert row.status == status
+        assert row.execution_token is None
+        assert row.content_version_id == version_id
+        assert calls == []
+    finally:
+        app.dependency_overrides.pop(get_current_user, None)

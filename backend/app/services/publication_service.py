@@ -941,13 +941,6 @@ class PublicationService:
                 raise AppError(
                     "PUBLICATION_OVERDUE", "Плановое время прошло; нужно решение оператора.", 409
                 )
-            enabled = (
-                settings.telegram_publishing_enabled
-                if publication.channel.value == "TELEGRAM"
-                else settings.vk_publishing_enabled
-            )
-            if not enabled:
-                raise AppError("PUBLICATION_PROVIDER_DISABLED", "Provider отключён.", 409)
         eligible = publication.status is PublicationStatus.APPROVED or (
             publication.status is PublicationStatus.SCHEDULED
             and publication.scheduled_at is not None
@@ -977,8 +970,12 @@ class PublicationService:
                 "Для этого канала публикация пока недоступна.",
                 422,
             )
-        if publication.channel.value == "VK" and not settings.vk_publishing_enabled:
-            raise AppError("VK_PUBLISHING_DISABLED", "VK publishing отключён.", 409)
+        provider_enabled = {
+            "TELEGRAM": settings.telegram_publishing_enabled,
+            "VK": settings.vk_publishing_enabled,
+        }[publication.channel.value]
+        if not provider_enabled:
+            raise AppError("PUBLICATION_PROVIDER_DISABLED", "Provider отключён.", 409)
         item = await self._ensure_content_version_approved(
             publication.content_item_id, publication.content_version_id, publication.channel
         )
