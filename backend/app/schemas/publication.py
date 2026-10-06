@@ -62,6 +62,8 @@ class PublicationResponse(BaseModel):
     content_version_id: UUID
     channel: ContentChannel
     status: PublicationStatus
+    is_overdue: bool = False
+    lateness_seconds: int = 0
     scheduled_at: datetime | None
     publication_plan_item_id: UUID | None = None
     approved_for_publish_at: datetime | None
@@ -90,6 +92,8 @@ class PublicationCalendarItem(BaseModel):
     title: str
     channel: ContentChannel
     status: PublicationStatus
+    is_overdue: bool = False
+    lateness_seconds: int = 0
     scheduled_at: datetime | None
     published_at: datetime | None
     external_url: str | None

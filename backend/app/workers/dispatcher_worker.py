@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import select
 from sqlalchemy.exc import ProgrammingError
@@ -8,6 +8,7 @@ from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 from app.core.error_monitoring import report_exception
+from app.models.content import ContentChannel
 from app.models.publication import Publication, PublicationStatus
 from app.services.publication_service import PublicationService
 from app.services.task_dispatcher_service import TaskDispatcherService
@@ -42,6 +43,15 @@ async def _dispatch() -> None:
 
 
 async def _dispatch_publications() -> None:
+    enabled_channels = []
+    if settings.telegram_publishing_enabled:
+        enabled_channels.append(ContentChannel.TELEGRAM)
+    if settings.vk_publishing_enabled:
+        enabled_channels.append(ContentChannel.VK)
+    if not enabled_channels:
+        return
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(seconds=settings.publication_auto_dispatch_max_lateness_seconds)
     loop_engine = create_async_engine(settings.database_url, poolclass=NullPool)
     try:
         factory = async_sessionmaker(loop_engine, expire_on_commit=False)
@@ -56,7 +66,9 @@ async def _dispatch_publications() -> None:
                             Publication.approved_for_publish_by.is_not(None),
                             Publication.execution_token.is_(None),
                             Publication.failure_code.is_(None),
-                            Publication.scheduled_at <= datetime.now(UTC),
+                            Publication.scheduled_at <= now,
+                            Publication.scheduled_at >= cutoff,
+                            Publication.channel.in_(enabled_channels),
                         )
                         .with_for_update(skip_locked=True)
                         .limit(20)

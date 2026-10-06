@@ -63,7 +63,7 @@ export default function CampaignDetailsPage() {
   async function approvePublication(publicationId: string) { try { await publicationsApi.approve(publicationId); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось согласовать публикацию."); } }
   async function schedulePublication(publicationId: string) { const value = window.prompt("Дата и время публикации (ISO или локальное время браузера)"); if (!value) return; const parsed = new Date(value); if (Number.isNaN(parsed.getTime())) { setError("Укажите корректные дату и время."); return; } try { await publicationsApi.schedule(publicationId, parsed.toISOString()); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось назначить публикацию."); } }
   async function cancelPublication(publicationId: string) { if (!window.confirm("Отменить публикацию?")) return; try { await publicationsApi.cancel(publicationId); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось отменить публикацию."); } }
-  async function publishNow(publicationId: string) { try { await publicationsApi.publishNow(publicationId); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось поставить публикацию в очередь."); } }
+  async function publishNow(publicationId: string) { if (!window.confirm("Поставить exact согласованную версию в очередь для отправки сейчас?")) return; try { await publicationsApi.publishNow(publicationId); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось поставить публикацию в очередь."); } }
   async function retryPublication(publicationId: string) { try { await publicationsApi.retry(publicationId); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось повторить публикацию."); } }
   async function reconcilePublished(publicationId: string) { const externalId = window.prompt("Внешний ID публикации"); if (!externalId?.trim()) return; const externalUrl = window.prompt("Внешняя ссылка (необязательно)") ?? ""; const publishedAt = window.prompt("Время внешней публикации ISO (необязательно)") ?? ""; const note = window.prompt("Комментарий (необязательно)") ?? ""; try { await publicationsApi.reconcilePublished(publicationId, { external_id: externalId.trim(), external_url: externalUrl || undefined, published_at: publishedAt || undefined, note: note || undefined }); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось подтвердить публикацию."); } }
   async function reconcileNotPublished(publicationId: string) { if (!window.confirm("Подтвердить, что внешней публикации нет?")) return; const note = window.prompt("Комментарий (необязательно)") ?? ""; try { await publicationsApi.reconcileNotPublished(publicationId, note || undefined); await load(); } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось завершить сверку."); } }
@@ -134,9 +134,9 @@ export default function CampaignDetailsPage() {
   const getPublication = (item: ContentListItem) => publications.find((row) => row.content_item_id === item.id && row.status !== "CANCELLED" &&
     (item.approved_version_id ? row.content_version_id === item.approved_version_id : !item.current_version_id || row.content_version_id === item.current_version_id))
     ?? publications.find((row) => row.content_item_id === item.id && !["CANCELLED", "PUBLISHED"].includes(row.status));
-  const upcomingPublications = publications.filter((item) => item.status === "SCHEDULED" && item.scheduled_at)
+  const upcomingPublications = publications.filter((item) => item.status === "SCHEDULED" && item.scheduled_at && !item.is_overdue)
     .sort((a, b) => new Date(a.scheduled_at ?? 0).getTime() - new Date(b.scheduled_at ?? 0).getTime()).slice(0, 10);
-  const calendarUpcoming = calendarItems.filter((item) => item.status === "SCHEDULED" && item.scheduled_at)
+  const calendarUpcoming = calendarItems.filter((item) => item.status === "SCHEDULED" && item.scheduled_at && !item.is_overdue)
     .sort((a, b) => new Date(a.scheduled_at ?? 0).getTime() - new Date(b.scheduled_at ?? 0).getTime()).slice(0, 10);
   const publishedItems = publications.filter((item) => item.status === "PUBLISHED")
     .sort((a, b) => new Date(b.published_at ?? b.updated_at).getTime() - new Date(a.published_at ?? a.updated_at).getTime());
@@ -169,13 +169,14 @@ export default function CampaignDetailsPage() {
 
   const renderPublication = (item: ContentListItem) => {
     const publication = getPublication(item);
-    return <article key={item.id} className="content-card">
+    return <article key={item.id} id={publication ? `publication-${publication.id}` : undefined} className="content-card">
       <div className="card-heading">
         <div><h3><Link href={`/content/${item.id}`}>{item.title}</Link></h3><p className="muted">{item.channel ?? item.plan_channel ?? "Канал не задан"}{item.source_content_item_title ? ` · Источник: ${item.source_content_item_title}` : item.parent_content_item_id ? ` · Пакет: ${socialPacks.find((pack) => pack.id === item.parent_content_item_id)?.title ?? "соцсети"}` : ""}</p></div>
         <StatusBadge label={CONTENT_STATUS_LABELS[item.status]} tone={item.status === "APPROVED" ? "success" : item.status === "REJECTED" ? "danger" : "neutral"} />
       </div>
       {item.publication_plan_item_id && <p className="plan-context">План: {item.plan_channel ?? item.channel ?? "Канал не указан"} · {item.plan_scheduled_at ? formatDateTime(item.plan_scheduled_at) : "Дата уточняется"}</p>}
       {publication ? <>
+        {publication.is_overdue && <p role="alert">Плановое время прошло; автоматическая отправка остановлена до решения. Перенос плановой публикации требует изменения медиаплана.</p>}
         {publication.status === "SCHEDULED" && publication.scheduled_at && <p>Публикация запланирована на {formatDateTime(publication.scheduled_at)} · {publication.channel}</p>}
         <p>Статус публикации: <StatusBadge label={PUBLICATION_STATUS_LABELS[publication.status]} status={publication.status} />{publication.status !== "SCHEDULED" && publication.scheduled_at ? ` · ${formatDateTime(publication.scheduled_at)}` : ""}</p>
         {publication.content_version_id !== item.current_version_id && <p>Публикация привязана к другой версии. <Link href={`/content/${item.id}#publication`}>Проверить версии и разрешённую замену</Link></p>}
@@ -184,7 +185,7 @@ export default function CampaignDetailsPage() {
         {publication.reconciliation_required && <div className="actions"><p role="alert">Нужно подтвердить результат отправки.</p><button onClick={() => reconcilePublished(publication.id)}>Подтвердить публикацию</button><button className="secondary" onClick={() => reconcileNotPublished(publication.id)}>Подтвердить отсутствие публикации</button></div>}
         {publication.status === "PUBLISHING" && <p role="status">Отправка выполняется; статус обновится автоматически.</p>}
         {["DRAFT", "WAITING_APPROVAL"].includes(publication.status) && <button onClick={() => approvePublication(publication.id)}>Согласовать публикацию</button>}
-        {!item.publication_plan_item_id && publication.status === "APPROVED" && publication.provider_enabled !== false && <button onClick={() => publishNow(publication.id)}>Опубликовать сейчас</button>}
+        {((!item.publication_plan_item_id && publication.status === "APPROVED") || (publication.status === "SCHEDULED" && publication.is_overdue)) && publication.provider_enabled !== false && <button onClick={() => publishNow(publication.id)}>Опубликовать сейчас</button>}
         {!item.publication_plan_item_id && ["APPROVED", "SCHEDULED"].includes(publication.status) && <button className="secondary" onClick={() => schedulePublication(publication.id)}>Назначить / перенести</button>}
         {publication.status === "FAILED" && publication.retry_allowed && <button onClick={() => retryPublication(publication.id)}>Повторить</button>}
         {!publication.reconciliation_required && !["PUBLISHED", "CANCELLED", "PUBLISHING"].includes(publication.status) && <button className="secondary" onClick={() => cancelPublication(publication.id)}>Отменить</button>}
@@ -315,7 +316,7 @@ export default function CampaignDetailsPage() {
     <div className="content-columns">
       <section className="page-section" aria-labelledby="schedule-heading">
         <div className="section-heading"><div><p className="eyebrow">Расписание</p><h2 id="schedule-heading">Предстоящие публикации</h2></div><Link className="button-link secondary" href="/publications">Открыть календарь</Link></div>
-        {upcomingPublications.length ? <ol className="simple-list" aria-label="Предстоящие публикации">{upcomingPublications.map((item) => <li key={item.id}><Link href={`/content/${item.content_item_id}`}>{contents.find((content) => content.id === item.content_item_id)?.title ?? "Материал"}</Link><span>{item.channel} · {formatDateTime(item.scheduled_at ?? "")}</span><small>{PUBLICATION_STATUS_LABELS[item.status]}</small></li>)}</ol> : calendarUpcoming.length ? <ol className="simple-list" aria-label="Предстоящие публикации">{calendarUpcoming.map((item) => <li key={item.publication_id}><Link href={`/content/${item.content_item_id}`}>{item.title}</Link><span>{item.channel} · {formatDateTime(item.scheduled_at ?? "")}</span><small>{PUBLICATION_STATUS_LABELS[item.status]}</small></li>)}</ol> : <p className="empty-state">Запланированных публикаций нет.</p>}
+        {upcomingPublications.length ? <ol className="simple-list" aria-label="Предстоящие публикации">{upcomingPublications.map((item) => <li key={item.id}><Link href={`/content/${item.content_item_id}`}>{contents.find((content) => content.id === item.content_item_id)?.title ?? "Материал"}</Link><span>{item.channel} · {formatDateTime(item.scheduled_at ?? "")}</span><small>{PUBLICATION_STATUS_LABELS[item.status]}</small></li>)}</ol> : calendarUpcoming.length ? <ol className="simple-list" aria-label="Предстоящие публикации">{calendarUpcoming.map((item) => <li key={item.publication_id}><Link href={`/content/${item.content_item_id}`}>{item.title}</Link><span>{item.channel} · {formatDateTime(item.scheduled_at ?? "")}</span><small>{PUBLICATION_STATUS_LABELS[item.status]}</small></li>)}</ol> : [...publications, ...calendarItems].some((item) => item.is_overdue) ? <p role="alert">Есть просроченные публикации. <Link href="/publications#overdue">Принять решение</Link></p> : <p className="empty-state">Запланированных публикаций нет.</p>}
       </section>
       <section className="page-section" aria-labelledby="published-heading">
         <div className="section-heading"><div><p className="eyebrow">История</p><h2 id="published-heading">Уже опубликовано</h2></div></div>

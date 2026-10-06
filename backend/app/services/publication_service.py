@@ -40,6 +40,7 @@ from app.schemas.publication import (
     PublicationResponse,
 )
 from app.services.activity_log_service import ActivityLogService
+from app.services.publication_operations import operational_fields
 
 
 def utc_now() -> datetime:
@@ -387,6 +388,7 @@ class PublicationService:
         except ValueError:
             plan_item_id = None
         return PublicationResponse(
+            **operational_fields(publication),
             id=publication.id,
             campaign_id=publication.campaign_id,
             content_item_id=publication.content_item_id,
@@ -698,6 +700,7 @@ class PublicationService:
         )
         return [
             PublicationCalendarItem(
+                **operational_fields(publication),
                 publication_id=publication.id,
                 content_item_id=publication.content_item_id,
                 content_version_id=publication.content_version_id,
@@ -932,6 +935,12 @@ class PublicationService:
         """Atomically claim an approved/due publication before Celery execution."""
         publication = await self._locked(publication_id)
         now = utc_now()
+        # Revalidate after the row lock: another dispatcher may have committed earlier rows.
+        if user is None and publication.status is PublicationStatus.SCHEDULED:
+            if operational_fields(publication, now)["is_overdue"]:
+                raise AppError(
+                    "PUBLICATION_OVERDUE", "Плановое время прошло; нужно решение оператора.", 409
+                )
         eligible = publication.status is PublicationStatus.APPROVED or (
             publication.status is PublicationStatus.SCHEDULED
             and publication.scheduled_at is not None
@@ -961,8 +970,12 @@ class PublicationService:
                 "Для этого канала публикация пока недоступна.",
                 422,
             )
-        if publication.channel.value == "VK" and not settings.vk_publishing_enabled:
-            raise AppError("VK_PUBLISHING_DISABLED", "VK publishing отключён.", 409)
+        provider_enabled = {
+            "TELEGRAM": settings.telegram_publishing_enabled,
+            "VK": settings.vk_publishing_enabled,
+        }[publication.channel.value]
+        if not provider_enabled:
+            raise AppError("PUBLICATION_PROVIDER_DISABLED", "Provider отключён.", 409)
         item = await self._ensure_content_version_approved(
             publication.content_item_id, publication.content_version_id, publication.channel
         )

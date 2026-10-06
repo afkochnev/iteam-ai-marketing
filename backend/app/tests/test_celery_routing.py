@@ -216,6 +216,8 @@ def mock_worker_session(monkeypatch, worker, session):
 
 @pytest.mark.parametrize("channel", [ContentChannel.TELEGRAM, ContentChannel.VK])
 async def test_publication_dispatch_routes_claimed_execution(monkeypatch, channel):
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
     row = SimpleNamespace(id=uuid4(), channel=channel, execution_token="dispatch-token")
     session = AsyncMock()
     session.scalars.return_value = SimpleNamespace(all=lambda: [row.id])

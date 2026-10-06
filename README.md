@@ -13,7 +13,7 @@ Production references: [deployment](docs/deployment.md), [security](docs/securit
 
 - `frontend`: Next.js + React + TypeScript.
 - `backend`: FastAPI; здесь будут REST API, бизнес-логика и интеграции.
-- `worker`: Celery worker из того же backend image.
+- отдельные Celery workers и schedulers для AI, publishing и metrics.
 - `postgres`: основное хранилище будущих бизнес-сущностей.
 - `redis`: broker/result backend фоновых задач.
 
@@ -21,65 +21,18 @@ Production references: [deployment](docs/deployment.md), [security](docs/securit
 
 - Docker Engine с Docker Compose либо Python 3.12 и Node.js 22 для запуска без контейнеров.
 
-## Локальный запуск
+## Режимы локальной эксплуатации
 
-```bash
-cp .env.example .env
-docker compose up --build
-docker compose exec backend alembic upgrade head
-docker compose exec backend python -m app.seed
-```
+Используйте существующий `.env` и volumes; не копируйте example поверх рабочей конфигурации.
 
-После запуска:
+1. **Normal operations**: `./scripts/runtime-up.sh normal` — core, отдельные AI workers/scheduler, publishing workers/scheduler и metrics. Это разрешает autonomous AI execution и автоматическую отправку согласованных due публикаций при включённых providers.
+2. **Maintenance**: `./scripts/runtime-up.sh maintenance` — останавливает AI/publishing/metrics и запускает только postgres/redis/backend/frontend. Перед maintenance дождитесь завершения текущих действий; неоднозначную доставку проверьте через reconciliation.
 
-- frontend: http://localhost:3000
-- backend health: http://localhost:8000/health
-- OpenAPI: http://localhost:8000/docs
+`./scripts/runtime-status.sh` показывает только service/state/health, без environment и secrets.
+Все operational services используют `restart: unless-stopped`. Docker Desktop должен запускаться при входе в macOS; scripts не меняют настройки Mac. Явно остановленные контейнеры сами не возобновятся — для возврата используйте normal mode.
 
-Откройте frontend и войдите с `ADMIN_EMAIL`/`ADMIN_PASSWORD` из `.env`. Повторный seed безопасен и не меняет существующему Admin пароль.
-
-Остановить сервисы: `docker compose down`. Данные PostgreSQL и Redis сохраняются в named volumes.
-
-## Backend без Docker
-
-```bash
-cd backend
-python3.12 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements-dev.lock
-uvicorn app.main:app --reload
-```
-
-Проверки:
-
-```bash
-ruff check .
-mypy app
-pytest
-```
-
-## Frontend без Docker
-
-```bash
-cd frontend
-npm ci
-npm run dev
-```
-
-Проверки:
-
-```bash
-npm run lint
-npm test
-npm run build
-```
-
-## Worker
-
-```bash
-cd backend
-celery -A app.workers.celery_app:celery_app worker --loglevel=INFO
-```
+Frontend: http://localhost:3000; backend health: http://localhost:8000/health.
+Вход через текущие credentials. Подробнее: [operator runbook](docs/normal-operations.md).
 
 ## Миграции и seed
 

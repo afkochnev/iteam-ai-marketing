@@ -13,7 +13,7 @@ from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.approval import Approval, ApprovalStatus
 from app.models.marketing_feedback import MarketingFeedbackAnalysis
 from app.models.publication import Publication, PublicationStatus
-from app.models.task import Task, TaskStatus
+from app.models.task import Task, TaskStatus, TaskType
 from app.services.reconciliation_integrity import reconciliation_integrity_report
 
 EXPECTED_MIGRATION_HEAD = "20260930_0020"
@@ -23,7 +23,11 @@ router = APIRouter(prefix="/system", tags=["system"])
 
 @router.get("/status")
 async def system_status(_admin: AdminUser, session: SessionDependency) -> dict[str, Any]:
-    cutoff = datetime.now(UTC) - timedelta(seconds=settings.task_stuck_after_seconds)
+    now = datetime.now(UTC)
+    cutoff = now - timedelta(seconds=settings.task_stuck_after_seconds)
+    publication_cutoff = now - timedelta(
+        seconds=settings.publication_auto_dispatch_max_lateness_seconds
+    )
     task_counts = {
         status.value: int(
             await session.scalar(
@@ -65,6 +69,53 @@ async def system_status(_admin: AdminUser, session: SessionDependency) -> dict[s
             or 0
         ),
     }
+    scheduled = Publication.status == PublicationStatus.SCHEDULED
+    for name, conditions in {
+        "scheduled": [scheduled],
+        "due": [
+            scheduled,
+            Publication.scheduled_at >= publication_cutoff,
+            Publication.scheduled_at <= now,
+        ],
+        "overdue": [scheduled, Publication.scheduled_at < publication_cutoff],
+        "provider_disabled": [
+            scheduled,
+            Publication.channel.in_(
+                [
+                    channel
+                    for channel, enabled in [
+                        ("TELEGRAM", settings.telegram_publishing_enabled),
+                        ("VK", settings.vk_publishing_enabled),
+                    ]
+                    if not enabled
+                ]
+            ),
+        ],
+    }.items():
+        publication_counts[name] = int(
+            await session.scalar(select(func.count()).select_from(Publication).where(*conditions))
+            or 0
+        )
+    auto_ready = [
+        Task.status == TaskStatus.READY,
+        Task.task_type.in_(
+            [
+                TaskType.KNOWLEDGE_RESEARCH,
+                TaskType.WRITE_ARTICLE,
+                TaskType.CREATE_SOCIAL_POSTS,
+                TaskType.CONTENT_REVISION,
+            ]
+        ),
+    ]
+    ready_auto_ai = int(
+        await session.scalar(select(func.count()).select_from(Task).where(*auto_ready)) or 0
+    )
+    stalled_ready_auto_ai = int(
+        await session.scalar(
+            select(func.count()).select_from(Task).where(*auto_ready, Task.updated_at < cutoff)
+        )
+        or 0
+    )
     metrics_failures = int(
         await session.scalar(
             select(func.count())
@@ -107,6 +158,16 @@ async def system_status(_admin: AdminUser, session: SessionDependency) -> dict[s
         "tasks": task_counts,
         "agent_runs": run_counts,
         "publications": publication_counts,
+        "due_publications": publication_counts["due"],
+        "overdue_publications": publication_counts["overdue"],
+        "scheduled_publications": publication_counts["scheduled"],
+        "publishing_providers_enabled": {
+            "telegram": settings.telegram_publishing_enabled,
+            "vk": settings.vk_publishing_enabled,
+        },
+        "ready_auto_ai_tasks": ready_auto_ai,
+        "stalled_ready_auto_ai_tasks": stalled_ready_auto_ai,
+        "running_agent_runs": run_counts["RUNNING"],
         "metrics_sync_failures": metrics_failures,
         "feedback_analysis_failures": feedback_failures,
         "reconciliation_integrity": reconciliation_integrity,

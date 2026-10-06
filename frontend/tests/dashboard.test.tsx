@@ -74,4 +74,15 @@ describe("Protected dashboard", () => {
     await waitFor(() => expect(logout).toHaveBeenCalled());
     expect(replace).toHaveBeenCalledWith("/login");
   });
+  it("shows operational warnings without pretending to know worker readiness", async () => {
+    currentUser = { full_name: "Admin", email: "admin@example.com", role: "ADMIN" };
+    systemStatus.mockResolvedValue({ tasks: {}, agent_runs: {}, stuck_tasks: 0, pending_approvals: 0, last_activity_at: null, overdue_publications: 2, stalled_ready_auto_ai_tasks: 1, publishing_providers_enabled: { telegram: false, vk: true }, publications: { failed: 1, reconciliation_required: 1, provider_disabled: 2 } });
+    render(<Home />);
+    expect(await screen.findByText(/Просроченные публикации: 2/)).toBeInTheDocument();
+    expect(screen.getByText(/неподтверждённая доставка/)).toBeInTheDocument();
+    expect(screen.getByText(/READY AI-задачи долго/)).toBeInTheDocument();
+    expect(screen.getByText(/Provider отключён для запланированных/)).toBeInTheDocument();
+    expect(screen.getByText(/Runtime heartbeat не подтверждён/)).toBeInTheDocument();
+  });
+
 });

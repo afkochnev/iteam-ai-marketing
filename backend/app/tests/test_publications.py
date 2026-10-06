@@ -836,7 +836,11 @@ async def test_repeated_stuck_recovery_and_late_worker_are_noops(
 @pytest.mark.integration
 async def test_retry_after_reconciliation_gets_fresh_execution_token(
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
     user, _campaign, _post, _version, publication = await _reconciliation_fixture(db_session)
     publication.execution_token = "old-token"
     await db_session.commit()
@@ -1111,7 +1115,11 @@ class _FakeTelegramProvider:
 @pytest.mark.integration
 async def test_telegram_publish_uses_exact_version_and_is_idempotent(
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
     user, _campaign, post, version = await _approved_post(db_session)
     service = PublicationService(db_session)
     publication = await service.create(
@@ -1155,11 +1163,16 @@ async def test_publish_rejects_disabled_vk_and_draft(
     await service.approve(publication.id, user)
     with pytest.raises(AppError) as unsupported:
         await service.claim_for_publish(publication.id, user)
-    assert unsupported.value.code == "VK_PUBLISHING_DISABLED"
+    assert unsupported.value.code == "PUBLICATION_PROVIDER_DISABLED"
 
 
 @pytest.mark.integration
-async def test_telegram_ambiguous_failure_requires_reconciliation(db_session: AsyncSession) -> None:
+async def test_telegram_ambiguous_failure_requires_reconciliation(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
     user, _campaign, post, version = await _approved_post(db_session)
     service = PublicationService(db_session)
     publication = await service.create(
@@ -1182,7 +1195,12 @@ async def test_telegram_ambiguous_failure_requires_reconciliation(db_session: As
 
 
 @pytest.mark.integration
-async def test_stuck_publishing_recovery_is_conservative(db_session: AsyncSession) -> None:
+async def test_stuck_publishing_recovery_is_conservative(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
     user, _campaign, post, version = await _approved_post(db_session)
     service = PublicationService(db_session)
     publication = await service.create(
@@ -1241,7 +1259,12 @@ async def test_stuck_vk_publishing_requires_reconciliation(
 
 
 @pytest.mark.integration
-async def test_concurrent_claims_have_one_owner_and_one_send(db_session: AsyncSession) -> None:
+async def test_concurrent_claims_have_one_owner_and_one_send(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
     import asyncio
 
     from app.core.database import async_session_factory
@@ -1367,8 +1390,10 @@ async def test_vk_provider_send_follows_durable_claim_and_blocks_duplicate_task(
 async def test_scheduled_dispatch_only_claims_due_publications(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    from app.core.config import settings
     from app.workers import dispatcher_worker
 
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
     user, _campaign, post, version = await _approved_post(db_session)
     service = PublicationService(db_session)
     due = await service.create(
@@ -1487,9 +1512,11 @@ async def test_publication_dispatch_two_workers_claim_due_once(
 ) -> None:
     import asyncio
 
+    from app.core.config import settings
     from app.core.database import async_session_factory
     from app.workers import dispatcher_worker
 
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
     user, _campaign, post, version = await _approved_post(db_session)
     service = PublicationService(db_session)
     publication = await service.create(
@@ -1566,7 +1593,11 @@ async def test_publication_dispatch_does_not_enqueue_after_reschedule_or_cancel(
 @pytest.mark.integration
 async def test_publication_dispatch_claim_rejects_late_schedule_or_cancel(
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
     user, _campaign, post, version = await _approved_post(db_session)
     service = PublicationService(db_session)
     publication = await service.create(
@@ -1587,7 +1618,11 @@ async def test_publication_dispatch_claim_rejects_late_schedule_or_cancel(
 @pytest.mark.integration
 async def test_publication_keeps_bound_approved_version_when_newer_version_is_current(
     db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
     user, _campaign, post, version = await _approved_post(db_session)
     service = PublicationService(db_session)
     publication = await service.create(
