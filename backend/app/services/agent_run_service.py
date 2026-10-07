@@ -17,6 +17,7 @@ from app.agents.factory import AgentRuntimeContext, AgentSnapshot
 from app.agents.output_registry import output_type_registry
 from app.agents.tool_registry import tool_registry
 from app.core.config import settings
+from app.core.director_chat import CHAT_KIND, is_director_chat
 from app.core.errors import AppError
 from app.models.agent import Agent, AgentStatus
 from app.models.agent_run import AgentRun, AgentRunStatus
@@ -44,6 +45,7 @@ from app.models.task import Task, TaskStatus, TaskType
 from app.repositories.agent_runs import AgentRunRepository
 from app.repositories.tasks import TaskRepository
 from app.schemas.agent_outputs import SingleSocialPostResult
+from app.schemas.marketing_chat import DirectorChatReply
 from app.services.activity_log_service import ActivityLogService
 from app.services.agent_runner_service import AgentRuntimeError, RuntimeResult
 from app.services.plan_item_smm_service import PlanItemSmmContext, PlanItemSmmService
@@ -69,6 +71,7 @@ class AgentRunService:
         task_id: UUID,
         *,
         retry: bool = False,
+        commit: bool = True,
         feedback_analysis_id: UUID | None = None,
     ) -> AgentRun:
         query = (
@@ -175,6 +178,18 @@ class AgentRunService:
             raise AppError("TASK_AGENT_NOT_ASSIGNED", "Задаче не назначен агент.", 409)
         if agent.status is not AgentStatus.ACTIVE:
             raise AppError("AGENT_INACTIVE", "Назначенный агент неактивен.", 409)
+        prompt = agent.system_prompt
+        if is_director_chat(task):
+            if agent.slug != "marketing_director":
+                raise AppError(
+                    "INVALID_AGENT_FOR_TASK_TYPE", "Чат требует Marketing Director.", 409
+                )
+            chat_prompt = agent.settings.get("chat_prompt")
+            if not isinstance(chat_prompt, str) or not chat_prompt.strip():
+                raise AppError(
+                    "DIRECTOR_CHAT_PROMPT_NOT_CONFIGURED", "Chat prompt не настроен.", 409
+                )
+            prompt = chat_prompt
         if task.task_type is TaskType.CAMPAIGN_PLANNING and agent.slug != "marketing_director":
             raise AppError(
                 "INVALID_AGENT_FOR_TASK_TYPE",
@@ -414,6 +429,8 @@ class AgentRunService:
             # SMM has one permitted read boundary. Other configured legacy
             # tools must never be exposed to the model for this task.
             enabled = [name for name in enabled if name == "read_content_version"]
+        if is_director_chat(task):
+            enabled = []
         missing = tool_registry.missing(enabled)
         if missing:
             logger.info(
@@ -445,6 +462,7 @@ class AgentRunService:
                     "status": AgentRunStatus.QUEUED,
                     "input_data": {
                         "text": runtime_input,
+                        **({"internal_kind": CHAT_KIND} if is_director_chat(task) else {}),
                         "allowed_knowledge_pack_ids": [str(item) for item in allowed_pack_ids],
                         "allowed_content_version_ids": [
                             str(item) for item in allowed_content_version_ids
@@ -486,8 +504,8 @@ class AgentRunService:
                         ),
                     },
                     "model": model,
-                    "prompt_snapshot": agent.system_prompt,
-                    "prompt_hash": hashlib.sha256(agent.system_prompt.encode()).hexdigest(),
+                    "prompt_snapshot": prompt,
+                    "prompt_hash": hashlib.sha256(prompt.encode()).hexdigest(),
                 }
             )
             if feedback_analysis_id:
@@ -503,7 +521,8 @@ class AgentRunService:
                         "target_agent": agent.slug,
                     },
                 )
-            await self.session.commit()
+            if commit:
+                await self.session.commit()
         except IntegrityError as exc:
             await self.session.rollback()
             raise AppError(
@@ -739,6 +758,9 @@ class AgentRunService:
             if task.input_data.get("publication_plan_item_id")
             else output_type_registry.get(output_task_type)
         )
+        if is_director_chat(task):
+            enabled = []
+            output_type = DirectorChatReply
         snapshot = AgentSnapshot(
             agent.name,
             run.prompt_snapshot,
@@ -839,7 +861,7 @@ class AgentRunService:
             if task:
                 task.error_message = str(error)
                 task.completed_at = now
-                if can_retry(error.code, task.retry_count):
+                if can_retry(error.code, task.retry_count) and not is_director_chat(task):
                     task.retry_count += 1
                     task.status = TaskStatus.READY
                     task.started_at = None
@@ -877,6 +899,10 @@ class AgentRunService:
                     agent_id=run.agent_id,
                     metadata={"error_code": error.code},
                 )
+        if task and is_director_chat(task):
+            from app.services.director_chat_service import fail_chat_response
+
+            await fail_chat_response(self.session, run, error.code)
         await self.session.commit()
 
 
@@ -885,6 +911,8 @@ def build_task_input(
     allowed_pack_ids: list[UUID] | None = None,
     allowed_content_version_ids: list[UUID] | None = None,
 ) -> str:
+    if is_director_chat(task):
+        return str(task.input_data["runtime_text"])
     campaign = task.campaign
     revision_context = ""
     if task.task_type is TaskType.CAMPAIGN_PLANNING:

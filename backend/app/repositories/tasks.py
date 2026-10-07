@@ -32,7 +32,7 @@ class TaskRepository:
         task_type: TaskType | None = None,
         priority: TaskPriority | None = None,
     ) -> list[Task]:
-        statement = select(Task).options(*self._load_options())
+        statement = select(Task).options(*self._load_options()).where(Task.is_internal.is_(False))
         for condition in (
             Task.campaign_id == campaign_id if campaign_id else None,
             Task.assigned_agent_id == agent_id if agent_id else None,

@@ -16,7 +16,7 @@ from app.models.publication import Publication, PublicationStatus
 from app.models.task import Task, TaskStatus, TaskType
 from app.services.reconciliation_integrity import reconciliation_integrity_report
 
-EXPECTED_MIGRATION_HEAD = "20261006_0021"
+EXPECTED_MIGRATION_HEAD = "20261007_0022"
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -31,7 +31,9 @@ async def system_status(_admin: AdminUser, session: SessionDependency) -> dict[s
     task_counts = {
         status.value: int(
             await session.scalar(
-                select(func.count()).select_from(Task).where(Task.status == status)
+                select(func.count())
+                .select_from(Task)
+                .where(Task.status == status, Task.is_internal.is_(False))
             )
             or 0
         )
@@ -98,6 +100,7 @@ async def system_status(_admin: AdminUser, session: SessionDependency) -> dict[s
         )
     auto_ready = [
         Task.status == TaskStatus.READY,
+        Task.is_internal.is_(False),
         Task.task_type.in_(
             [
                 TaskType.KNOWLEDGE_RESEARCH,
@@ -140,6 +143,7 @@ async def system_status(_admin: AdminUser, session: SessionDependency) -> dict[s
         .where(
             AgentRun.status == AgentRunStatus.RUNNING,
             Task.status == TaskStatus.IN_PROGRESS,
+            Task.is_internal.is_(False),
             AgentRun.started_at.is_not(None),
             AgentRun.started_at < cutoff,
         )

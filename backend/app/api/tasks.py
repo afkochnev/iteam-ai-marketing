@@ -1,10 +1,11 @@
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Query, status
+from fastapi import APIRouter, Depends, Query, status
 
 from app.api.dependencies import AdminUser, CurrentUser, SessionDependency
-from app.models.task import TaskPriority, TaskStatus, TaskType
+from app.core.errors import AppError
+from app.models.task import Task, TaskPriority, TaskStatus, TaskType
 from app.schemas.agent_run import AgentRunContextRequest, AgentRunSummary
 from app.schemas.task import (
     TaskCompleteRequest,
@@ -20,7 +21,15 @@ from app.services.agent_run_service import AgentRunService
 from app.services.task_classification_service import classify_tasks
 from app.services.task_service import TaskService
 
-router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+async def business_task_guard(session: SessionDependency, task_id: UUID | None = None) -> None:
+    if task_id is not None:
+        task = await session.get(Task, task_id)
+        if task is not None and task.is_internal:
+            raise AppError("TASK_NOT_FOUND", "Задача не найдена.", 404)
+
+
+router = APIRouter(prefix="/tasks", tags=["tasks"], dependencies=[Depends(business_task_guard)])
 
 
 @router.get("", response_model=list[TaskListItem])

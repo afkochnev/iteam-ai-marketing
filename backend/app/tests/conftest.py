@@ -49,6 +49,11 @@ from app.models.content import (  # noqa: E402
 )
 from app.models.knowledge import KnowledgeItem, KnowledgeSource, KnowledgeStore  # noqa: E402
 from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem  # noqa: E402
+from app.models.marketing_chat import (  # noqa: E402
+    MarketingContextSnapshot,
+    MarketingConversation,
+    MarketingMessage,
+)
 from app.models.marketing_feedback import (  # noqa: E402
     MarketingFeedback,
     MarketingFeedbackAnalysis,
@@ -64,6 +69,9 @@ from app.models.user import User  # noqa: E402
 async def db_session() -> AsyncIterator[AsyncSession]:
     await engine.dispose()
     async with async_session_factory() as session:
+        await session.execute(delete(MarketingMessage))
+        await session.execute(delete(MarketingContextSnapshot))
+        await session.execute(delete(MarketingConversation))
         await session.execute(update(ContentItem).values(current_version_id=None))
         await session.execute(delete(MarketingFeedbackAnalysis))
         await session.execute(delete(MarketingFeedback))
@@ -92,6 +100,9 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.commit()
         yield session
         await session.rollback()
+        await session.execute(delete(MarketingMessage))
+        await session.execute(delete(MarketingContextSnapshot))
+        await session.execute(delete(MarketingConversation))
         await session.execute(update(ContentItem).values(current_version_id=None))
         await session.execute(delete(MarketingFeedbackAnalysis))
         await session.execute(delete(MarketingFeedback))
