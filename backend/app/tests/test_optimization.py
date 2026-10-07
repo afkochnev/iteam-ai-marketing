@@ -612,6 +612,7 @@ async def test_invalid_typed_action_uses_existing_repair_and_never_partial_propo
     monkeypatch.setattr(
         feedback_worker.generate_feedback_analysis, "apply_async", lambda **kwargs: Job()
     )
+    monkeypatch.setattr(settings, "openai_default_model", "test-model")
     analysis = await FeedbackService(db_session).queue_analysis(campaign.id)
     attempts = 0
 
