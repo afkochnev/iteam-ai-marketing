@@ -235,3 +235,14 @@ export const publicationPlansApi = {
 };
 export const activitiesApi = { list: (campaignId?: string) => request<Activity[]>(`/activities${campaignId ? `?campaign_id=${campaignId}` : ""}`) };
 export const systemApi = { status: () => request<SystemStatus>("/system/status") };
+
+export type OptimizationActionStatus = "PROPOSED" | "APPROVED" | "REJECTED" | "APPLIED" | "FAILED";
+export type OptimizationActionType = "CONTENT_REVISION" | "PUBLICATION_PLAN_REVISION" | "STRATEGY_REVIEW" | "EXPERIMENT" | "NO_CHANGE";
+export interface OptimizationAction { id: string; position: number; type: OptimizationActionType; target_entity_type: "CONTENT_ITEM" | "PUBLICATION_PLAN" | "CAMPAIGN_STRATEGY" | "CAMPAIGN"; target_entity_id: string; target_version_id: string | null; reason: string; expected_effect: string; priority: string; evidence_refs: Array<{type: "publication" | "content_version" | "metrics_snapshot" | "marketing_feedback"; id: string}>; status: OptimizationActionStatus; }
+export interface OptimizationProposal { id: string; campaign_id: string; feedback_analysis_id: string; strategy_version: number; status: string; summary: string; created_by_agent_run_id: string | null; reviewed_by_user_id: string | null; reviewed_at: string | null; created_at: string; actions: OptimizationAction[]; }
+export const optimizationApi = {
+  list: (campaignId: string) => request<OptimizationProposal[]>(`/campaigns/${campaignId}/optimization-proposals`),
+  get: (id: string) => request<OptimizationProposal>(`/optimization-proposals/${id}`),
+  approve: (id: string) => request<OptimizationAction>(`/optimization-actions/${id}/approve`, {method: "POST"}),
+  reject: (id: string) => request<OptimizationAction>(`/optimization-actions/${id}/reject`, {method: "POST"}),
+};

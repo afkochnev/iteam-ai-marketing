@@ -57,6 +57,7 @@ jobs:
       - run: pytest
       - run: alembic downgrade base
       - run: alembic upgrade head
+      - run: alembic check
 
   frontend:
     runs-on: ubuntu-latest

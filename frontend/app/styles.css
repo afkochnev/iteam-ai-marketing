@@ -326,3 +326,6 @@ form { display: grid; gap: .75rem; }
 .chat-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .chat-limitations { border-top: 1px solid #dce1e7; margin-top: 1rem; padding-top: .5rem; color: #475569; }
 @media (max-width: 760px) { .director-chat-layout { grid-template-columns: 1fr; } .chat-user, .chat-assistant { margin-left: 0; margin-right: 0; } }
+
+.optimization-actions { display: grid; gap: 1rem; margin-block: 1rem; }
+.optimization-action { border: 1px solid var(--border, #d8e3dc); padding: 1.25rem; overflow-wrap: anywhere; }

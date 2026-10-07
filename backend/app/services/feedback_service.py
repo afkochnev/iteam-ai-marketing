@@ -20,11 +20,13 @@ from app.models.marketing_feedback import (
 )
 from app.models.publication import Publication
 from app.models.publication_metrics import PublicationMetricsSnapshot
+from app.models.publication_plan import PublicationPlan, PublicationPlanItem
 from app.models.task import Task, TaskStatus, TaskType
 from app.models.user import User
 from app.repositories.agents import AgentRepository
 from app.schemas.feedback import FeedbackAnalystResult
 from app.services.activity_log_service import ActivityLogService
+from app.services.optimization_proposal_service import OptimizationProposalService, validate_action
 
 
 class FeedbackService:
@@ -112,7 +114,9 @@ class FeedbackService:
         publications = list(
             (
                 await self.session.scalars(
-                    select(Publication).where(Publication.campaign_id == campaign_id)
+                    select(Publication)
+                    .where(Publication.campaign_id == campaign_id)
+                    .order_by(Publication.id)
                 )
             ).all()
         )
@@ -130,7 +134,67 @@ class FeedbackService:
         campaign = await self.session.get(Campaign, campaign_id)
         if campaign is None:
             raise AppError("CAMPAIGN_NOT_FOUND", "Кампания не найдена.", 404)
+        versions = list(
+            await self.session.scalars(
+                select(ContentVersion)
+                .join(ContentItem, ContentVersion.content_item_id == ContentItem.id)
+                .where(
+                    ContentItem.campaign_id == campaign_id,
+                    ContentVersion.id.in_([row.content_version_id for row in publications]),
+                )
+                .order_by(ContentVersion.id)
+            )
+        )
+        plans = list(
+            await self.session.scalars(
+                select(PublicationPlan)
+                .where(PublicationPlan.campaign_id == campaign_id)
+                .order_by(PublicationPlan.id)
+            )
+        )
+        plan_context = []
+        for plan in plans:
+            items = list(
+                await self.session.scalars(
+                    select(PublicationPlanItem)
+                    .where(PublicationPlanItem.publication_plan_id == plan.id)
+                    .order_by(PublicationPlanItem.position)
+                )
+            )
+            plan_context.append(
+                {
+                    "id": str(plan.id),
+                    "campaign_id": str(campaign_id),
+                    "status": plan.status.value,
+                    "updated_at": plan.updated_at.isoformat(),
+                    "planning_horizon_start": plan.planning_horizon_start.isoformat(),
+                    "planning_horizon_end": plan.planning_horizon_end.isoformat(),
+                    "items": [
+                        {
+                            "id": str(item.id),
+                            "position": item.position,
+                            "status": item.status.value,
+                            "source_content_item_id": str(item.source_content_item_id),
+                            "source_content_version_id": str(item.source_content_version_id),
+                            "updated_at": item.updated_at.isoformat(),
+                        }
+                        for item in items
+                    ],
+                }
+            )
         return {
+            "optimization_target_allowlist": {
+                "campaign": {"id": str(campaign_id), "strategy_version": campaign.strategy_version},
+                "content": [
+                    {
+                        "campaign_id": str(campaign_id),
+                        "content_item_id": str(version.content_item_id),
+                        "content_version_id": str(version.id),
+                    }
+                    for version in versions
+                ],
+                "publication_plans": plan_context,
+            },
             "campaign_id": str(campaign_id),
             "strategy_version": campaign.strategy_version,
             "strategy_reference": {
@@ -331,6 +395,8 @@ class FeedbackService:
             "metrics_snapshot": set(snapshot["metrics_snapshot_ids"]),
             "marketing_feedback": set(snapshot["feedback_ids"]),
         }
+        for recommendation in result.recommendations:
+            validate_action(snapshot, recommendation.proposed_action)
         for item in [*result.findings, *result.recommendations]:
             for reference in getattr(item, "evidence_refs", []):
                 if str(reference.id) not in allowed[reference.type]:
@@ -396,7 +462,9 @@ class FeedbackService:
     async def review(
         self, analysis_id: UUID, user: User, status: FeedbackAnalysisStatus
     ) -> MarketingFeedbackAnalysis:
-        row = await self.session.get(MarketingFeedbackAnalysis, analysis_id, with_for_update=True)
+        row = await self.session.get(
+            MarketingFeedbackAnalysis, analysis_id, with_for_update=True, populate_existing=True
+        )
         if row is None:
             raise AppError("FEEDBACK_ANALYSIS_NOT_FOUND", "Анализ не найден.", 404)
         if row.status is not FeedbackAnalysisStatus.DRAFT:
@@ -404,6 +472,8 @@ class FeedbackService:
                 return row
             raise AppError("FEEDBACK_ANALYSIS_ALREADY_REVIEWED", "Анализ уже рассмотрен.", 409)
         row.status = status
+        if status is FeedbackAnalysisStatus.ACCEPTED:
+            await OptimizationProposalService(self.session).materialize(row, user)
         row.reviewed_by_user_id = user.id
         row.reviewed_at = datetime.now(UTC)
         event = (

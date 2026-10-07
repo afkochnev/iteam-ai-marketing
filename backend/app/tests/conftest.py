@@ -58,6 +58,10 @@ from app.models.marketing_feedback import (  # noqa: E402
     MarketingFeedback,
     MarketingFeedbackAnalysis,
 )
+from app.models.optimization import (  # noqa: E402
+    CampaignOptimizationAction,
+    CampaignOptimizationProposal,
+)
 from app.models.publication import Publication, PublicationReconciliation  # noqa: E402
 from app.models.publication_metrics import PublicationMetricsSnapshot  # noqa: E402
 from app.models.publication_plan import PublicationPlan, PublicationPlanItem  # noqa: E402
@@ -73,6 +77,8 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.execute(delete(MarketingContextSnapshot))
         await session.execute(delete(MarketingConversation))
         await session.execute(update(ContentItem).values(current_version_id=None))
+        await session.execute(delete(CampaignOptimizationAction))
+        await session.execute(delete(CampaignOptimizationProposal))
         await session.execute(delete(MarketingFeedbackAnalysis))
         await session.execute(delete(MarketingFeedback))
         await session.execute(delete(PublicationReconciliation))
@@ -104,6 +110,8 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.execute(delete(MarketingContextSnapshot))
         await session.execute(delete(MarketingConversation))
         await session.execute(update(ContentItem).values(current_version_id=None))
+        await session.execute(delete(CampaignOptimizationAction))
+        await session.execute(delete(CampaignOptimizationProposal))
         await session.execute(delete(MarketingFeedbackAnalysis))
         await session.execute(delete(MarketingFeedback))
         await session.execute(delete(PublicationReconciliation))
