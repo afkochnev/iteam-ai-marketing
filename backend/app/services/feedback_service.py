@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.errors import AppError
 from app.models.agent import Agent, AgentStatus
 from app.models.agent_run import AgentRun, AgentRunStatus
@@ -315,6 +316,9 @@ class FeedbackService:
                 "Аналитик обратной связи недоступен.",
                 409,
             )
+        model = agent.model or settings.openai_default_model
+        if not model:
+            raise AppError("AGENT_MODEL_NOT_CONFIGURED", "Модель агента не настроена.", 409)
         task = Task(
             campaign_id=campaign_id,
             task_type=TaskType.MANUAL,
@@ -333,7 +337,7 @@ class FeedbackService:
             campaign_id=campaign_id,
             status=AgentRunStatus.QUEUED,
             input_data={"feedback_snapshot": snapshot},
-            model=agent.model or "feedback-analyst",
+            model=model,
             prompt_snapshot="Feedback Analyst: advisory analysis only.",
             prompt_hash="feedback-analyst",
         )
