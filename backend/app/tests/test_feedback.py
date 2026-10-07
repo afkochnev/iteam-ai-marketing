@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.tasks import run_task
+from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.errors import AppError
 from app.models.activity import ActivityLog
@@ -131,6 +132,68 @@ async def test_analysis_queue_creates_agent_run_and_freezes_snapshot(
     assert run.status is AgentRunStatus.QUEUED
     assert run.input_data["feedback_snapshot"]["campaign_id"] == str(campaign.id)
     assert analysis.generated_at is None
+
+
+@pytest.mark.integration
+async def test_analysis_queue_uses_openai_default_model_when_agent_model_missing(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _user, campaign, _post, _version = await _approved_post(db_session)
+    director = Agent(
+        name="Marketing Director",
+        slug="marketing_director",
+        role="marketing_director",
+        system_prompt="Plan campaigns.",
+        model=None,
+        status=AgentStatus.ACTIVE,
+        autonomy_level=2,
+        settings={},
+    )
+    db_session.add(director)
+    await db_session.commit()
+    monkeypatch.setattr(settings, "openai_default_model", "gpt-test-default")
+
+    class Result:
+        id = "feedback-default-model-job"
+
+    monkeypatch.setattr(
+        "app.workers.feedback_worker.generate_feedback_analysis.apply_async",
+        lambda **_options: Result(),
+    )
+    analysis = await FeedbackService(db_session).queue_analysis(campaign.id)
+    run = await db_session.get(AgentRun, analysis.agent_run_id)
+
+    assert run is not None
+    assert run.model == "gpt-test-default"
+
+
+@pytest.mark.integration
+async def test_analysis_queue_fails_before_creating_artifacts_when_model_missing(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _user, campaign, _post, _version = await _approved_post(db_session)
+    director = Agent(
+        name="Marketing Director",
+        slug="marketing_director",
+        role="marketing_director",
+        system_prompt="Plan campaigns.",
+        model=None,
+        status=AgentStatus.ACTIVE,
+        autonomy_level=2,
+        settings={},
+    )
+    db_session.add(director)
+    await db_session.commit()
+    monkeypatch.setattr(settings, "openai_default_model", None)
+    before_tasks = len(list((await db_session.scalars(select(Task))).all()))
+    before_runs = len(list((await db_session.scalars(select(AgentRun))).all()))
+
+    with pytest.raises(AppError) as error:
+        await FeedbackService(db_session).queue_analysis(campaign.id)
+
+    assert error.value.code == "AGENT_MODEL_NOT_CONFIGURED"
+    assert len(list((await db_session.scalars(select(Task))).all())) == before_tasks
+    assert len(list((await db_session.scalars(select(AgentRun))).all())) == before_runs
 
 
 @pytest.mark.integration
