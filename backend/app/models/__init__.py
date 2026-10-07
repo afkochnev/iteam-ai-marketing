@@ -38,6 +38,9 @@ from app.models.task import Task, TaskDependency, TaskPriority, TaskStatus, Task
 from app.models.user import User, UserRole
 
 __all__ = [
+    "MarketingConversation",
+    "MarketingContextSnapshot",
+    "MarketingMessage",
     "ActivityLog",
     "Agent",
     "AgentRole",
@@ -88,3 +91,9 @@ __all__ = [
     "User",
     "UserRole",
 ]
+
+from app.models.marketing_chat import (
+    MarketingContextSnapshot,
+    MarketingConversation,
+    MarketingMessage,
+)

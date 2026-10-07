@@ -68,6 +68,8 @@ class SimpleRateLimitMiddleware(BaseHTTPMiddleware):
             return "login", settings.rate_limit_login_per_minute
         if path == "/api/v1/knowledge/upload":
             return "upload", settings.rate_limit_uploads_per_minute
+        if "/marketing-conversations/" in path and path.endswith("/messages"):
+            return "ai", settings.rate_limit_ai_actions_per_minute
         if path.endswith("/run") or path.endswith("/retry"):
             return "ai", settings.rate_limit_ai_actions_per_minute
         return None, 0

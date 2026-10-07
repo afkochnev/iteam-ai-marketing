@@ -53,6 +53,12 @@ class TaskRecoveryService:
                 agent_id=run.agent_id,
                 metadata={"agent_run_id": str(run.id), "error_code": run.error_code},
             )
+            from app.core.director_chat import is_director_chat
+
+            if is_director_chat(task):
+                from app.services.director_chat_service import fail_chat_response
+
+                await fail_chat_response(self.session, run, "AGENT_STUCK")
             recovered.append(run)
         await self.session.commit()
         return recovered

@@ -24,7 +24,7 @@ describe("publication calendar", () => {
   it("separates upcoming work from publication history and links back to campaign context", async () => {
     render(<PublicationsPage />);
     expect(await screen.findByRole("heading", { name: "Предстоящие" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Ближайший пост" })).toHaveAttribute("href", "/content/post-1");
+    expect(await screen.findByRole("link", { name: "Ближайший пост" })).toHaveAttribute("href", "/content/post-1");
     expect(screen.getByText("Опубликованные · 1")).toBeInTheDocument();
     expect(screen.getAllByText("Запуск")[0]).toHaveAttribute("href", "/campaigns/campaign-1");
     expect(mocks.calendar).toHaveBeenCalledWith("campaign-1", expect.any(String), expect.any(String));

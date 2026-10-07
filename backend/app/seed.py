@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.core.database import async_session_factory
+from app.core.director_chat import CHAT_PROMPT
 from app.core.security import hash_password
 from app.models.agent import Agent, AgentRole, AgentSlug, AgentStatus, AgentTool
 from app.models.knowledge import (
@@ -113,6 +114,11 @@ async def seed_agents() -> tuple[int, int]:
                 existing_tools: set[str] = set()
             else:
                 existing_tools = {tool.tool_name for tool in agent.tools}
+            if (
+                definition.slug is AgentSlug.MARKETING_DIRECTOR
+                and "chat_prompt" not in agent.settings
+            ):
+                agent.settings = {**agent.settings, "chat_prompt": CHAT_PROMPT}
             for tool_name in definition.tools:
                 if tool_name not in existing_tools:
                     session.add(AgentTool(agent_id=agent.id, tool_name=tool_name))

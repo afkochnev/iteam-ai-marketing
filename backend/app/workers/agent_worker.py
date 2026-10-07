@@ -57,7 +57,6 @@ async def _execute(run_id: UUID, factory: SessionFactory | None = None) -> None:
             await AgentRunService(session, factory).finish_failure(
                 run_id,
                 runtime_error,
-                result=result,
             )
         return
     try:

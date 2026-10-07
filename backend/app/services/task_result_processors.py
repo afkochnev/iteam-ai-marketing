@@ -9,6 +9,7 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.director_chat import is_director_chat
 from app.core.errors import AppError
 from app.models.agent_run import AgentRun, ToolCall, ToolCallStatus
 from app.models.campaign import Campaign, CampaignStatus
@@ -64,6 +65,14 @@ class DefaultTaskResultProcessor:
         task: Task,
         output: dict[str, object],
     ) -> None:
+        if is_director_chat(task):
+            from app.services.director_chat_service import complete_chat_response
+
+            await complete_chat_response(session, run, output)
+            task.status = TaskStatus.COMPLETED
+            task.completed_at = datetime.now(UTC)
+            task.output_data = output
+            return
         await TaskService(session).complete_task(task.id, output, commit=False)
 
 

@@ -44,6 +44,7 @@ class TaskDispatcherService:
                     select(Task.id)
                     .where(
                         Task.status == TaskStatus.READY,
+                        Task.is_internal.is_(False),
                         Task.task_type.in_(AUTO_TASK_TYPES),
                     )
                     .order_by(Task.created_at)

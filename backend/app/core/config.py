@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     smm_agent_output_repair_attempts: int = 1
     agent_retry_backoff_seconds: int = 5
     task_stuck_after_seconds: int = 600
+    director_chat_recent_messages: int = Field(default=12, ge=1, le=100)
+    director_chat_context_max_chars: int = Field(default=24000, ge=12000, le=100000)
+    director_chat_digest_max_chars: int = Field(default=8000, ge=1, le=16000)
     self_registration_enabled: bool = False
     rate_limit_registration_per_minute: int = 5
     rate_limit_password_change_per_minute: int = 5

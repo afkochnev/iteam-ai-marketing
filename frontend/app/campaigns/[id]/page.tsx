@@ -239,7 +239,7 @@ export default function CampaignDetailsPage() {
     <PageBreadcrumbs items={[{ label: "Кампании", href: "/campaigns" }, { label: campaign.name }]} />
     <header className="page-header campaign-hero">
       <div><p className="eyebrow">Операционный центр кампании</p><h1>{campaign.name}</h1><p className="muted">{campaign.goal} · {formatDate(campaign.start_date)} — {formatDate(campaign.end_date)}</p></div>
-      <div className="hero-actions"><StatusBadge label={CAMPAIGN_STATUS_LABELS[campaign.status]} /><Link className="button-link" href="/publications">К календарю публикаций</Link>{!archived && <><Link className="button-link secondary" href={`/campaigns/${id}/edit`}>Внести изменения</Link><button className="secondary" onClick={archive}>Архивировать</button></>}</div>
+      <div className="hero-actions"><Link className="button-link" href={`/campaigns/${id}/director`}>Обсудить с Директором по маркетингу</Link><StatusBadge label={CAMPAIGN_STATUS_LABELS[campaign.status]} /><Link className="button-link" href="/publications">К календарю публикаций</Link>{!archived && <><Link className="button-link secondary" href={`/campaigns/${id}/edit`}>Внести изменения</Link><button className="secondary" onClick={archive}>Архивировать</button></>}</div>
     </header>
     {error && <p role="alert" className="error">{error}</p>}
     {hasPublishingPublication && publicationPollingMessage && <p role="status">{publicationPollingMessage}</p>}

@@ -67,6 +67,10 @@ class Task(UUIDTimestampMixin, Base):
         Index("ix_tasks_created_at", "created_at"),
     )
 
+    is_internal: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text("false")
+    )
+
     campaign_id: Mapped[UUID] = mapped_column(
         ForeignKey("campaigns.id", ondelete="RESTRICT"), nullable=False
     )
