@@ -12,6 +12,7 @@ from app.api.knowledge import router as knowledge_router
 from app.api.knowledge_packs import router as knowledge_packs_router
 from app.api.marketing_chat import router as marketing_chat_router
 from app.api.metrics import router as metrics_router
+from app.api.optimization import router as optimization_router
 from app.api.publication_plans import router as publication_plans_router
 from app.api.publications import router as publications_router
 from app.api.system import router as system_router
@@ -33,6 +34,7 @@ api_router.include_router(publication_plans_router)
 api_router.include_router(metrics_router)
 api_router.include_router(content_router)
 api_router.include_router(feedback_router)
+api_router.include_router(optimization_router)
 api_router.include_router(system_router)
 
 

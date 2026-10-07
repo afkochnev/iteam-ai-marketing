@@ -8,6 +8,7 @@ from app.models.marketing_feedback import (
     FeedbackAnalysisStatus,
     FeedbackCategory,
 )
+from app.models.optimization import OptimizationActionType, OptimizationTargetEntityType
 
 
 class FeedbackCreate(BaseModel):
@@ -78,8 +79,23 @@ class FeedbackFinding(BaseModel):
     confidence: str = Field(min_length=1, max_length=40)
 
 
+class OptimizationActionDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    type: OptimizationActionType
+    target_entity_type: OptimizationTargetEntityType
+    target_entity_id: UUID
+    target_version_id: UUID | None
+    reason: str = Field(min_length=1, max_length=2000)
+    expected_effect: str = Field(min_length=1, max_length=1000)
+    priority: str = Field(min_length=1, max_length=40)
+    evidence_refs: list[FeedbackEvidenceRef] = Field(max_length=8)
+
+
 class FeedbackRecommendation(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+    proposed_action: OptimizationActionDraft
 
     category: str = Field(min_length=1, max_length=80)
     recommendation: str = Field(min_length=1, max_length=2000)

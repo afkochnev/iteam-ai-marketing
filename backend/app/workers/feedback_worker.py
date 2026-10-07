@@ -66,7 +66,16 @@ async def _run(agent_run_id: UUID) -> None:
             "Проанализируй только зафиксированный снимок обратной связи. "
             "Разделяй факты, интерпретации и гипотезы; ссылайся только на evidence_refs "
             "из снимка; сохраняй MANUAL/PROVIDER и NULL/0; показывай противоречия; "
-            "не выдумывай причинность, ROI, клиентов или результаты; не создавай общий score.\n"
+            "не выдумывай причинность, ROI, клиентов или результаты; не создавай общий score. "
+            "Каждая рекомендация обязана включать proposed_action: только CONTENT_REVISION, "
+            "PUBLICATION_PLAN_REVISION, STRATEGY_REVIEW, EXPERIMENT или NO_CHANGE. "
+            "target IDs и точная версия контента берутся только из optimization_target_allowlist; "
+            "evidence_refs только из зафиксированного evidence allowlist. "
+            "CONTENT_REVISION требует CONTENT_ITEM и точный target_version_id; пересмотр плана "
+            "требует PUBLICATION_PLAN без версии; STRATEGY_REVIEW требует CAMPAIGN_STRATEGY "
+            "с ID кампании; EXPERIMENT и NO_CHANGE требуют CAMPAIGN с ID кампании без версии. "
+            "Действия только консультативны: не утверждай, что выполнил изменения. "
+            "Если доказательств недостаточно, допустим NO_CHANGE. Инструментов нет.\n"
             f"Снимок: {snapshot}"
         )
         client = AsyncOpenAI(
