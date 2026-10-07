@@ -60,6 +60,7 @@ class TaskType(StrEnum):
 class Task(UUIDTimestampMixin, Base):
     __tablename__ = "tasks"
     __table_args__ = (
+        UniqueConstraint("optimization_action_id", name="uq_tasks_optimization_action"),
         Index("ix_tasks_campaign_id", "campaign_id"),
         Index("ix_tasks_assigned_agent_id", "assigned_agent_id"),
         Index("ix_tasks_status", "status"),
@@ -73,6 +74,9 @@ class Task(UUIDTimestampMixin, Base):
 
     campaign_id: Mapped[UUID] = mapped_column(
         ForeignKey("campaigns.id", ondelete="RESTRICT"), nullable=False
+    )
+    optimization_action_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("campaign_optimization_actions.id", ondelete="RESTRICT", use_alter=True)
     )
     parent_task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id", ondelete="RESTRICT"))
     task_type: Mapped[TaskType] = mapped_column(Enum(TaskType, name="task_type"), nullable=False)

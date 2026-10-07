@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -12,6 +13,7 @@ from app.core.errors import AppError
 from app.models.agent import AgentStatus
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.approval import Approval, ApprovalObjectType, ApprovalStatus
+from app.models.campaign import Campaign
 from app.models.content import (
     ContentChannel,
     ContentItem,
@@ -436,7 +438,15 @@ class PublicationPlanService:
             item.position = position
 
     async def queue_generation(
-        self, campaign_id: UUID, user: User, data: PublicationPlanGenerateRequest
+        self,
+        campaign_id: UUID,
+        user: User,
+        data: PublicationPlanGenerateRequest,
+        *,
+        commit: bool = True,
+        optimization_action_id: UUID | None = None,
+        optimization_proposal_id: UUID | None = None,
+        optimization_context: dict[str, Any] | None = None,
     ) -> PublicationPlan:
         await self._validate_feedback(campaign_id, data.feedback_analysis_id)
         if (
@@ -475,6 +485,7 @@ class PublicationPlanService:
             "channels": [str(c) for c in data.channels],
             "total_items": data.total_items,
             "article_version_ids": [str(version_id) for version_id in approved],
+            **(optimization_context or {}),
             "article_digests": [
                 build_article_planning_digest(version, item.title)
                 for item, version in approved.values()
@@ -504,6 +515,8 @@ class PublicationPlanService:
             created_by_user_id=user.id,
             generated_by_agent_run_id=run.id,
             feedback_analysis_id=data.feedback_analysis_id,
+            optimization_action_id=optimization_action_id,
+            optimization_proposal_id=optimization_proposal_id,
         )
         self.session.add(plan)
         await self.session.flush()
@@ -514,7 +527,14 @@ class PublicationPlanService:
             user_id=user.id,
             metadata={"plan_id": str(plan.id), "agent_run_id": str(run.id)},
         )
+        if not commit:
+            return plan
         await self.session.commit()
+        await self.enqueue_generation(plan, run)
+        return await self.get_plan(plan.id)
+
+    async def enqueue_generation(self, plan: PublicationPlan, run: AgentRun) -> None:
+        campaign_id = plan.campaign_id
         try:
             from app.workers.publication_plan_worker import generate_publication_plan
 
@@ -524,6 +544,14 @@ class PublicationPlanService:
                 select(PublicationPlan).where(PublicationPlan.id == plan.id).with_for_update()
             )
             plan.status = PublicationPlanStatus.DRAFT
+            run.status = AgentRunStatus.FAILED
+            run.error_code = "PLAN_ENQUEUE_FAILED"
+            run.error_message = "Не удалось поставить генерацию плана в очередь."
+            run.completed_at = datetime.now(UTC)
+            task = await self.session.get(Task, run.task_id)
+            if task is not None:
+                task.status = TaskStatus.FAILED
+                task.error_message = run.error_message
             await ActivityLogService(self.session).record(
                 "PUBLICATION_PLAN_GENERATION_FAILED",
                 operation_key=f"publication-plan-generation-failed:{run.id}",
@@ -534,7 +562,6 @@ class PublicationPlanService:
             raise AppError(
                 "PLAN_ENQUEUE_FAILED", "Не удалось поставить генерацию плана в очередь.", 503
             ) from exc
-        return await self.get_plan(plan.id)
 
     async def get_plan(self, plan_id: UUID) -> PublicationPlan:
         row = await self.session.scalar(
@@ -561,11 +588,17 @@ class PublicationPlanService:
     async def transition(
         self, plan_id: UUID, user: User, target: PublicationPlanStatus
     ) -> PublicationPlan:
-        plan = await self.session.scalar(
-            select(PublicationPlan).where(PublicationPlan.id == plan_id).with_for_update()
-        )
-        if plan is None:
+        source = await self.session.get(PublicationPlan, plan_id)
+        if source is None:
             raise AppError("PUBLICATION_PLAN_NOT_FOUND", "План публикаций не найден.", 404)
+        # Serialize approval/replacement against Apply's campaign-first validation.
+        await self.session.get(
+            Campaign, source.campaign_id, with_for_update=True, populate_existing=True
+        )
+        plan = await self.session.get(
+            PublicationPlan, plan_id, with_for_update=True, populate_existing=True
+        )
+        assert plan is not None
         allowed = {
             PublicationPlanStatus.DRAFT: {PublicationPlanStatus.REJECTED},
             PublicationPlanStatus.WAITING_APPROVAL: {

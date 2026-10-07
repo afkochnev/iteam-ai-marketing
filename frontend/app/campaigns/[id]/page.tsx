@@ -199,7 +199,7 @@ export default function CampaignDetailsPage() {
   };
 
   const renderPlanCard = (plan: PublicationPlan) => (
-    <article className="plan-card" key={plan.id}>
+    <article className="plan-card" key={plan.id} id={`publication-plan-${plan.id}`} tabIndex={-1}>
       <div className="card-heading"><div><h3>План · {formatDate(plan.planning_horizon_start)} — {formatDate(plan.planning_horizon_end)}</h3><p>{plan.items.filter((item) => item.status === "PLANNED").length} активных пунктов · часовой пояс: {plan.timezone_policy}</p></div><StatusBadge label={PLAN_STATUS_LABELS[plan.status]} tone={plan.status === "APPROVED" ? "success" : "neutral"} /></div>
       <ol className="plan-list">{plan.items.filter((item) => item.status === "PLANNED").map((item, index) => {
         const planWorkspace = planWorkspaceById.get(plan.id);

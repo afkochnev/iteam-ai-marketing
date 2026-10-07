@@ -77,6 +77,14 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.execute(delete(MarketingContextSnapshot))
         await session.execute(delete(MarketingConversation))
         await session.execute(update(ContentItem).values(current_version_id=None))
+        await session.execute(update(Task).values(optimization_action_id=None))
+        await session.execute(
+            update(PublicationPlan).values(
+                optimization_action_id=None,
+                optimization_proposal_id=None,
+                feedback_analysis_id=None,
+            )
+        )
         await session.execute(delete(CampaignOptimizationAction))
         await session.execute(delete(CampaignOptimizationProposal))
         await session.execute(delete(MarketingFeedbackAnalysis))
@@ -110,6 +118,14 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.execute(delete(MarketingContextSnapshot))
         await session.execute(delete(MarketingConversation))
         await session.execute(update(ContentItem).values(current_version_id=None))
+        await session.execute(update(Task).values(optimization_action_id=None))
+        await session.execute(
+            update(PublicationPlan).values(
+                optimization_action_id=None,
+                optimization_proposal_id=None,
+                feedback_analysis_id=None,
+            )
+        )
         await session.execute(delete(CampaignOptimizationAction))
         await session.execute(delete(CampaignOptimizationProposal))
         await session.execute(delete(MarketingFeedbackAnalysis))
@@ -162,7 +178,7 @@ def block_live_provider_dns(monkeypatch: pytest.MonkeyPatch) -> None:
         name = host.decode() if isinstance(host, bytes) else str(host)
         if any(
             name == domain or name.endswith("." + domain)
-            for domain in ["openai.com", "telegram.org", "vk.com"]
+            for domain in ["openai.com", "telegram.org", "vk.com", "vk.ru"]
         ):
             raise AssertionError("Live provider network access is forbidden in tests")
         return original(host, *args, **kwargs)

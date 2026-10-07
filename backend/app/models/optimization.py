@@ -120,3 +120,7 @@ class CampaignOptimizationAction(UUIDTimestampMixin, Base):
         server_default="PROPOSED",
     )
     source_recommendation_index: Mapped[int] = mapped_column(Integer)
+    applied_by_user_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT")
+    )
+    applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
