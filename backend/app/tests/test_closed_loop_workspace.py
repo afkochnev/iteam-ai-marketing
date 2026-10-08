@@ -191,6 +191,16 @@ async def test_next_step_priority_matrix(db_session, state, expected):
     pub = data["publication"]
     pub.status = PublicationStatus.PUBLISHED
     pub.published_at = datetime.now(UTC)
+    historical = Publication(
+        campaign_id=pub.campaign_id,
+        content_item_id=pub.content_item_id,
+        content_version_id=pub.content_version_id,
+        channel=pub.channel,
+        status=PublicationStatus.FAILED,
+        failure_code="PROVIDER_ERROR",
+        created_at=pub.created_at - timedelta(days=1),
+    )
+    db_session.add(historical)
     # Existing workflow is complete; pending optimization competes with normal monitoring.
     row = MarketingFeedbackAnalysis(
         campaign_id=campaign.id,
@@ -252,7 +262,11 @@ async def test_next_step_priority_matrix(db_session, state, expected):
             campaign.id, user, {"category": "TONE", "comment": "Test fixture evidence"}
         )
     await db_session.commit()
+    before = await counts(db_session)
     workspace = await CampaignWorkspaceService(db_session).get(campaign.id)
+    assert await counts(db_session) == before
+    assert await db_session.get(Publication, historical.id) is historical
+    assert historical.status is PublicationStatus.FAILED
     assert workspace.director.next_step.title == expected
     assert f"/campaigns/{campaign.id}#" not in workspace.director.next_step.href
 

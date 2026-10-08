@@ -49,6 +49,7 @@ from app.services.optimization_workspace_service import (
     OptimizationWorkspaceService,
 )
 from app.services.plan_item_smm_service import PlanItemSmmService
+from app.services.publication_attention_service import current_publication_failures
 from app.services.task_classification_service import classify_tasks
 
 
@@ -929,9 +930,7 @@ class CampaignWorkspaceService:
                 entity_type="task",
                 entity_id=issue.id,
             )
-        failed_publication = next(
-            (p for p in publications if p.status is PublicationStatus.FAILED), None
-        )
+        failed_publication = next(iter(current_publication_failures(publications)), None)
         if failed_publication:
             return WorkspaceNextStep(
                 title="Проверить отправку публикации",
