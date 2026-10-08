@@ -4,7 +4,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, Text
+from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -67,9 +67,21 @@ class MarketingFeedback(UUIDTimestampMixin, Base):
     created_by_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
 
 
+class AnalysisTriggerSource(StrEnum):
+    MANUAL = "MANUAL"
+    AUTOMATIC = "AUTOMATIC"
+
+
 class MarketingFeedbackAnalysis(UUIDTimestampMixin, Base):
     __tablename__ = "marketing_feedback_analyses"
     __table_args__ = (
+        Index(
+            "uq_analysis_campaign_evidence",
+            "campaign_id",
+            "evidence_fingerprint",
+            unique=True,
+            postgresql_where=text("evidence_fingerprint IS NOT NULL"),
+        ),
         Index("ix_feedback_analyses_campaign_id", "campaign_id"),
         Index("ix_feedback_analyses_status", "status"),
         Index("ix_feedback_analyses_created_at", "created_at"),
@@ -88,6 +100,14 @@ class MarketingFeedbackAnalysis(UUIDTimestampMixin, Base):
     recommendations: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
     experiment_ideas: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
     limitations: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
+    evidence_fingerprint: Mapped[str | None] = mapped_column(String(64))
+    task_id: Mapped[UUID | None] = mapped_column(ForeignKey("tasks.id", ondelete="RESTRICT"))
+    trigger_source: Mapped[AnalysisTriggerSource | None] = mapped_column(
+        Enum(AnalysisTriggerSource, name="analysis_trigger_source")
+    )
+    interpretations: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, default=list, server_default=text("'[]'::jsonb")
+    )
     agent_run_id: Mapped[UUID | None] = mapped_column(ForeignKey("agent_runs.id"))
     generated_at: Mapped[Any | None] = mapped_column(DateTime(timezone=True))
     reviewed_by_user_id: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))

@@ -74,7 +74,7 @@ async def test_agent_and_tool_model_defaults_and_cascade(db_session: AsyncSessio
 
 
 async def test_seed_is_idempotent_and_preserves_changes(db_session: AsyncSession) -> None:
-    assert await seed_agents() == (4, 15)
+    assert await seed_agents() == (5, 15)
     repository = AgentRepository(db_session)
     writer = await repository.get_by_slug(AgentSlug.WRITER, with_tools=True)
     assert writer is not None
@@ -110,7 +110,7 @@ async def test_agents_api_rbac_and_validation(
     await create_user_and_login(client, db_session, UserRole.MANAGER)
     response = await client.get("/api/v1/agents")
     assert response.status_code == 200
-    assert len(response.json()) == 4
+    assert len(response.json()) == 5
     writer_id = next(item["id"] for item in response.json() if item["slug"] == "writer")
     details = await client.get(f"/api/v1/agents/{writer_id}")
     assert details.status_code == 200

@@ -206,6 +206,7 @@ def test_dispatcher_allowlist_is_explicit() -> None:
         TaskType.WRITE_ARTICLE,
         TaskType.CREATE_SOCIAL_POSTS,
         TaskType.CONTENT_REVISION,
+        TaskType.ANALYZE_PERFORMANCE,
     }
 
 

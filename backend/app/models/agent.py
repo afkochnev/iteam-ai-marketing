@@ -27,6 +27,7 @@ class AgentStatus(StrEnum):
 
 
 class AgentSlug(StrEnum):
+    MARKETING_ANALYST = "marketing_analyst"
     MARKETING_DIRECTOR = "marketing_director"
     KNOWLEDGE_KEEPER = "knowledge_keeper"
     WRITER = "writer"
@@ -34,6 +35,7 @@ class AgentSlug(StrEnum):
 
 
 class AgentRole(StrEnum):
+    MARKETING_ANALYST = "marketing_analyst"
     MARKETING_DIRECTOR = "marketing_director"
     KNOWLEDGE_KEEPER = "knowledge_keeper"
     CONTENT_WRITER = "content_writer"

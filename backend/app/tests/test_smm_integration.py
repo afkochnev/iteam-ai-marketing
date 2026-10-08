@@ -58,11 +58,11 @@ from app.services.agent_run_service import AgentRunService
 from app.services.agent_runner_service import RuntimeResult
 from app.services.approval_service import ApprovalService
 from app.services.campaign_service import CampaignService
-from app.services.feedback_service import FeedbackService
 from app.services.task_classification_service import classify_tasks
 from app.services.task_dispatcher_service import TaskDispatcherService
 from app.services.task_result_processors import result_processor_registry
 from app.services.task_service import TaskService
+from app.tests.legacy_feedback import LegacyFeedbackFixture
 
 
 def social_result(
@@ -1662,7 +1662,7 @@ async def test_feedback_recommendations_cannot_bypass_smm_quality_validation(
     task, campaign, article_version = await smm_fixture(db_session)
     user = await db_session.scalar(select(User))
     assert user is not None
-    analysis = await FeedbackService(db_session).generate_analysis(campaign.id)
+    analysis = await LegacyFeedbackFixture(db_session).generate_analysis(campaign.id)
     analysis.recommendations = [
         {
             "category": "FORMAT",

@@ -100,3 +100,22 @@ async def _dispatch_publications() -> None:
         raise
     finally:
         await loop_engine.dispose()
+
+
+@celery_app.task(name="discover_performance_analyses")  # type: ignore[misc]
+def discover_performance_analyses() -> None:
+    asyncio.run(_discover_performance_analyses())
+
+
+async def _discover_performance_analyses() -> None:
+    from app.services.performance_analysis_discovery_service import (
+        PerformanceAnalysisDiscoveryService,
+    )
+
+    loop_engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    try:
+        factory = async_sessionmaker(loop_engine, expire_on_commit=False)
+        async with factory() as session:
+            await PerformanceAnalysisDiscoveryService(session).discover()
+    finally:
+        await loop_engine.dispose()

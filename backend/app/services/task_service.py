@@ -45,6 +45,10 @@ class TaskService:
         return task
 
     async def create_task(self, payload: TaskCreate, *, commit: bool = True) -> Task:
+        if payload.task_type is TaskType.ANALYZE_PERFORMANCE:
+            raise AppError(
+                "ANALYSIS_PREPARATION_REQUIRED", "Используйте подготовку анализа кампании.", 422
+            )
         campaign = await self._get_campaign(payload.campaign_id)
         self._ensure_campaign_editable(campaign)
         if (
@@ -124,6 +128,10 @@ class TaskService:
                 409,
             )
         changes = payload.model_dump(exclude_unset=True)
+        if task.task_type is TaskType.ANALYZE_PERFORMANCE and (
+            {"assigned_agent_id", "input_data"} & changes.keys()
+        ):
+            raise AppError("ANALYSIS_TASK_IMMUTABLE", "Evidence и агент анализа неизменяемы.", 409)
         agent_id = changes.get("assigned_agent_id")
         if agent_id and await self.session.get(Agent, agent_id) is None:
             raise AppError("AGENT_NOT_FOUND", "Агент не найден.", 404)

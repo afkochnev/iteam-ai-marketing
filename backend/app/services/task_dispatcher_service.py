@@ -22,6 +22,7 @@ AUTO_TASK_TYPES = frozenset(
         TaskType.WRITE_ARTICLE,
         TaskType.CREATE_SOCIAL_POSTS,
         TaskType.CONTENT_REVISION,
+        TaskType.ANALYZE_PERFORMANCE,
     }
 )
 
@@ -56,7 +57,9 @@ class TaskDispatcherService:
         dispatched: list[UUID] = []
         for task_id in task_ids:
             try:
-                task = await self.session.get(Task, task_id, with_for_update=True)
+                task = await self.session.get(
+                    Task, task_id, with_for_update=True, populate_existing=True
+                )
                 if task is not None and task.task_type is TaskType.CREATE_SOCIAL_POSTS:
                     approved_version_id = await TaskService(
                         self.session

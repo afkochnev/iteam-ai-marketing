@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     max_upload_size_mb: int = 25
     knowledge_index_timeout_seconds: int = 300
     knowledge_index_poll_interval_seconds: float = 2.0
+    optimization_analysis_cooldown_hours: int = Field(default=24, gt=0)
+    optimization_analysis_scan_interval_seconds: int = Field(default=300, gt=0)
     task_dispatch_interval_seconds: int = 10
     allowed_hosts: str = "localhost,127.0.0.1"
     cors_allowed_origins: str | None = None

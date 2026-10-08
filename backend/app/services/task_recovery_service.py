@@ -62,6 +62,10 @@ class TaskRecoveryService:
                 from app.services.director_chat_service import fail_chat_response
 
                 await fail_chat_response(self.session, run, "AGENT_STUCK")
+            if task.task_type is TaskType.ANALYZE_PERFORMANCE:
+                from app.services.performance_analysis_lifecycle import fail_linked_analysis
+
+                await fail_linked_analysis(self.session, run)
             recovered.append(run)
         await self.session.commit()
         recovered.extend(await self.recover_unenqueued_optimization_runs(limit=limit))
@@ -87,6 +91,8 @@ class TaskRecoveryService:
             )
             .exists()
         )
+        from app.services.task_dispatcher_service import AUTO_TASK_TYPES
+
         applied_strategy = (
             select(CampaignOptimizationAction.id)
             .where(
@@ -106,6 +112,7 @@ class TaskRecoveryService:
                     AgentRun.status == AgentRunStatus.QUEUED,
                     AgentRun.queue_job_id.is_(None),
                     or_(
+                        (Task.status == TaskStatus.READY) & Task.task_type.in_(AUTO_TASK_TYPES),
                         applied_plan,
                         (Task.task_type == TaskType.CAMPAIGN_PLANNING) & applied_strategy,
                     ),

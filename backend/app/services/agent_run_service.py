@@ -1,3 +1,4 @@
+import copy
 import hashlib
 import logging
 from datetime import UTC, datetime
@@ -81,6 +82,7 @@ class AgentRunService:
                 selectinload(Task.assigned_agent).selectinload(Agent.tools),
             )
             .where(Task.id == task_id)
+            .execution_options(populate_existing=True)
             .with_for_update()
         )
         task = (await self.session.execute(query)).scalar_one_or_none()
@@ -99,6 +101,7 @@ class AgentRunService:
             TaskType.WRITE_ARTICLE,
             TaskType.CREATE_SOCIAL_POSTS,
             TaskType.CONTENT_REVISION,
+            TaskType.ANALYZE_PERFORMANCE,
         }:
             raise AppError(
                 "TASK_TYPE_NOT_EXECUTABLE",
@@ -118,6 +121,8 @@ class AgentRunService:
             if task.status is TaskStatus.BLOCKED:
                 task.status = TaskStatus.READY
                 task.error_message = None
+        if retry and task.task_type is TaskType.ANALYZE_PERFORMANCE:
+            raise AppError("ANALYSIS_RETRY_REQUIRED", "Используйте повтор анализа.", 409)
         if retry:
             if task.status is TaskStatus.READY and task.retry_count > 0:
                 # A transient failure may already have scheduled an automatic
@@ -174,10 +179,41 @@ class AgentRunService:
                     **plan_context.task_input(),
                 }
         agent = task.assigned_agent
+        if task.task_type is TaskType.ANALYZE_PERFORMANCE and (
+            agent is None or agent.status is not AgentStatus.ACTIVE
+        ):
+            raise AppError(
+                "MARKETING_ANALYST_UNAVAILABLE", "Marketing Analyst отсутствует или неактивен.", 409
+            )
         if agent is None:
             raise AppError("TASK_AGENT_NOT_ASSIGNED", "Задаче не назначен агент.", 409)
         if agent.status is not AgentStatus.ACTIVE:
             raise AppError("AGENT_INACTIVE", "Назначенный агент неактивен.", 409)
+        analysis = None
+        if task.task_type is TaskType.ANALYZE_PERFORMANCE:
+            from app.models.marketing_feedback import (
+                FeedbackAnalysisStatus,
+                MarketingFeedbackAnalysis,
+            )
+
+            if agent.slug != "marketing_analyst":
+                raise AppError(
+                    "INVALID_AGENT_FOR_TASK_TYPE", "Анализ требует Marketing Analyst.", 409
+                )
+            analysis = await self.session.scalar(
+                select(MarketingFeedbackAnalysis)
+                .where(MarketingFeedbackAnalysis.task_id == task.id)
+                .with_for_update()
+            )
+            if (
+                analysis is None
+                or analysis.status is not FeedbackAnalysisStatus.DRAFT
+                or str(analysis.id) != task.input_data.get("analysis_id")
+                or analysis.evidence_fingerprint != task.input_data.get("evidence_fingerprint")
+            ):
+                raise AppError(
+                    "ANALYSIS_TASK_INVALID", "Замороженный анализ не соответствует задаче.", 409
+                )
         prompt = agent.system_prompt
         if is_director_chat(task):
             if agent.slug != "marketing_director":
@@ -429,7 +465,7 @@ class AgentRunService:
             # SMM has one permitted read boundary. Other configured legacy
             # tools must never be exposed to the model for this task.
             enabled = [name for name in enabled if name == "read_content_version"]
-        if is_director_chat(task):
+        if is_director_chat(task) or task.task_type is TaskType.ANALYZE_PERFORMANCE:
             enabled = []
         missing = tool_registry.missing(enabled)
         if missing:
@@ -442,6 +478,8 @@ class AgentRunService:
             if task.input_data.get("feedback_analysis_id")
             else None
         )
+        if analysis is not None and feedback_analysis_id is not None:
+            raise AppError("ANALYSIS_CONTEXT_IMMUTABLE", "Контекст анализа уже заморожен.", 409)
         if feedback_analysis_id:
             from app.services.feedback_service import FeedbackService
 
@@ -452,7 +490,12 @@ class AgentRunService:
                 **task.input_data,
                 "feedback_analysis_snapshot": feedback_snapshot,
             }
-        runtime_input = build_task_input(task, allowed_pack_ids, allowed_content_version_ids)
+        if analysis is not None:
+            from app.services.performance_evidence import canonical_json
+
+            runtime_input = canonical_json(analysis.input_snapshot)
+        else:
+            runtime_input = build_task_input(task, allowed_pack_ids, allowed_content_version_ids)
         try:
             run = await self.repository.create(
                 {
@@ -460,7 +503,18 @@ class AgentRunService:
                     "task_id": task.id,
                     "campaign_id": task.campaign_id,
                     "status": AgentRunStatus.QUEUED,
+                    **({"request_count": 0} if analysis is not None else {}),
                     "input_data": {
+                        **(
+                            {
+                                "analysis_id": str(analysis.id),
+                                "evidence_fingerprint": analysis.evidence_fingerprint,
+                                "feedback_snapshot": copy.deepcopy(analysis.input_snapshot),
+                                "executable_tools": [],
+                            }
+                            if analysis is not None
+                            else {}
+                        ),
                         "text": runtime_input,
                         **({"internal_kind": CHAT_KIND} if is_director_chat(task) else {}),
                         "allowed_knowledge_pack_ids": [str(item) for item in allowed_pack_ids],
@@ -508,6 +562,13 @@ class AgentRunService:
                     "prompt_hash": hashlib.sha256(prompt.encode()).hexdigest(),
                 }
             )
+            if analysis is not None:
+                from app.services.feedback_service import FeedbackService
+
+                analysis.agent_run_id = run.id
+                await FeedbackService(self.session).analysis_event(
+                    analysis, "FEEDBACK_ANALYSIS_QUEUED"
+                )
             if feedback_analysis_id:
                 await ActivityLogService(self.session).record(
                     "FEEDBACK_ANALYSIS_USED",
@@ -550,7 +611,14 @@ class AgentRunService:
             from app.workers.agent_worker import execute_agent_run
 
             queue = "ai_live_test" if run.input_data.get("isolated_ai_execution") else "ai"
-            result = execute_agent_run.apply_async(
+            worker = execute_agent_run
+            task = await self.session.get(Task, run.task_id)
+            if task is not None and task.task_type is TaskType.ANALYZE_PERFORMANCE:
+                from app.workers.feedback_worker import generate_feedback_analysis
+
+                worker = generate_feedback_analysis
+                queue = "ai"
+            result = worker.apply_async(
                 args=[str(run.id)], countdown=max(0, countdown), queue=queue
             )
             await self.repository.update(run, {"queue_job_id": result.id})
@@ -566,6 +634,14 @@ class AgentRunService:
                     "completed_at": datetime.now(UTC),
                 },
             )
+            task = await self.session.get(Task, run.task_id, with_for_update=True)
+            if task is not None and task.task_type is TaskType.ANALYZE_PERFORMANCE:
+                from app.services.performance_analysis_lifecycle import fail_linked_analysis
+
+                task.status = TaskStatus.FAILED
+                task.error_message = run.error_message
+                task.completed_at = run.completed_at
+                await fail_linked_analysis(self.session, run)
             await self.session.commit()
             raise AppError(
                 "QUEUE_ENQUEUE_FAILED", "Не удалось поставить AI-запуск в очередь.", 503

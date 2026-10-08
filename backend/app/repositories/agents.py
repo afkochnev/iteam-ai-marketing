@@ -19,6 +19,7 @@ class AgentRepository:
             (Agent.slug == "knowledge_keeper", 2),
             (Agent.slug == "writer", 3),
             (Agent.slug == "smm_manager", 4),
+            (Agent.slug == "marketing_analyst", 5),
             else_=99,
         )
         result = await self.session.execute(select(Agent).order_by(position, Agent.name))
