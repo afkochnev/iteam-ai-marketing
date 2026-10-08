@@ -75,8 +75,8 @@ export default function DirectorPage() {
     try { const value = await directorChatApi.archive(selected); setConversations((items) => items.map((item) => item.id === value.id ? value : item)); }
     catch (reason) { showError(reason); } finally { setBusy(false); }
   }
-  if (loading || !user) return <main><p>Загрузка…</p></main>;
-  return <main className="wide"><Link href={`/campaigns/${id}`}>К кампании</Link><h1>{campaign?.name ?? "Кампания"} · Marketing Director</h1>
+  if (loading || !user) return <div><p>Загрузка…</p></div>;
+  return <div className="wide"><Link href={`/campaigns/${id}`}>К кампании</Link><h1>{campaign?.name ?? "Кампания"} · Marketing Director</h1>
     <p className="notice">Консультативный режим. Директор анализирует состояние кампании, но не изменяет данные без отдельного подтверждённого workflow.</p>
     {error && <p role="alert" className="error">{error}</p>}
     <div className="director-chat-layout"><aside className="card"><h2>Диалоги</h2><button onClick={create} disabled={busy || !campaign || campaign.status === "ARCHIVED"}>Новый диалог</button>
@@ -90,5 +90,5 @@ export default function DirectorPage() {
       </article>)}
       {selected && <><form onSubmit={send}><label htmlFor="director-message">Ваш вопрос</label><textarea id="director-message" maxLength={6000} value={content} disabled={readOnly || busy || historyLoading} onChange={(event) => setContent(event.target.value)} /><button disabled={!content.trim() || busy || pending || readOnly || historyLoading}>Отправить</button></form>
         {readOnly && <p>Архив доступен только для чтения.</p>}{!active?.archived_at && <button className="secondary" disabled={busy || pending} onClick={archive}>Архивировать диалог</button>}</>}
-    </section></div></main>;
+    </section></div></div>;
 }

@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { experimentsApi, optimizationApi, publicationsApi, type ExperimentConfiguration, type MarketingExperiment, type OptimizationAction, type Publication } from "@/lib/api";
 import { FriendlyError } from "@/components/friendly-error";
@@ -80,7 +81,7 @@ export function MarketingExperimentsPanel({campaignId, archived}: {campaignId: s
       <p>Experiment: {new Date(row.experiment_start).toLocaleString()} — {new Date(row.experiment_end).toLocaleString()}</p>
       {row.minimum_observation_requirement && <p>Минимальное требование: {row.minimum_observation_requirement}</p>}
       {(["BASELINE", "EXPERIMENT"] as const).map(role => <div key={role}><strong>{role === "BASELINE" ? "Baseline публикации" : "Experiment публикации"}</strong><ul>{row.publications.filter(link => link.role === role).map(link => <li key={link.publication_id}>Публикация {link.publication_id} · точная версия {link.content_version_id}</li>)}</ul></div>)}
-      <p>Источник: action {row.source_optimization_action_id} · proposal {row.proposal_id} · analysis {row.feedback_analysis_id}</p>
+      <p>Источник: <Link href={`/campaigns/${campaignId}/performance#action-${row.source_optimization_action_id}`}>Рекомендация {row.source_optimization_action_id.slice(0, 8)}</Link> · <Link href={`/campaigns/${campaignId}/performance#analysis-${row.feedback_analysis_id}`}>Анализ {row.feedback_analysis_id.slice(0, 8)}</Link></p>
       {row.result_summary && <p>{row.result_summary}</p>}
       {row.limitations.length > 0 && <ul aria-label="Ограничения">{row.limitations.map(value => <li key={value}>{value}</li>)}</ul>}
       <p>Сравнение описательное; причинный эффект и статистическая значимость не оцениваются.</p>

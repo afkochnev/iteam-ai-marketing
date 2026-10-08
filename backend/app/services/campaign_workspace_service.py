@@ -13,13 +13,7 @@ from app.models.campaign import Campaign, CampaignStatus
 from app.models.content import ContentItem, ContentStatus, ContentType
 from app.models.knowledge import KnowledgeItem, KnowledgeItemStatus, KnowledgeSource
 from app.models.knowledge_pack import KnowledgePackStatus
-from app.models.marketing_feedback import (
-    FeedbackAnalysisStatus,
-    MarketingFeedback,
-    MarketingFeedbackAnalysis,
-)
 from app.models.publication import Publication, PublicationStatus
-from app.models.publication_metrics import PublicationMetricsSnapshot
 from app.models.publication_plan import (
     PublicationPlan,
     PublicationPlanItem,
@@ -50,7 +44,12 @@ from app.schemas.campaign_workspace import (
     WorkspaceTask,
 )
 from app.services.campaign_change_service import CampaignChangeService
+from app.services.optimization_workspace_service import (
+    OptimizationState,
+    OptimizationWorkspaceService,
+)
 from app.services.plan_item_smm_service import PlanItemSmmService
+from app.services.publication_attention_service import current_publication_failures
 from app.services.task_classification_service import classify_tasks
 
 
@@ -349,7 +348,13 @@ class CampaignWorkspaceService:
             }
         ]
         knowledge = await self._knowledge_state(campaign, task_by_id)
-        feedback = await self._feedback_state(campaign_id)
+        optimization = (await OptimizationWorkspaceService(self.session).states([campaign_id]))[
+            campaign_id
+        ]
+        feedback = WorkspaceFeedbackState(
+            new_feedback_count=optimization.new_feedback_count,
+            new_metrics_count=optimization.new_metrics_count,
+        )
         change_state = await CampaignChangeService(self.session).state(
             campaign, current_plan=current_plan, contents=contents
         )
@@ -366,6 +371,7 @@ class CampaignWorkspaceService:
             feedback,
             post_actions,
             change_state,
+            optimization,
         )
 
         return CampaignWorkspaceResponse(
@@ -380,6 +386,7 @@ class CampaignWorkspaceService:
             attention_tasks=issue_tasks,
             feedback=feedback,
             change_state=change_state,
+            superseded_legacy_analysis_ids=optimization.superseded_legacy_analysis_ids,
         )
 
     async def _latest_runs(self, task_ids: list[UUID]) -> dict[UUID, AgentRun]:
@@ -528,7 +535,7 @@ class CampaignWorkspaceService:
                 ),
             )
             publication_refs = [self._publication_reference(pub, item.id) for pub in pubs]
-            item_anchor = f"/campaigns/{plan.campaign_id}#plan-item-{item.id}"
+            item_anchor = f"/campaigns/{plan.campaign_id}/plan#plan-item-{item.id}"
             article_stage = WorkspacePipelineStage(
                 label="Статья",
                 status=(
@@ -796,36 +803,6 @@ class CampaignWorkspaceService:
             has_current_strategy_pack=current_pack is not None,
         )
 
-    async def _feedback_state(self, campaign_id: UUID) -> WorkspaceFeedbackState:
-        latest_accepted = await self.session.scalar(
-            select(func.max(MarketingFeedbackAnalysis.generated_at)).where(
-                MarketingFeedbackAnalysis.campaign_id == campaign_id,
-                MarketingFeedbackAnalysis.status == FeedbackAnalysisStatus.ACCEPTED,
-            )
-        )
-        feedback_query = select(func.count(MarketingFeedback.id)).where(
-            MarketingFeedback.campaign_id == campaign_id
-        )
-        metrics_query = (
-            select(func.count(PublicationMetricsSnapshot.id))
-            .join(
-                Publication,
-                Publication.id == PublicationMetricsSnapshot.publication_id,
-            )
-            .where(Publication.campaign_id == campaign_id)
-        )
-        if latest_accepted is not None:
-            feedback_query = feedback_query.where(MarketingFeedback.created_at > latest_accepted)
-            metrics_query = metrics_query.where(
-                PublicationMetricsSnapshot.observed_at > latest_accepted
-            )
-        feedback_count = int(await self.session.scalar(feedback_query) or 0)
-        metric_count = int(await self.session.scalar(metrics_query) or 0)
-        return WorkspaceFeedbackState(
-            new_feedback_count=feedback_count,
-            new_metrics_count=metric_count,
-        )
-
     def _director(
         self,
         campaign: Campaign,
@@ -840,6 +817,7 @@ class CampaignWorkspaceService:
         feedback: WorkspaceFeedbackState,
         post_actions: dict[UUID, WorkspacePostAction],
         change_state: CampaignChangeState,
+        optimization: OptimizationState | None = None,
     ) -> CampaignDirectorBrief:
         active_items = (
             [
@@ -879,6 +857,8 @@ class CampaignWorkspaceService:
             feedback,
             post_actions,
             change_state,
+            optimization,
+            social_posts,
         )
         return CampaignDirectorBrief(
             strategy_status=strategy_status,
@@ -913,32 +893,10 @@ class CampaignWorkspaceService:
         feedback: WorkspaceFeedbackState,
         post_actions: dict[UUID, WorkspacePostAction],
         change_state: CampaignChangeState,
+        optimization: OptimizationState | None = None,
+        social_posts: list[ContentItem] | None = None,
     ) -> WorkspaceNextStep:
         campaign_url = f"/campaigns/{campaign.id}"
-        if change_state.has_pending_strategic_changes:
-            return WorkspaceNextStep(
-                title="Обновить стратегию кампании",
-                description=(
-                    "Маркетинговые вводные изменились после утверждения стратегии "
-                    f"v{change_state.baseline_strategy_version}."
-                ),
-                href=f"{campaign_url}#campaign-change",
-                entity_type="campaign_change",
-                entity_id=campaign.id,
-                priority="HIGH",
-            )
-        if change_state.plan_requires_review:
-            return WorkspaceNextStep(
-                title="Пересмотреть медиаплан",
-                description=(
-                    "Активный медиаплан создан до последней редакции маркетинговых вводных "
-                    "и новой утверждённой стратегии."
-                ),
-                href=f"{campaign_url}#publication-plan",
-                entity_type="publication_plan",
-                entity_id=current_plan.id if current_plan else None,
-                priority="HIGH",
-            )
         recoverable_task_ids = {
             action.existing_task_id
             for action in post_actions.values()
@@ -972,13 +930,15 @@ class CampaignWorkspaceService:
                 entity_type="task",
                 entity_id=issue.id,
             )
-        if campaign.status is CampaignStatus.DRAFT and campaign.strategy is None:
+        failed_publication = next(iter(current_publication_failures(publications)), None)
+        if failed_publication:
             return WorkspaceNextStep(
-                title="Подготовить стратегию кампании",
-                description="Стратегию можно сформировать отдельным действием и затем проверить.",
-                href=f"{campaign_url}#strategy",
-                entity_type="campaign",
-                entity_id=campaign.id,
+                title="Проверить отправку публикации",
+                description="Требуется решение оператора по доставке/сверке.",
+                href=f"{campaign_url}/publications#publication-{failed_publication.id}",
+                entity_type="publication",
+                entity_id=failed_publication.id,
+                priority="HIGH",
             )
         if (
             strategy_status is ApprovalStatus.PENDING
@@ -987,7 +947,112 @@ class CampaignWorkspaceService:
             return WorkspaceNextStep(
                 title="Проверить стратегию",
                 description="Стратегия ожидает решения человека.",
-                href=f"{campaign_url}#strategy",
+                href=f"{campaign_url}/strategy",
+                entity_type="campaign",
+                entity_id=campaign.id,
+            )
+        waiting_content: WorkspaceArticle | ContentItem | None = next(
+            (x for x in articles if x.status is ContentStatus.WAITING_APPROVAL), None
+        )
+        if waiting_content is None:
+            waiting_content = next(
+                (
+                    p
+                    for p in (
+                        social_posts
+                        if social_posts is not None
+                        else [p for posts in posts_by_item.values() for p in posts]
+                    )
+                    if p.status is ContentStatus.WAITING_APPROVAL
+                ),
+                None,
+            )
+        if waiting_content:
+            return WorkspaceNextStep(
+                title="Согласовать статью"
+                if waiting_content.content_type is ContentType.ARTICLE
+                else "Согласовать пост",
+                description=waiting_content.title,
+                href=f"/content/{waiting_content.id}#approval",
+                entity_type="article"
+                if waiting_content.content_type is ContentType.ARTICLE
+                else "social_post",
+                entity_id=waiting_content.id,
+            )
+        if current_plan and current_plan.status is PublicationPlanStatus.WAITING_APPROVAL:
+            return WorkspaceNextStep(
+                title="Проверить медиаплан",
+                description="Медиаплан ожидает решения человека.",
+                href=f"{campaign_url}/plan",
+                entity_type="publication_plan",
+                entity_id=current_plan.id,
+            )
+        if optimization:
+            if optimization.review_analyses:
+                analysis = optimization.review_analyses[0]
+                return WorkspaceNextStep(
+                    title="Проверить анализ результатов",
+                    description="Готовые выводы требуют отдельного решения человека.",
+                    href=f"{campaign_url}/performance#analysis-{analysis.id}",
+                    entity_type="analysis",
+                    entity_id=analysis.id,
+                )
+            if optimization.draft_experiments:
+                experiment = optimization.draft_experiments[0]
+                return WorkspaceNextStep(
+                    title="Проверить эксперимент",
+                    description=experiment.hypothesis,
+                    href=f"{campaign_url}/performance#experiment-{experiment.id}",
+                    entity_type="experiment",
+                    entity_id=experiment.id,
+                )
+            if optimization.decision_actions:
+                opt_action = optimization.decision_actions[0]
+                return WorkspaceNextStep(
+                    title="Рассмотреть рекомендации",
+                    description=opt_action.reason,
+                    href=f"{campaign_url}/performance#proposal-{opt_action.proposal_id}",
+                    entity_type="proposal",
+                    entity_id=opt_action.proposal_id,
+                )
+            if optimization.apply_actions:
+                opt_action = optimization.apply_actions[0]
+                return WorkspaceNextStep(
+                    title="Применить принятую рекомендацию",
+                    description=opt_action.reason,
+                    href=f"{campaign_url}/performance#action-{opt_action.id}",
+                    entity_type="optimization_action",
+                    entity_id=opt_action.id,
+                )
+        if change_state.has_pending_strategic_changes:
+            return WorkspaceNextStep(
+                title="Обновить стратегию кампании",
+                description=(
+                    "Маркетинговые вводные изменились после утверждения стратегии "
+                    f"v{change_state.baseline_strategy_version}."
+                ),
+                href=f"{campaign_url}/strategy#campaign-change",
+                entity_type="campaign_change",
+                entity_id=campaign.id,
+                priority="HIGH",
+            )
+        if change_state.plan_requires_review:
+            return WorkspaceNextStep(
+                title="Пересмотреть медиаплан",
+                description=(
+                    "Активный медиаплан создан до последней редакции маркетинговых вводных "
+                    "и новой утверждённой стратегии."
+                ),
+                href=f"{campaign_url}/plan",
+                entity_type="publication_plan",
+                entity_id=current_plan.id if current_plan else None,
+                priority="HIGH",
+            )
+        if campaign.status is CampaignStatus.DRAFT and campaign.strategy is None:
+            return WorkspaceNextStep(
+                title="Подготовить стратегию кампании",
+                description="Стратегию можно сформировать отдельным действием и затем проверить.",
+                href=f"{campaign_url}/strategy",
                 entity_type="campaign",
                 entity_id=campaign.id,
             )
@@ -1017,7 +1082,7 @@ class CampaignWorkspaceService:
                     "Система предложит расписание по утверждённым статьям; "
                     "план нужно проверить и утвердить."
                 ),
-                href=f"{campaign_url}#publication-plan",
+                href=f"{campaign_url}/plan",
                 entity_type="campaign",
                 entity_id=campaign.id,
             )
@@ -1025,7 +1090,7 @@ class CampaignWorkspaceService:
             return WorkspaceNextStep(
                 title="Проверить медиаплан",
                 description="Медиаплан ожидает решения человека.",
-                href=f"{campaign_url}#publication-plan",
+                href=f"{campaign_url}/plan",
                 entity_type="publication_plan",
                 entity_id=current_plan.id,
             )
@@ -1068,7 +1133,7 @@ class CampaignWorkspaceService:
                     return WorkspaceNextStep(
                         title="Проверить условия создания поста",
                         description=action.reason or "Пост пока нельзя создать.",
-                        href=f"{campaign_url}#plan-item-{missing_post.id}",
+                        href=f"{campaign_url}/plan#plan-item-{missing_post.id}",
                         entity_type="publication_plan_item",
                         entity_id=missing_post.id,
                     )
@@ -1078,7 +1143,7 @@ class CampaignWorkspaceService:
                         f"для пункта №{missing_post.position}"
                     ),
                     description=f"{missing_post.topic} · {missing_post.scheduled_at:%d.%m.%Y}",
-                    href=f"{campaign_url}#plan-item-{missing_post.id}",
+                    href=f"{campaign_url}/plan#plan-item-{missing_post.id}",
                     entity_type="publication_plan_item",
                     entity_id=missing_post.id,
                 )
@@ -1100,27 +1165,34 @@ class CampaignWorkspaceService:
                 entity_type="social_post",
                 entity_id=approved_post_without_publication.id,
             )
-        if any(pub.status is PublicationStatus.SCHEDULED for pub in publications):
+        if optimization and optimization.processing_tasks:
             return WorkspaceNextStep(
-                title="Публикация уже запланирована",
-                description="Следите за расписанием и фактом доставки в разделе публикаций.",
-                href="/publications#upcoming",
-                entity_type="publication",
+                title="Идёт анализ новых результатов",
+                description="Штатный workflow обрабатывает evidence; ручной запуск не требуется.",
+                href=f"{campaign_url}/performance",
+                entity_type="analysis",
             )
         if feedback.new_feedback_count or feedback.new_metrics_count:
             return WorkspaceNextStep(
-                title="Разобрать новые результаты",
+                title="Получены новые результаты",
                 description=(
                     f"Новые отзывы: {feedback.new_feedback_count}; "
                     f"новых наблюдений метрик: {feedback.new_metrics_count}."
                 ),
-                href=f"{campaign_url}#feedback",
+                href=f"{campaign_url}/performance",
                 entity_type="feedback",
+            )
+        if any(pub.status is PublicationStatus.SCHEDULED for pub in publications):
+            return WorkspaceNextStep(
+                title="Публикация уже запланирована",
+                description="Следите за расписанием и фактом доставки в разделе публикаций.",
+                href=f"{campaign_url}/publications",
+                entity_type="publication",
             )
         return WorkspaceNextStep(
             title="Кампания работает штатно",
             description="Откройте медиаплан или расписание, чтобы продолжить контроль.",
-            href=f"{campaign_url}#publication-plan",
+            href=f"{campaign_url}/plan",
             entity_type="campaign",
             entity_id=campaign.id,
         )

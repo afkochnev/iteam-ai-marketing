@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { OptimizationDashboardBlock } from "@/components/optimization-dashboard";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -83,7 +84,8 @@ export default function Home() {
     [tasks],
   );
 
-  if (authLoading || !user) return <main><p role="status">Проверяем авторизацию…</p></main>;
+  if (authLoading || !user) return <main>
+<p role="status">Проверяем авторизацию…</p></main>;
 
   const readyTasks = status?.tasks.READY ?? tasks.filter((task) => task.status === "READY").length;
   const inProgressTasks = status?.tasks.IN_PROGRESS ?? tasks.filter((task) => task.status === "IN_PROGRESS").length;
@@ -97,6 +99,7 @@ export default function Home() {
 
   return (
     <main className="wide dashboard-main">
+      <OptimizationDashboardBlock />
       <header className="dashboard-hero">
         <div className="dashboard-hero-copy">
           <p className="eyebrow">Рабочее пространство</p>

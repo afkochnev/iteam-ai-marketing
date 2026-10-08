@@ -30,3 +30,19 @@ describe("Performance analysis", () => {
     expect(screen.getByText(/Evidence: не указан/)).toBeInTheDocument();
   });
 });
+
+it("reads legacy frozen evidence counters without rewriting snapshots", () => {
+ const legacy = {...analysis, input_snapshot:{feedback_ids:["one"],metrics_snapshot_ids:[]}};
+ render(<PerformanceAnalysisDetails analysis={legacy} archived={false} retry={vi.fn()} />);
+ expect(screen.getByText(/0 метрик \/ 1 отзывов/)).toBeInTheDocument();
+ expect(legacy.input_snapshot).toEqual({feedback_ids:["one"],metrics_snapshot_ids:[]});
+});
+it("never offers failed retry without a durable task", () => {
+ render(<PerformanceAnalysisDetails analysis={{...analysis,status:"FAILED",task_id:null}} archived={false} retry={vi.fn()} />);
+ expect(screen.queryByRole("button",{name:"Повторить анализ"})).not.toBeInTheDocument();
+ expect(screen.getByText(/Исторический анализ. Для актуальных данных/)).toBeInTheDocument();
+});
+it("canonical empty evidence array takes priority over legacy evidence", () => {
+ render(<PerformanceAnalysisDetails analysis={{...analysis,input_snapshot:{marketing_feedback_ids:[],feedback_ids:["one"]}}} archived={false} retry={vi.fn()} />);
+ expect(screen.getByText(/0 отзывов/)).toBeInTheDocument();
+});

@@ -329,3 +329,16 @@ form { display: grid; gap: .75rem; }
 
 .optimization-actions { display: grid; gap: 1rem; margin-block: 1rem; }
 .optimization-action { border: 1px solid var(--border, #d8e3dc); padding: 1.25rem; overflow-wrap: anywhere; }
+
+.campaign-navigation, .local-navigation { display: flex; gap: .5rem; overflow-x: auto; padding: .7rem 0; white-space: nowrap; }
+.campaign-navigation { position: sticky; top: var(--campaign-topbar-height, 4.2rem); z-index: 5; background: var(--background, #fff); border-bottom: 1px solid #dce3ec; }
+.campaign-navigation a { padding: .55rem .8rem; border-radius: .5rem; }
+.campaign-navigation a[aria-current="page"] { background: #e2edff; color: #183e74; font-weight: 700; }
+.campaign-shell-header { display: flex; gap: 1rem; align-items: center; justify-content: space-between; }
+.compact-goal { max-width: 70ch; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.section-links { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1rem; margin: 1rem 0; }
+.section-card { display: flex; flex-direction: column; padding: 1rem; border: 1px solid #dce3ec; border-radius: .7rem; }
+.section-card span { font-size: .85rem; margin-top: .5rem; }
+.campaign-workflow-fields { border: 0; padding: 0; margin: 0; min-width: 0; }
+.performance-workspace section { scroll-margin-top: 5rem; }
+@media (max-width: 640px) { .campaign-shell-header { flex-wrap: wrap; } }

@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.campaign_kpi import CampaignKPI, KPIComparison, KPIMetric
-from app.models.content import ContentChannel
+from app.models.content import ContentChannel, ContentItem, ContentVersion
 from app.models.publication import Publication, PublicationStatus
 from app.models.publication_metrics import PublicationMetricsSnapshot
 from app.services.campaign_kpi_service import CampaignKPIService
@@ -105,6 +105,16 @@ class CampaignPerformanceService:
         latest: dict[UUID, PublicationMetricsSnapshot] = {}
         for candidate in snapshots:
             latest.setdefault(candidate.publication_id, candidate)
+        content_details = {
+            vid: (title, number)
+            for vid, title, number in (
+                await self.session.execute(
+                    select(ContentVersion.id, ContentItem.title, ContentVersion.version_number)
+                    .join(ContentItem, ContentItem.id == ContentVersion.content_item_id)
+                    .where(ContentVersion.id.in_([p.content_version_id for p in pubs]))
+                )
+            ).all()
+        }
         rows = []
         for pub in pubs:
             snapshot = latest.get(pub.id)
@@ -113,6 +123,8 @@ class CampaignPerformanceService:
                     "publication_id": pub.id,
                     "content_item_id": pub.content_item_id,
                     "content_version_id": pub.content_version_id,
+                    "content_title": content_details[pub.content_version_id][0],
+                    "version_number": content_details[pub.content_version_id][1],
                     "channel": pub.channel,
                     "published_at": pub.published_at,
                     "metrics": snapshot,

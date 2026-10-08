@@ -40,6 +40,8 @@ class OptimizationActionResponse(BaseModel):
     target_entity_type: OptimizationTargetEntityType
     target_entity_id: UUID
     target_version_id: UUID | None
+    target_title: str | None = None
+    target_version_number: int | None = None
     reason: str
     expected_effect: str
     priority: str

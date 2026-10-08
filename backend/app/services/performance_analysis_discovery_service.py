@@ -1,7 +1,8 @@
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
-from sqlalchemy import String, cast, func, or_, select, tuple_
+from sqlalchemy import String, cast, func, literal, or_, select, tuple_
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -38,6 +39,8 @@ class PerformanceAnalysisDiscoveryService:
             .where(
                 MarketingFeedbackAnalysis.campaign_id == Campaign.id,
                 MarketingFeedbackAnalysis.status == FeedbackAnalysisStatus.DRAFT,
+                MarketingFeedbackAnalysis.task_id.is_not(None),
+                MarketingFeedbackAnalysis.evidence_fingerprint.is_not(None),
             )
             .exists()
         )
@@ -75,9 +78,14 @@ class PerformanceAnalysisDiscoveryService:
                 ~has_newer,
                 or_(
                     previous_snapshot.is_(None),
-                    ~previous_snapshot["metrics_snapshot_ids"].contains(
-                        func.jsonb_build_array(cast(PublicationMetricsSnapshot.id, String))
-                    ),
+                    ~func.coalesce(
+                        func.nullif(
+                            previous_snapshot["publication_metrics_snapshot_ids"],
+                            literal(None, type_=JSONB),
+                        ),
+                        previous_snapshot["metrics_snapshot_ids"],
+                        literal([], type_=JSONB),
+                    ).contains(func.jsonb_build_array(cast(PublicationMetricsSnapshot.id, String))),
                 ),
             )
             .correlate(Campaign)
@@ -89,9 +97,13 @@ class PerformanceAnalysisDiscoveryService:
                 MarketingFeedback.campaign_id == Campaign.id,
                 or_(
                     previous_snapshot.is_(None),
-                    ~previous_snapshot["feedback_ids"].contains(
-                        func.jsonb_build_array(cast(MarketingFeedback.id, String))
-                    ),
+                    ~func.coalesce(
+                        func.nullif(
+                            previous_snapshot["marketing_feedback_ids"], literal(None, type_=JSONB)
+                        ),
+                        previous_snapshot["feedback_ids"],
+                        literal([], type_=JSONB),
+                    ).contains(func.jsonb_build_array(cast(MarketingFeedback.id, String))),
                 ),
             )
             .correlate(Campaign)

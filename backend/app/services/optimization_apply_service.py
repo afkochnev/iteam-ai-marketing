@@ -71,7 +71,7 @@ class OptimizationApplyService:
                     artifact_id=experiment.id,
                     experiment_id=experiment.id,
                     status=experiment.status.value,
-                    href=f"/campaigns/{experiment.campaign_id}#experiment-{experiment.id}",
+                    href=f"/campaigns/{experiment.campaign_id}/performance#experiment-{experiment.id}",
                 )
         plan = await self.session.scalar(
             select(PublicationPlan).where(PublicationPlan.optimization_action_id == action.id)
@@ -95,7 +95,7 @@ class OptimizationApplyService:
                 if run and run.status is AgentRunStatus.FAILED
                 else plan.status.value,
                 error_message=run.error_message if run else None,
-                href=f"/campaigns/{plan.campaign_id}#publication-plan-{plan.id}",
+                href=f"/campaigns/{plan.campaign_id}/plan#publication-plan-{plan.id}",
             )
         if task is not None:
             run = await self.session.scalar(
@@ -123,6 +123,27 @@ class OptimizationApplyService:
         self, action: CampaignOptimizationAction
     ) -> OptimizationActionResponse:
         response = OptimizationActionResponse.model_validate(action)
+        parent = await self.session.get(CampaignOptimizationProposal, action.proposal_id)
+        if parent is not None:
+            if action.target_entity_type.value == "CONTENT_ITEM":
+                target = await self.session.get(ContentItem, action.target_entity_id)
+                if target is not None and target.campaign_id == parent.campaign_id:
+                    response.target_title = target.title
+                    if action.target_version_id is not None:
+                        version = await self.session.get(ContentVersion, action.target_version_id)
+                        if version is not None and version.content_item_id == target.id:
+                            response.target_version_number = version.version_number
+            elif action.target_entity_type.value == "PUBLICATION_PLAN":
+                plan = await self.session.get(PublicationPlan, action.target_entity_id)
+                if plan is not None and plan.campaign_id == parent.campaign_id:
+                    response.target_title = (
+                        f"Медиаплан {plan.planning_horizon_start.date()} — "
+                        f"{plan.planning_horizon_end.date()}"
+                    )
+            else:
+                campaign = await self.session.get(Campaign, action.target_entity_id)
+                if campaign is not None and campaign.id == parent.campaign_id:
+                    response.target_title = campaign.name
         response.applied_artifact = await self.artifact(action)
         return response
 
