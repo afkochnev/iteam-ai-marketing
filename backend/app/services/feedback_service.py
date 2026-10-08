@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
@@ -9,17 +9,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import AppError
-from app.models.agent import Agent, AgentStatus
-from app.models.agent_run import AgentRun, AgentRunStatus
-from app.models.campaign import Campaign
+from app.models.agent import AgentStatus
+from app.models.campaign import Campaign, CampaignStatus
+from app.models.campaign_kpi import CampaignKPI
 from app.models.content import ContentItem, ContentVersion
 from app.models.marketing_feedback import (
+    AnalysisTriggerSource,
     FeedbackAnalysisStatus,
     FeedbackSource,
     MarketingFeedback,
     MarketingFeedbackAnalysis,
 )
-from app.models.publication import Publication
+from app.models.publication import Publication, PublicationStatus
 from app.models.publication_metrics import PublicationMetricsSnapshot
 from app.models.publication_plan import PublicationPlan, PublicationPlanItem
 from app.models.task import Task, TaskStatus, TaskType
@@ -27,12 +28,15 @@ from app.models.user import User
 from app.repositories.agents import AgentRepository
 from app.schemas.feedback import FeedbackAnalystResult
 from app.services.activity_log_service import ActivityLogService
+from app.services.campaign_performance_service import RAW_FIELDS
 from app.services.optimization_proposal_service import OptimizationProposalService, validate_action
+from app.services.performance_evidence import evidence_fingerprint
 
 
 class FeedbackService:
     def __init__(self, session: AsyncSession):
         self.session = session
+        self.prepared_new = False
 
     async def create_feedback(
         self, campaign_id: UUID, user: User, data: dict[str, Any]
@@ -105,7 +109,7 @@ class FeedbackService:
                 await self.session.scalars(
                     select(MarketingFeedback)
                     .where(MarketingFeedback.campaign_id == campaign_id)
-                    .order_by(MarketingFeedback.created_at.desc())
+                    .order_by(MarketingFeedback.id)
                 )
             ).all()
         )
@@ -116,7 +120,10 @@ class FeedbackService:
             (
                 await self.session.scalars(
                     select(Publication)
-                    .where(Publication.campaign_id == campaign_id)
+                    .where(
+                        Publication.campaign_id == campaign_id,
+                        Publication.status == PublicationStatus.PUBLISHED,
+                    )
                     .order_by(Publication.id)
                 )
             ).all()
@@ -127,7 +134,11 @@ class FeedbackService:
             latest = await self.session.scalar(
                 select(PublicationMetricsSnapshot)
                 .where(PublicationMetricsSnapshot.publication_id == publication_id)
-                .order_by(PublicationMetricsSnapshot.observed_at.desc())
+                .order_by(
+                    PublicationMetricsSnapshot.observed_at.desc(),
+                    PublicationMetricsSnapshot.created_at.desc(),
+                    PublicationMetricsSnapshot.id.desc(),
+                )
                 .limit(1)
             )
             if latest:
@@ -159,7 +170,7 @@ class FeedbackService:
                 await self.session.scalars(
                     select(PublicationPlanItem)
                     .where(PublicationPlanItem.publication_plan_id == plan.id)
-                    .order_by(PublicationPlanItem.position)
+                    .order_by(PublicationPlanItem.position, PublicationPlanItem.id)
                 )
             )
             plan_context.append(
@@ -183,7 +194,93 @@ class FeedbackService:
                     ],
                 }
             )
+        kpis = list(
+            await self.session.scalars(
+                select(CampaignKPI)
+                .where(CampaignKPI.campaign_id == campaign_id)
+                .order_by(CampaignKPI.id)
+            )
+        )
+        timestamps = [row.observed_at for row in snapshots] + [
+            row.observed_at for row in feedback if row.observed_at is not None
+        ]
+        start = min(timestamps) if timestamps else None
+        end = max(timestamps) if timestamps else None
+        if start is not None and start == end:
+            end = start + timedelta(microseconds=1)
+        count = len(publications)
         return {
+            "campaign": {
+                "id": str(campaign.id),
+                "name": campaign.name,
+                "goal": campaign.goal,
+                "strategy": campaign.strategy,
+            },
+            "publication_metrics_snapshot_ids": sorted(str(row.id) for row in snapshots),
+            "marketing_feedback_ids": sorted(str(row.id) for row in feedback),
+            "campaign_kpi_ids": [str(row.id) for row in kpis],
+            "campaign_kpis": [
+                {
+                    "id": str(row.id),
+                    "metric": row.metric.value,
+                    "channel": row.channel.value if row.channel else None,
+                    "target_value": str(row.target_value),
+                    "comparison": row.comparison.value,
+                    "period_start": row.period_start.isoformat(),
+                    "period_end": row.period_end.isoformat(),
+                    "is_active": row.is_active,
+                }
+                for row in kpis
+            ],
+            "analysis_period_start": start.isoformat() if start else None,
+            "analysis_period_end": end.isoformat() if end else None,
+            "publication_plan_context": plan_context,
+            "data_quality": {
+                "published_publication_count": count,
+                "publications_with_metrics": len(snapshots),
+                "publications_without_metrics": count - len(snapshots),
+                "raw_metric_coverage": {
+                    field: sum(getattr(row, field) is not None for row in snapshots) / count
+                    if count
+                    else 0
+                    for field in RAW_FIELDS
+                },
+                "human_feedback_count": len(feedback),
+                "newest_snapshot_observed_at": max(row.observed_at for row in snapshots).isoformat()
+                if snapshots
+                else None,
+            },
+            "publications": [
+                {
+                    "publication_id": str(row.id),
+                    "content_version_id": str(row.content_version_id),
+                    "channel": row.channel.value,
+                    "published_at": row.published_at.isoformat() if row.published_at else None,
+                }
+                for row in publications
+            ],
+            "metrics": [
+                {
+                    "id": str(row.id),
+                    "publication_id": str(row.publication_id),
+                    "observed_at": row.observed_at.isoformat(),
+                    "source": row.source.value,
+                    "provider": row.provider,
+                    **{field: getattr(row, field) for field in RAW_FIELDS},
+                }
+                for row in snapshots
+            ],
+            "feedback": [
+                {
+                    "id": str(row.id),
+                    "publication_id": str(row.publication_id) if row.publication_id else None,
+                    "category": row.category.value,
+                    "rating": row.rating,
+                    "comment": row.comment,
+                    "observed_at": row.observed_at.isoformat() if row.observed_at else None,
+                }
+                for row in feedback
+            ],
             "optimization_target_allowlist": {
                 "campaign": {"id": str(campaign_id), "strategy_version": campaign.strategy_version},
                 "content": [
@@ -203,7 +300,7 @@ class FeedbackService:
                 "strategy_version": campaign.strategy_version,
             },
             "publication_ids": [str(row.id) for row in publications],
-            "content_version_ids": [str(row.content_version_id) for row in publications],
+            "content_version_ids": sorted({str(row.content_version_id) for row in publications}),
             "metrics_snapshot_ids": [str(row.id) for row in snapshots],
             "metric_sources": sorted({str(row.source) for row in snapshots}),
             "feedback_ids": [str(row.id) for row in feedback],
@@ -212,184 +309,176 @@ class FeedbackService:
             "metric_coverage_ratio": (len(snapshots) / len(publications) if publications else 0.0),
         }
 
-    async def _build_analysis(
+    async def prepare_analysis(
         self,
         campaign_id: UUID,
-        snapshot: dict[str, Any],
-        analysis: MarketingFeedbackAnalysis,
-    ) -> MarketingFeedbackAnalysis:
-        analysis_key = f"feedback-analysis:{campaign_id}:{datetime.now(UTC).isoformat()}"
-        await ActivityLogService(self.session).record(
-            "FEEDBACK_ANALYSIS_QUEUED",
-            operation_key=f"{analysis_key}:queued",
-            campaign_id=campaign_id,
-            metadata={"evidence_count": len(snapshot["feedback_ids"])},
+        trigger_source: AnalysisTriggerSource = AnalysisTriggerSource.MANUAL,
+        requested_by_user_id: UUID | None = None,
+        *,
+        automatic: bool = False,
+    ) -> MarketingFeedbackAnalysis | None:
+        self.prepared_new = False
+        campaign = await self.session.scalar(
+            select(Campaign)
+            .where(Campaign.id == campaign_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
-        await ActivityLogService(self.session).record(
-            "FEEDBACK_ANALYSIS_STARTED",
-            operation_key=f"{analysis_key}:started",
-            campaign_id=campaign_id,
-            metadata={"evidence_count": len(snapshot["feedback_ids"])},
-        )
-        findings: list[dict[str, Any]] = []
-        recommendations: list[dict[str, Any]] = []
-        limitations: list[str] = []
-        if not snapshot["publications_analyzed"] and not snapshot["feedback_count"]:
-            limitations.append("Недостаточно данных для уверенного вывода.")
-        if snapshot["metric_coverage_ratio"] < 1:
-            limitations.append("Метрики доступны только для части публикаций.")
-        for feedback_id in snapshot["feedback_ids"]:
-            findings.append(
-                {
-                    "type": "HUMAN_FEEDBACK",
-                    "evidence_refs": [feedback_id],
-                    "observation": "Учтена ручная обратная связь.",
-                    "confidence": "provided",
-                }
-            )
-        if not findings:
-            limitations.append("Вывод основан только на доступных количественных наблюдениях.")
-        analysis.status = FeedbackAnalysisStatus.DRAFT
-        analysis.summary = analysis.summary or (
-            "Анализ основан на зафиксированных наблюдениях и не заменяет экспертное решение."
-        )
-        analysis.findings = findings
-        analysis.recommendations = recommendations
-        analysis.experiment_ideas = []
-        analysis.limitations = limitations
-        analysis.generated_at = datetime.now(UTC)
-        await self.session.flush()
-        await ActivityLogService(self.session).record(
-            "FEEDBACK_ANALYSIS_COMPLETED",
-            operation_key=f"feedback-analysis-completed:{analysis.id}",
-            campaign_id=campaign_id,
-            metadata={"analysis_id": str(analysis.id), "evidence_count": len(findings)},
-        )
-        return analysis
-
-    async def generate_analysis(self, campaign_id: UUID) -> MarketingFeedbackAnalysis:
-        """Synchronous helper retained for deterministic unit tests only."""
-        snapshot = await self._input_snapshot(campaign_id)
-        row = MarketingFeedbackAnalysis(
-            campaign_id=campaign_id,
-            status=FeedbackAnalysisStatus.DRAFT,
-            strategy_version=int(snapshot["strategy_version"]),
-            summary="",
-            input_snapshot=snapshot,
-            findings=[],
-            recommendations=[],
-            experiment_ideas=[],
-            limitations=[],
-        )
-        self.session.add(row)
-        await self.session.flush()
-        await ActivityLogService(self.session).record(
-            "FEEDBACK_ANALYSIS_QUEUED",
-            operation_key=f"feedback-analysis-queued:{row.id}",
-            campaign_id=campaign_id,
-            metadata={
-                "analysis_id": str(row.id),
-                "evidence_count": len(snapshot["feedback_ids"]),
-            },
-        )
-        await ActivityLogService(self.session).record(
-            "FEEDBACK_ANALYSIS_STARTED",
-            operation_key=f"feedback-analysis-started:{row.id}",
-            campaign_id=campaign_id,
-            metadata={"analysis_id": str(row.id)},
-        )
-        row = await self._build_analysis(campaign_id, snapshot, row)
-        await self.session.commit()
-        await self.session.refresh(row)
-        return row
-
-    async def queue_analysis(self, campaign_id: UUID) -> MarketingFeedbackAnalysis:
-        snapshot = await self._input_snapshot(campaign_id)
-        agent = await AgentRepository(self.session).get_by_slug("marketing_director")
-        if agent is None:
-            agent = await self.session.scalar(
-                select(Agent).where(Agent.status == AgentStatus.ACTIVE).order_by(Agent.created_at)
-            )
-        if agent is None:
+        if campaign is None:
+            raise AppError("CAMPAIGN_NOT_FOUND", "Кампания не найдена.", 404)
+        if campaign.status is CampaignStatus.ARCHIVED:
             raise AppError(
-                "FEEDBACK_ANALYST_UNAVAILABLE",
-                "Аналитик обратной связи недоступен.",
-                409,
+                "CAMPAIGN_ARCHIVED", "Архивная кампания доступна только для чтения.", 409
             )
-        model = agent.model or settings.openai_default_model
-        if not model:
-            raise AppError("AGENT_MODEL_NOT_CONFIGURED", "Модель агента не настроена.", 409)
+        snapshot = await self._input_snapshot(campaign_id)
+        fingerprint = evidence_fingerprint(snapshot)
+        existing = await self.session.scalar(
+            select(MarketingFeedbackAnalysis).where(
+                MarketingFeedbackAnalysis.campaign_id == campaign_id,
+                MarketingFeedbackAnalysis.evidence_fingerprint == fingerprint,
+            )
+        )
+        if existing is not None:
+            await self.session.commit()
+            return existing
+        if automatic:
+            latest = await self.session.scalar(
+                select(MarketingFeedbackAnalysis)
+                .where(MarketingFeedbackAnalysis.campaign_id == campaign_id)
+                .order_by(
+                    MarketingFeedbackAnalysis.created_at.desc(), MarketingFeedbackAnalysis.id.desc()
+                )
+                .limit(1)
+            )
+            active = await self.session.scalar(
+                select(MarketingFeedbackAnalysis.id)
+                .where(
+                    MarketingFeedbackAnalysis.campaign_id == campaign_id,
+                    MarketingFeedbackAnalysis.status == FeedbackAnalysisStatus.DRAFT,
+                )
+                .limit(1)
+            )
+            if (
+                not (snapshot["metrics_snapshot_ids"] or snapshot["feedback_ids"])
+                or active is not None
+                or (
+                    latest is not None
+                    and latest.created_at
+                    > datetime.now(UTC)
+                    - timedelta(hours=settings.optimization_analysis_cooldown_hours)
+                )
+            ):
+                await self.session.commit()
+                return None
+        agent = await AgentRepository(self.session).get_by_slug("marketing_analyst")
+        if agent is None or agent.status is not AgentStatus.ACTIVE:
+            raise AppError(
+                "MARKETING_ANALYST_UNAVAILABLE", "Marketing Analyst отсутствует или неактивен.", 409
+            )
         task = Task(
             campaign_id=campaign_id,
-            task_type=TaskType.MANUAL,
-            title="Проанализировать обратную связь кампании",
-            description="Сформировать структурированные консультативные выводы.",
+            task_type=TaskType.ANALYZE_PERFORMANCE,
+            title="Анализ результатов кампании",
             assigned_agent_id=agent.id,
             status=TaskStatus.READY,
-            input_data={"feedback_analysis": True},
-            output_data={},
+            input_data={"evidence_fingerprint": fingerprint},
         )
         self.session.add(task)
         await self.session.flush()
-        run = AgentRun(
-            agent_id=agent.id,
-            task_id=task.id,
-            campaign_id=campaign_id,
-            status=AgentRunStatus.QUEUED,
-            input_data={"feedback_snapshot": snapshot},
-            model=model,
-            prompt_snapshot="Feedback Analyst: advisory analysis only.",
-            prompt_hash="feedback-analyst",
-        )
-        self.session.add(run)
-        await self.session.flush()
         row = MarketingFeedbackAnalysis(
             campaign_id=campaign_id,
+            task_id=task.id,
+            evidence_fingerprint=fingerprint,
+            trigger_source=trigger_source,
             status=FeedbackAnalysisStatus.DRAFT,
-            strategy_version=int(snapshot["strategy_version"]),
-            summary="",
+            strategy_version=campaign.strategy_version,
             input_snapshot=snapshot,
+            summary="",
             findings=[],
+            interpretations=[],
             recommendations=[],
             experiment_ideas=[],
             limitations=[],
-            agent_run_id=run.id,
         )
         self.session.add(row)
         await self.session.flush()
-        await ActivityLogService(self.session).record(
-            "FEEDBACK_ANALYSIS_QUEUED",
-            operation_key=f"feedback-analysis-queued:{row.id}",
-            campaign_id=campaign_id,
-            metadata={"analysis_id": str(row.id), "agent_run_id": str(run.id)},
+        task.input_data = {**task.input_data, "analysis_id": str(row.id)}
+        self.prepared_new = True
+        await self.analysis_event(
+            row, "PERFORMANCE_ANALYSIS_DISCOVERED", user_id=requested_by_user_id
         )
         await self.session.commit()
-        try:
-            from app.workers.feedback_worker import generate_feedback_analysis
-
-            result = generate_feedback_analysis.apply_async(args=[str(run.id)], queue="ai")
-            run.queue_job_id = result.id
-            await self.session.commit()
-        except Exception as exc:
-            run.status = AgentRunStatus.FAILED
-            run.error_code = "QUEUE_ENQUEUE_FAILED"
-            run.error_message = "Не удалось поставить анализ в очередь."
-            row.status = FeedbackAnalysisStatus.FAILED
-            await self.session.commit()
-            raise AppError(
-                "QUEUE_ENQUEUE_FAILED", "Не удалось поставить анализ в очередь.", 503
-            ) from exc
-        await self.session.refresh(row)
         return row
 
-    async def complete_queued_analysis(
-        self, analysis_id: UUID, run_id: UUID
-    ) -> MarketingFeedbackAnalysis:
-        row = await self.session.get(MarketingFeedbackAnalysis, analysis_id, with_for_update=True)
-        if row is None or row.agent_run_id != run_id:
+    async def analysis_event(
+        self,
+        row: MarketingFeedbackAnalysis,
+        event: str,
+        *,
+        user_id: UUID | None = None,
+        suffix: str = "",
+    ) -> None:
+        await ActivityLogService(self.session).record(
+            event,
+            operation_key=f"{event}:{row.id}:{row.agent_run_id}:{suffix}",
+            campaign_id=row.campaign_id,
+            task_id=row.task_id,
+            user_id=user_id,
+            metadata={
+                "campaign_id": str(row.campaign_id),
+                "analysis_id": str(row.id),
+                "task_id": str(row.task_id) if row.task_id else None,
+                "agent_run_id": str(row.agent_run_id) if row.agent_run_id else None,
+                "evidence_fingerprint": row.evidence_fingerprint,
+                "trigger_source": row.trigger_source.value if row.trigger_source else None,
+            },
+        )
+
+    async def queue_analysis(self, campaign_id: UUID) -> MarketingFeedbackAnalysis:
+        row = await self.prepare_analysis(campaign_id)
+        assert row is not None
+        return row
+
+    async def retry_analysis(self, analysis_id: UUID) -> MarketingFeedbackAnalysis:
+        # Campaign first, matching preparation/review lock ordering.
+        original = await self.session.get(MarketingFeedbackAnalysis, analysis_id)
+        if original is None:
             raise AppError("FEEDBACK_ANALYSIS_NOT_FOUND", "Анализ не найден.", 404)
-        snapshot = dict(row.input_snapshot)
-        return await self._build_analysis(row.campaign_id, snapshot, row)
+        campaign = await self.session.get(Campaign, original.campaign_id, with_for_update=True)
+        if campaign is None or campaign.status is CampaignStatus.ARCHIVED:
+            raise AppError(
+                "CAMPAIGN_ARCHIVED", "Архивная кампания доступна только для чтения.", 409
+            )
+        row = await self.session.scalar(
+            select(MarketingFeedbackAnalysis)
+            .where(MarketingFeedbackAnalysis.id == analysis_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        assert row is not None
+        task = (
+            await self.session.get(Task, row.task_id, with_for_update=True) if row.task_id else None
+        )
+        if task is None or task.task_type is not TaskType.ANALYZE_PERFORMANCE:
+            raise AppError("ANALYSIS_TASK_NOT_FOUND", "Задача анализа не найдена.", 409)
+        if row.status is FeedbackAnalysisStatus.DRAFT and (
+            task.status is TaskStatus.READY or task.retry_count > 0
+        ):
+            await self.session.commit()
+            return row
+        if row.status is not FeedbackAnalysisStatus.FAILED:
+            raise AppError("ANALYSIS_NOT_FAILED", "Повторить можно только анализ с ошибкой.", 409)
+        row.status = FeedbackAnalysisStatus.DRAFT
+        task.status = TaskStatus.READY
+        task.started_at = task.completed_at = None
+        task.error_message = None
+        task.output_data = {}
+        await self.analysis_event(
+            row, "FEEDBACK_ANALYSIS_RETRY_REQUESTED", suffix=str(task.retry_count)
+        )
+        task.retry_count += 1
+        await self.session.commit()
+        return row
 
     @staticmethod
     def validate_evidence(snapshot: dict[str, Any], result: FeedbackAnalystResult) -> None:
@@ -419,18 +508,14 @@ class FeedbackService:
         result = FeedbackAnalystResult.model_validate(result.model_dump(mode="json"))
         self.validate_evidence(row.input_snapshot, result)
         row.summary = result.summary
+        row.interpretations = [item.model_dump(mode="json") for item in result.interpretations]
         row.findings = [item.model_dump(mode="json") for item in result.findings]
         row.recommendations = [item.model_dump(mode="json") for item in result.recommendations]
         row.experiment_ideas = [item.model_dump(mode="json") for item in result.experiment_ideas]
         row.limitations = result.limitations
         row.generated_at = datetime.now(UTC)
         row.status = FeedbackAnalysisStatus.DRAFT
-        await ActivityLogService(self.session).record(
-            "FEEDBACK_ANALYSIS_COMPLETED",
-            operation_key=f"feedback-analysis-completed:{row.id}",
-            campaign_id=row.campaign_id,
-            metadata={"analysis_id": str(row.id), "evidence_count": len(row.findings)},
-        )
+        await self.analysis_event(row, "FEEDBACK_ANALYSIS_COMPLETED")
         return row
 
     async def accepted_snapshot(self, analysis_id: UUID, campaign_id: UUID) -> dict[str, Any]:
@@ -445,6 +530,12 @@ class FeedbackService:
             )
         return {
             "analysis_id": str(analysis.id),
+            "evidence_fingerprint": analysis.evidence_fingerprint,
+            "interpretations": analysis.interpretations,
+            "campaign_kpis": analysis.input_snapshot.get("campaign_kpis", []),
+            "analysis_period_start": analysis.input_snapshot.get("analysis_period_start"),
+            "analysis_period_end": analysis.input_snapshot.get("analysis_period_end"),
+            "data_quality": analysis.input_snapshot.get("data_quality", {}),
             "strategy_version": analysis.strategy_version,
             "input_snapshot": analysis.input_snapshot,
             "findings": analysis.findings,
@@ -467,6 +558,14 @@ class FeedbackService:
     async def review(
         self, analysis_id: UUID, user: User, status: FeedbackAnalysisStatus
     ) -> MarketingFeedbackAnalysis:
+        original = await self.session.get(MarketingFeedbackAnalysis, analysis_id)
+        if original is None:
+            raise AppError("FEEDBACK_ANALYSIS_NOT_FOUND", "Анализ не найден.", 404)
+        campaign = await self.session.get(Campaign, original.campaign_id, with_for_update=True)
+        if campaign is None or campaign.status is CampaignStatus.ARCHIVED:
+            raise AppError(
+                "CAMPAIGN_ARCHIVED", "Архивная кампания доступна только для чтения.", 409
+            )
         row = await self.session.get(
             MarketingFeedbackAnalysis, analysis_id, with_for_update=True, populate_existing=True
         )
@@ -476,6 +575,8 @@ class FeedbackService:
             if row.status is status:
                 return row
             raise AppError("FEEDBACK_ANALYSIS_ALREADY_REVIEWED", "Анализ уже рассмотрен.", 409)
+        if row.task_id is not None and row.generated_at is None:
+            raise AppError("ANALYSIS_NOT_GENERATED", "Анализ ещё не завершён.", 409)
         row.status = status
         if status is FeedbackAnalysisStatus.ACCEPTED:
             await OptimizationProposalService(self.session).materialize(row, user)

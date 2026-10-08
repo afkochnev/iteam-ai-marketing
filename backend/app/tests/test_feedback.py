@@ -22,6 +22,7 @@ from app.services.agent_run_service import AgentRunService
 from app.services.feedback_service import FeedbackService
 from app.services.publication_service import PublicationService
 from app.services.task_service import TaskService
+from app.tests.legacy_feedback import LegacyFeedbackFixture, prepared_analysis
 from app.tests.test_publications import _approved_post
 
 
@@ -85,7 +86,7 @@ async def test_analysis_freezes_input_and_review_is_terminal(
         user,
         {"category": "ENGAGEMENT", "comment": "Практический заход работает лучше."},
     )
-    analysis = await FeedbackService(db_session).generate_analysis(campaign.id)
+    analysis = await LegacyFeedbackFixture(db_session).generate_analysis(campaign.id)
     assert analysis.status is FeedbackAnalysisStatus.DRAFT
     assert len(analysis.input_snapshot["feedback_ids"]) == 1
     events = list(
@@ -126,7 +127,7 @@ async def test_analysis_queue_creates_agent_run_and_freezes_snapshot(
         "app.workers.feedback_worker.generate_feedback_analysis.apply_async",
         lambda **_options: Result(),
     )
-    analysis = await FeedbackService(db_session).queue_analysis(campaign.id)
+    analysis = await prepared_analysis(db_session, campaign.id)
     run = await db_session.get(AgentRun, analysis.agent_run_id)
     assert run is not None
     assert run.status is AgentRunStatus.QUEUED
@@ -160,7 +161,7 @@ async def test_analysis_queue_uses_openai_default_model_when_agent_model_missing
         "app.workers.feedback_worker.generate_feedback_analysis.apply_async",
         lambda **_options: Result(),
     )
-    analysis = await FeedbackService(db_session).queue_analysis(campaign.id)
+    analysis = await prepared_analysis(db_session, campaign.id)
     run = await db_session.get(AgentRun, analysis.agent_run_id)
 
     assert run is not None
@@ -188,11 +189,13 @@ async def test_analysis_queue_fails_before_creating_artifacts_when_model_missing
     before_tasks = len(list((await db_session.scalars(select(Task))).all()))
     before_runs = len(list((await db_session.scalars(select(AgentRun))).all()))
 
-    with pytest.raises(AppError) as error:
-        await FeedbackService(db_session).queue_analysis(campaign.id)
+    # Preparation is durable and does not need a configured model. Dispatch waits.
+    from app.tests.legacy_feedback import prepared_analysis
 
-    assert error.value.code == "AGENT_MODEL_NOT_CONFIGURED"
-    assert len(list((await db_session.scalars(select(Task))).all())) == before_tasks
+    analysis = await prepared_analysis(db_session, campaign.id, allow_missing_model=True)
+    assert analysis.task_id is not None
+    assert analysis.agent_run_id is None
+    assert len(list((await db_session.scalars(select(Task))).all())) == before_tasks + 1
     assert len(list((await db_session.scalars(select(AgentRun))).all())) == before_runs
 
 
@@ -206,7 +209,7 @@ async def test_feedback_evidence_validation_rejects_unknown_and_accepts_frozen_r
         user,
         {"category": "TONE", "comment": "Тон стоит сделать теплее."},
     )
-    analysis = await FeedbackService(db_session).generate_analysis(campaign.id)
+    analysis = await LegacyFeedbackFixture(db_session).generate_analysis(campaign.id)
     valid = FeedbackAnalystResult.model_validate(
         {
             "summary": "Наблюдение",
@@ -236,7 +239,7 @@ async def test_accepted_analysis_context_requires_same_campaign_and_terminal_rev
     db_session: AsyncSession,
 ) -> None:
     user, campaign, _post, _version = await _approved_post(db_session)
-    analysis = await FeedbackService(db_session).generate_analysis(campaign.id)
+    analysis = await LegacyFeedbackFixture(db_session).generate_analysis(campaign.id)
     with pytest.raises(AppError) as error:
         await FeedbackService(db_session).accepted_snapshot(analysis.id, campaign.id)
     assert error.value.code == "FEEDBACK_ANALYSIS_NOT_ACCEPTED"
@@ -279,7 +282,7 @@ async def test_director_run_path_binds_exact_accepted_analysis_and_supports_no_a
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     user, campaign, _post, _version = await _approved_post(db_session)
-    analysis = await FeedbackService(db_session).generate_analysis(campaign.id)
+    analysis = await LegacyFeedbackFixture(db_session).generate_analysis(campaign.id)
     await FeedbackService(db_session).review(analysis.id, user, FeedbackAnalysisStatus.ACCEPTED)
     task, _director = await _director_task(db_session, campaign.id)
 
@@ -319,7 +322,7 @@ async def test_smm_run_path_binds_exact_accepted_analysis(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     user, campaign, post, _version = await _approved_post(db_session)
-    analysis = await FeedbackService(db_session).generate_analysis(campaign.id)
+    analysis = await LegacyFeedbackFixture(db_session).generate_analysis(campaign.id)
     await FeedbackService(db_session).review(analysis.id, user, FeedbackAnalysisStatus.ACCEPTED)
     task = await db_session.get(Task, post.source_task_id)
     assert task is not None
@@ -356,7 +359,7 @@ async def test_run_path_rejects_non_accepted_feedback_analysis_statuses(
     status: FeedbackAnalysisStatus,
 ) -> None:
     user, campaign, _post, _version = await _approved_post(db_session)
-    analysis = await FeedbackService(db_session).generate_analysis(campaign.id)
+    analysis = await LegacyFeedbackFixture(db_session).generate_analysis(campaign.id)
     analysis.status = status
     await db_session.commit()
     task, _director = await _director_task(db_session, campaign.id)
@@ -382,7 +385,7 @@ async def test_accepting_analysis_does_not_create_downstream_work(
     db_session: AsyncSession,
 ) -> None:
     user, campaign, _post, _version = await _approved_post(db_session)
-    analysis = await FeedbackService(db_session).generate_analysis(campaign.id)
+    analysis = await LegacyFeedbackFixture(db_session).generate_analysis(campaign.id)
     before = len(list((await db_session.scalars(select(AgentRun))).all()))
     await FeedbackService(db_session).review(analysis.id, user, FeedbackAnalysisStatus.ACCEPTED)
     after = len(list((await db_session.scalars(select(AgentRun))).all()))
@@ -394,7 +397,7 @@ async def test_double_reject_is_idempotent_and_accept_conflicts(
     db_session: AsyncSession,
 ) -> None:
     user, campaign, _post, _version = await _approved_post(db_session)
-    analysis = await FeedbackService(db_session).generate_analysis(campaign.id)
+    analysis = await LegacyFeedbackFixture(db_session).generate_analysis(campaign.id)
     rejected = await FeedbackService(db_session).review(
         analysis.id, user, FeedbackAnalysisStatus.REJECTED
     )
@@ -412,7 +415,7 @@ async def test_postgres_accept_reject_race_has_one_terminal_winner(
     db_session: AsyncSession,
 ) -> None:
     user, campaign, _post, _version = await _approved_post(db_session)
-    analysis = await FeedbackService(db_session).generate_analysis(campaign.id)
+    analysis = await LegacyFeedbackFixture(db_session).generate_analysis(campaign.id)
     analysis_id = analysis.id
     user_id = user.id
 
@@ -449,7 +452,7 @@ async def test_duplicate_feedback_worker_execution_is_noop_after_completion(
         "app.workers.feedback_worker.generate_feedback_analysis.apply_async",
         lambda **_options: Job(),
     )
-    analysis = await FeedbackService(db_session).queue_analysis(campaign.id)
+    analysis = await prepared_analysis(db_session, campaign.id)
     run = await db_session.get(AgentRun, analysis.agent_run_id)
     assert run is not None
     run.status = AgentRunStatus.COMPLETED
@@ -461,7 +464,7 @@ async def test_duplicate_feedback_worker_execution_is_noop_after_completion(
         raise AssertionError("duplicate worker must not invoke the model")
 
     monkeypatch.setattr(feedback_worker.Runner, "run", should_not_run)
-    await feedback_worker._run(analysis.agent_run_id)
+    await feedback_worker._generate(analysis.agent_run_id)
     refreshed = await db_session.get(AgentRun, analysis.agent_run_id)
     assert refreshed is not None and refreshed.status is AgentRunStatus.COMPLETED
 
@@ -484,7 +487,7 @@ async def test_feedback_analysis_repair_uses_same_frozen_snapshot(
         "app.workers.feedback_worker.generate_feedback_analysis.apply_async",
         lambda **_options: Job(),
     )
-    analysis = await FeedbackService(db_session).queue_analysis(campaign.id)
+    analysis = await prepared_analysis(db_session, campaign.id)
     snapshot_ids = list(analysis.input_snapshot["feedback_ids"])
 
     from app.workers import feedback_worker
@@ -522,18 +525,18 @@ async def test_feedback_analysis_repair_uses_same_frozen_snapshot(
 
     monkeypatch.setattr(feedback_worker, "AsyncOpenAI", lambda **_kwargs: FakeClient())
     monkeypatch.setattr(feedback_worker, "Runner", type("RunnerStub", (), {"run": fake_run}))
-    monkeypatch.setattr(feedback_worker, "Agent", lambda **_kwargs: object())
-    monkeypatch.setattr(feedback_worker, "OpenAIResponsesModel", lambda *_args: object())
+    monkeypatch.setattr(feedback_worker, "SDKAgent", lambda **_kwargs: object())
+    monkeypatch.setattr(feedback_worker, "OpenAIResponsesModel", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(feedback_worker, "RunConfig", lambda **_kwargs: object())
     monkeypatch.setattr(feedback_worker.settings, "openai_api_key", "test-key")
 
-    await feedback_worker._run(analysis.agent_run_id)
+    await feedback_worker._generate(analysis.agent_run_id)
     await db_session.refresh(analysis)
     run = await db_session.get(AgentRun, analysis.agent_run_id)
     assert attempts == 2
     assert run is not None and run.status is AgentRunStatus.COMPLETED
     assert run.output_data is not None
-    assert run.output_data["repair_attempt_count"] == 1
+    assert run.request_count == 2
     assert analysis.status is FeedbackAnalysisStatus.DRAFT
     assert analysis.input_snapshot["feedback_ids"] == snapshot_ids
     assert str(feedback.id) in snapshot_ids
@@ -552,7 +555,7 @@ async def test_feedback_analysis_repair_exhaustion_fails_without_completed_resul
         "app.workers.feedback_worker.generate_feedback_analysis.apply_async",
         lambda **_options: Job(),
     )
-    analysis = await FeedbackService(db_session).queue_analysis(campaign.id)
+    analysis = await prepared_analysis(db_session, campaign.id)
 
     from app.workers import feedback_worker
 
@@ -581,17 +584,17 @@ async def test_feedback_analysis_repair_exhaustion_fails_without_completed_resul
 
     monkeypatch.setattr(feedback_worker, "AsyncOpenAI", lambda **_kwargs: FakeClient())
     monkeypatch.setattr(feedback_worker, "Runner", type("RunnerStub", (), {"run": fake_run}))
-    monkeypatch.setattr(feedback_worker, "Agent", lambda **_kwargs: object())
-    monkeypatch.setattr(feedback_worker, "OpenAIResponsesModel", lambda *_args: object())
+    monkeypatch.setattr(feedback_worker, "SDKAgent", lambda **_kwargs: object())
+    monkeypatch.setattr(feedback_worker, "OpenAIResponsesModel", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(feedback_worker, "RunConfig", lambda **_kwargs: object())
     monkeypatch.setattr(feedback_worker.settings, "openai_api_key", "test-key")
 
-    with pytest.raises(RuntimeError, match="FEEDBACK_ANALYSIS_REPAIR_EXHAUSTED"):
-        await feedback_worker._run(analysis.agent_run_id)
+    with pytest.raises(AppError):
+        await feedback_worker._generate(analysis.agent_run_id)
     await db_session.refresh(analysis)
     run = await db_session.get(AgentRun, analysis.agent_run_id)
     assert run is not None and run.status is AgentRunStatus.FAILED
     assert run.error_code == "FEEDBACK_ANALYSIS_REPAIR_EXHAUSTED"
     assert run.output_data is not None
-    assert run.output_data["repair_attempt_count"] == 1
+    assert run.request_count == 2
     assert analysis.status is FeedbackAnalysisStatus.FAILED

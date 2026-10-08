@@ -37,6 +37,11 @@ async def list_feedback(
 
 
 @router.post(
+    "/campaigns/{campaign_id}/performance-analysis",
+    response_model=FeedbackAnalysisResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@router.post(
     "/campaigns/{campaign_id}/feedback-analysis",
     response_model=FeedbackAnalysisResponse,
     status_code=status.HTTP_202_ACCEPTED,
@@ -44,10 +49,16 @@ async def list_feedback(
 async def generate_feedback_analysis(
     campaign_id: UUID, _user: CurrentUser, session: SessionDependency
 ) -> FeedbackAnalysisResponse:
-    row = await FeedbackService(session).queue_analysis(campaign_id)
+    row = await FeedbackService(session).prepare_analysis(
+        campaign_id, requested_by_user_id=_user.id
+    )
+    assert row is not None
     return FeedbackAnalysisResponse.model_validate(row)
 
 
+@router.get(
+    "/campaigns/{campaign_id}/performance-analysis", response_model=list[FeedbackAnalysisResponse]
+)
 @router.get(
     "/campaigns/{campaign_id}/feedback-analysis",
     response_model=list[FeedbackAnalysisResponse],
@@ -93,3 +104,21 @@ async def reject_feedback_analysis(
     analysis_id: UUID, user: CurrentUser, session: SessionDependency
 ) -> FeedbackAnalysisResponse:
     return await _review(analysis_id, user, session, FeedbackAnalysisStatus.REJECTED)
+
+
+@router.post(
+    "/performance-analysis/{analysis_id}/retry",
+    response_model=FeedbackAnalysisResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@router.post(
+    "/feedback-analysis/{analysis_id}/retry",
+    response_model=FeedbackAnalysisResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_feedback_analysis(
+    analysis_id: UUID, _user: CurrentUser, session: SessionDependency
+) -> FeedbackAnalysisResponse:
+    return FeedbackAnalysisResponse.model_validate(
+        await FeedbackService(session).retry_analysis(analysis_id)
+    )

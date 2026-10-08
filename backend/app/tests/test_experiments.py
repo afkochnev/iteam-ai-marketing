@@ -665,7 +665,7 @@ async def test_fk_restrict_and_new_schema(db_session):
     )
     assert len(rows) == 8 and all(row[0] == "r" for row in rows)
     assert (
-        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261008_0026"
+        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261008_0027"
     )
 
 

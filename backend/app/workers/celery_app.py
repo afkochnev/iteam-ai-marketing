@@ -42,6 +42,7 @@ celery_app.conf.update(
     task_routes={
         "execute_agent_run": {"queue": "ai"},
         "index_knowledge_item": {"queue": "ai"},
+        "discover_performance_analyses": {"queue": "ai_control"},
         "dispatch_ready_tasks": {"queue": "ai_control"},
         "recover_stuck_ai_tasks": {"queue": "ai_control"},
         "generate_feedback_analysis": {"queue": "ai"},

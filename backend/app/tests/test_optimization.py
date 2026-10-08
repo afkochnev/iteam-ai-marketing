@@ -36,6 +36,7 @@ from app.services.auth_service import AuthService
 from app.services.feedback_service import FeedbackService
 from app.services.optimization_proposal_service import OptimizationProposalService, validate_action
 from app.services.publication_service import PublicationService
+from app.tests.legacy_feedback import prepared_analysis
 from app.tests.test_agent_runtime import runtime_fixture
 from app.tests.test_publications import _approved_post
 
@@ -484,12 +485,16 @@ async def test_api_auth_archived_readonly(db_session, client: AsyncClient):
 
 async def test_snapshot_freezes_real_content_version_and_plan_state(db_session):
     user, campaign, post, version = await _approved_post(db_session)
-    await PublicationService(db_session).create(
+    publication = await PublicationService(db_session).create(
         PublicationCreate(
             content_item_id=post.id, content_version_id=version.id, channel=post.channel
         ),
         user,
     )
+    from app.models.publication import Publication, PublicationStatus
+
+    publication = await db_session.get(Publication, publication.id)
+    publication.status = PublicationStatus.PUBLISHED
     plan = PublicationPlan(
         campaign_id=campaign.id,
         status=PublicationPlanStatus.APPROVED,
@@ -542,7 +547,7 @@ async def test_snapshot_freezes_real_content_version_and_plan_state(db_session):
 
 async def test_migration_tables_enums_and_restrict_provenance(db_session):
     assert (
-        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261008_0026"
+        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261008_0027"
     )
     enums = list(
         await db_session.scalars(
@@ -623,7 +628,7 @@ async def test_invalid_typed_action_uses_existing_repair_and_never_partial_propo
         feedback_worker.generate_feedback_analysis, "apply_async", lambda **kwargs: Job()
     )
     monkeypatch.setattr(settings, "openai_default_model", "test-model")
-    analysis = await FeedbackService(db_session).queue_analysis(campaign.id)
+    analysis = await prepared_analysis(db_session, campaign.id)
     attempts = 0
 
     async def fake_run(*args, **kwargs):
@@ -647,15 +652,15 @@ async def test_invalid_typed_action_uses_existing_repair_and_never_partial_propo
 
     monkeypatch.setattr(feedback_worker, "AsyncOpenAI", lambda **kwargs: Client())
     monkeypatch.setattr(feedback_worker, "Runner", type("Runner", (), {"run": fake_run}))
-    monkeypatch.setattr(feedback_worker, "Agent", lambda **kwargs: object())
-    monkeypatch.setattr(feedback_worker, "OpenAIResponsesModel", lambda *args: object())
+    monkeypatch.setattr(feedback_worker, "SDKAgent", lambda **kwargs: object())
+    monkeypatch.setattr(feedback_worker, "OpenAIResponsesModel", lambda *args, **kwargs: object())
     monkeypatch.setattr(feedback_worker, "RunConfig", lambda **kwargs: object())
     monkeypatch.setattr(feedback_worker.settings, "openai_api_key", "fake-test-only")
     if repaired:
-        await feedback_worker._run(analysis.agent_run_id)
+        await feedback_worker._generate(analysis.agent_run_id)
     else:
-        with pytest.raises(RuntimeError, match="REPAIR_EXHAUSTED"):
-            await feedback_worker._run(analysis.agent_run_id)
+        with pytest.raises(AppError):
+            await feedback_worker._generate(analysis.agent_run_id)
     await db_session.refresh(analysis)
     assert attempts == 2
     assert analysis.status is (

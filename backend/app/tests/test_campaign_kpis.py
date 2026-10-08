@@ -231,7 +231,7 @@ async def test_fk_restrict_and_migration(db_session):
     pub, _ = await setup(db_session)
     await CampaignKPIService(db_session).create(pub.campaign_id, config())
     assert (
-        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261008_0026"
+        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261008_0027"
     )
     assert (
         await db_session.scalar(

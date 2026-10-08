@@ -1,4 +1,5 @@
 export const AGENT_NAMES: Record<string, string> = {
+  marketing_analyst: "Маркетинговый аналитик",
   marketing_director: "AI-директор по маркетингу",
   knowledge_keeper: "Хранитель знаний",
   writer: "Писатель",

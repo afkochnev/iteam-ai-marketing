@@ -31,6 +31,14 @@ class AgentSeed:
 
 AGENT_SEEDS = (
     AgentSeed(
+        "Marketing Analyst",
+        AgentSlug.MARKETING_ANALYST,
+        AgentRole.MARKETING_ANALYST,
+        "Анализирует замороженные результаты и обратную связь; рекомендации требуют человека.",
+        1,
+        (),
+    ),
+    AgentSeed(
         "Marketing Director",
         AgentSlug.MARKETING_DIRECTOR,
         AgentRole.MARKETING_DIRECTOR,

@@ -58,6 +58,10 @@ class FeedbackAnalysisResponse(BaseModel):
     recommendations: list[dict[str, object]]
     experiment_ideas: list[dict[str, object]]
     limitations: list[str]
+    task_id: UUID | None = None
+    evidence_fingerprint: str | None = None
+    trigger_source: str | None = None
+    interpretations: list[dict[str, object]] = Field(default_factory=list)
     agent_run_id: UUID | None
     generated_at: datetime | None
     reviewed_by_user_id: UUID | None
@@ -129,6 +133,15 @@ class FeedbackExperiment(BaseModel):
     hypothesis: str = Field(min_length=1, max_length=1000)
     proposed_change: str = Field(min_length=1, max_length=1000)
     success_metric: str = Field(min_length=1, max_length=500)
+    minimum_observation_requirement: str | None = Field(default=None, max_length=1000)
+
+
+class FeedbackInterpretation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    interpretation: str = Field(min_length=1, max_length=2000)
+    supporting_findings: list[int] = Field(min_length=1, max_length=12)
+    confidence: str = Field(min_length=1, max_length=40)
+    limitations: list[str] = Field(max_length=20)
 
 
 class FeedbackAnalystResult(BaseModel):
@@ -136,6 +149,17 @@ class FeedbackAnalystResult(BaseModel):
 
     summary: str = Field(min_length=1, max_length=4000)
     findings: list[FeedbackFinding] = Field(max_length=12)
+    interpretations: list[FeedbackInterpretation] = Field(default_factory=list, max_length=12)
+
+    @model_validator(mode="after")
+    def validate_interpretations(self) -> "FeedbackAnalystResult":
+        for item in self.interpretations:
+            if any(index < 0 or index >= len(self.findings) for index in item.supporting_findings):
+                raise ValueError(
+                    "supporting_findings must contain valid zero-based finding positions"
+                )
+        return self
+
     recommendations: list[FeedbackRecommendation] = Field(max_length=12)
     experiment_ideas: list[FeedbackExperiment] = Field(max_length=8)
     limitations: list[str] = Field(max_length=20)

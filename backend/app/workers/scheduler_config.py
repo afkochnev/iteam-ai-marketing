@@ -9,6 +9,11 @@ def build_beat_schedule(role: str | None, config: Settings) -> dict[str, Any]:
         return {}
     if role == "ai":
         return {
+            "discover-performance-analyses": {
+                "task": "discover_performance_analyses",
+                "schedule": config.optimization_analysis_scan_interval_seconds,
+                "options": {"queue": "ai_control"},
+            },
             "dispatch-ready-ai-tasks": {
                 "task": "dispatch_ready_tasks",
                 "schedule": config.task_dispatch_interval_seconds,

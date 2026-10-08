@@ -1,4 +1,5 @@
 "use client";
+import { PerformanceAnalysisDetails } from "@/components/performance-analysis";
 import { CampaignKPIBlock, PublicationPerformanceTable } from "@/components/campaign-kpis";
 
 import { MarketingExperimentsPanel } from "@/components/marketing-experiments";
@@ -370,7 +371,7 @@ export default function CampaignDetailsPage() {
         <div className="actions"><button onClick={addFeedback}>Добавить обратную связь</button><button className="secondary" onClick={generateFeedbackAnalysis}>Сформировать выводы</button></div>
         {feedback.length ? <ul>{feedback.map((item) => <li key={item.id}>{item.category}: {item.comment} · {formatDateTime(item.created_at)}</li>)}</ul> : <p>Обратной связи пока нет.</p>}
         <MarketingExperimentsPanel campaignId={campaign.id} archived={campaign.status === "ARCHIVED"} />
-        {analyses.length ? analyses.map((analysis) => <article className="card" key={analysis.id}><p><strong>Выводы: {analysis.status}</strong>{analysis.generated_at ? ` · ${formatDateTime(analysis.generated_at)}` : ""}</p><p>{analysis.summary}</p>{analysis.status === "ACCEPTED" && <OptimizationProposalPanel analysis={analysis} archived={campaign.status === "ARCHIVED"} />}{analysis.limitations.map((item) => <p key={item}>Ограничение: {item}</p>)}{analysis.findings.map((item, index) => <p key={index}>Наблюдение: {String(item.observation ?? "")}</p>)}{analysis.status === "DRAFT" && <div className="actions"><button onClick={() => reviewFeedbackAnalysis(analysis.id, "accept")}>Принять как рекомендации</button><button className="secondary" onClick={() => reviewFeedbackAnalysis(analysis.id, "reject")}>Отклонить выводы</button></div>}</article>) : <p>Выводы ещё не сформированы.</p>}
+        {analyses.length ? analyses.map((analysis) => <article className="card" key={analysis.id}><p><strong>Выводы: {analysis.status}</strong>{analysis.generated_at ? ` · ${formatDateTime(analysis.generated_at)}` : ""}</p><p>{analysis.summary}</p><PerformanceAnalysisDetails analysis={analysis} archived={campaign.status === "ARCHIVED"} retry={() => { void feedbackApi.retry(analysis.id).then(loadFeedback).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Не удалось повторить анализ.")); }} />{analysis.status === "ACCEPTED" && <OptimizationProposalPanel analysis={analysis} archived={campaign.status === "ARCHIVED"} />}{analysis.limitations.map((item) => <p key={item}>Ограничение: {item}</p>)}{analysis.findings.map((item, index) => <p key={index}>Наблюдение: {String(item.observation ?? "")}</p>)}{analysis.status === "DRAFT" && analysis.generated_at && <div className="actions"><button onClick={() => reviewFeedbackAnalysis(analysis.id, "accept")}>Принять как рекомендации</button><button className="secondary" onClick={() => reviewFeedbackAnalysis(analysis.id, "reject")}>Отклонить выводы</button></div>}</article>) : <p>Выводы ещё не сформированы.</p>}
       </div>
     </details>
   </main>;

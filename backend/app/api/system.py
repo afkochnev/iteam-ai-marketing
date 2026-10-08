@@ -16,7 +16,7 @@ from app.models.publication import Publication, PublicationStatus
 from app.models.task import Task, TaskStatus, TaskType
 from app.services.reconciliation_integrity import reconciliation_integrity_report
 
-EXPECTED_MIGRATION_HEAD = "20261008_0026"
+EXPECTED_MIGRATION_HEAD = "20261008_0027"
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -107,6 +107,7 @@ async def system_status(_admin: AdminUser, session: SessionDependency) -> dict[s
                 TaskType.WRITE_ARTICLE,
                 TaskType.CREATE_SOCIAL_POSTS,
                 TaskType.CONTENT_REVISION,
+                TaskType.ANALYZE_PERFORMANCE,
             ]
         ),
     ]
@@ -155,6 +156,37 @@ async def system_status(_admin: AdminUser, session: SessionDependency) -> dict[s
         select(ActivityLog.created_at).order_by(ActivityLog.created_at.desc()).limit(1)
     )
     return {
+        "performance_analysis": {
+            "ready_tasks": int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(Task)
+                    .where(
+                        Task.task_type == TaskType.ANALYZE_PERFORMANCE,
+                        Task.status == TaskStatus.READY,
+                    )
+                )
+                or 0
+            ),
+            "running_runs": int(
+                await session.scalar(
+                    select(func.count())
+                    .select_from(AgentRun)
+                    .join(Task, Task.id == AgentRun.task_id)
+                    .where(
+                        Task.task_type == TaskType.ANALYZE_PERFORMANCE,
+                        AgentRun.status == AgentRunStatus.RUNNING,
+                    )
+                )
+                or 0
+            ),
+            "failed_analyses": feedback_failures,
+            "latest_automatic_analysis_at": await session.scalar(
+                select(func.max(MarketingFeedbackAnalysis.created_at)).where(
+                    MarketingFeedbackAnalysis.trigger_source == "AUTOMATIC"
+                )
+            ),
+        },
         "version": settings.app_version,
         "release_sha": settings.build_sha,
         "build_sha": settings.build_sha,
