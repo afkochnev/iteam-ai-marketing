@@ -447,7 +447,7 @@ async def test_full_mvp3_mocked_plan_revision_e2e(db_session, monkeypatch):
     output = _planner_result(
         UUID(plan_run.input_data["publication_plan_snapshot"]["article_version_ids"][0])
     )
-    output.items[0].scheduled_at = datetime.now(UTC) + timedelta(days=1)
+    output.items[0].scheduled_at = old_plan.planning_horizon_start + timedelta(days=4)
     output.items[0].source_claim_ids = [
         plan_run.input_data["publication_plan_snapshot"]["article_digests"][0]["allowed_claims"][0][
             "claim_id"
@@ -516,6 +516,10 @@ async def test_full_mvp3_mocked_plan_revision_e2e(db_session, monkeypatch):
     )
     await db_session.commit()
     await approve_content(post.id, ContentApprovalRequest(), user, db_session)
+    monkeypatch.setattr(
+        "app.services.publication_service.utc_now",
+        lambda: old_plan.planning_horizon_start,
+    )
     final_pub = await PublicationService(db_session).create(
         PublicationCreate(
             content_item_id=post.id, content_version_id=version.id, channel=post.channel

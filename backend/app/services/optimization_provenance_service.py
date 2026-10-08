@@ -380,8 +380,10 @@ class OptimizationProvenanceService:
                 id=ident,
                 type=kind,
                 title=f"Метрики · {row.channel.value}",
+                href=f"/campaigns/{cid}/publications#publication-{pub.id}",
                 details={
                     "publication_id": str(pub.id),
+                    "content_item_id": str(pub.content_item_id),
                     "content_version_id": str(pub.content_version_id),
                     "channel": row.channel.value,
                     "observed_at": row.observed_at.isoformat(),
@@ -435,7 +437,7 @@ class OptimizationProvenanceService:
             id=ident,
             type=kind,
             title=f"Версия v{row_v.version_number}",
-            href=f"/content/{row_v.content_item_id}",
+            href=f"/content/{row_v.content_item_id}#version-{row_v.id}",
             details={
                 "content_item_id": str(row_v.content_item_id),
                 "version_number": row_v.version_number,
