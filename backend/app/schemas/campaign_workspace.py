@@ -1,7 +1,7 @@
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.models.approval import ApprovalStatus
 from app.models.campaign import CampaignStatus
@@ -179,3 +179,5 @@ class CampaignWorkspaceResponse(BaseModel):
     attention_tasks: list[WorkspaceTask]
     feedback: WorkspaceFeedbackState
     change_state: CampaignChangeState
+
+    superseded_legacy_analysis_ids: list[UUID] = Field(default_factory=list)

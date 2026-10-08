@@ -4,8 +4,8 @@ import type { FeedbackAnalysis } from "@/lib/api";
 
 export function PerformanceAnalysisDetails({analysis, archived, retry}: {analysis: FeedbackAnalysis; archived: boolean; retry: () => void}) {
   const quality = analysis.input_snapshot.data_quality as {published_publication_count?: number; publications_with_metrics?: number; human_feedback_count?: number; raw_metric_coverage?: Record<string, number>} | undefined;
-  const metrics = analysis.input_snapshot.publication_metrics_snapshot_ids as string[] | undefined;
-  const feedback = analysis.input_snapshot.marketing_feedback_ids as string[] | undefined;
+  const metrics = (analysis.input_snapshot.publication_metrics_snapshot_ids ?? analysis.input_snapshot.metrics_snapshot_ids) as string[] | undefined;
+  const feedback = (analysis.input_snapshot.marketing_feedback_ids ?? analysis.input_snapshot.feedback_ids) as string[] | undefined;
   return <>
     <p>{analysis.trigger_source === "AUTOMATIC" ? "AUTOMATIC · Сформирован автоматически" : analysis.trigger_source === "MANUAL" ? "MANUAL · По запросу" : "Исторический анализ"} · Стратегия v{analysis.strategy_version}</p>
     <p>Evidence: {analysis.evidence_fingerprint?.slice(0, 12) ?? "не указан"} · {metrics?.length ?? 0} метрик / {feedback?.length ?? 0} отзывов</p>
@@ -14,6 +14,7 @@ export function PerformanceAnalysisDetails({analysis, archived, retry}: {analysi
     {analysis.recommendations.map((item, index) => <p key={index}>Рекомендация: {String(item.recommendation ?? "")}</p>)}
     {analysis.experiment_ideas.map((item, index) => <p key={index}>Гипотеза: {String(item.hypothesis ?? "")} · изменение: {String(item.proposed_change ?? "")} · метрика: {String(item.success_metric ?? "")} · минимум наблюдений: {String(item.minimum_observation_requirement ?? "не задан")}</p>)}
     <p>Автоматический анализ требует отдельного решения человека. Рекомендации не принимаются и не применяются автоматически.</p>
-    {analysis.status === "FAILED" && !archived && <button className="secondary" onClick={retry}>Повторить анализ</button>}
+    {analysis.status === "FAILED" && analysis.task_id == null && <p>Исторический анализ. Для актуальных данных сформируйте новый анализ.</p>}
+    {analysis.status === "FAILED" && analysis.task_id != null && !archived && <button className="secondary" onClick={retry}>Повторить анализ</button>}
   </>;
 }

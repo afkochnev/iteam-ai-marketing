@@ -10,8 +10,12 @@ from app.schemas.optimization import (
     OptimizationActionResponse,
     OptimizationProposalResponse,
 )
+from app.schemas.optimization_provenance import OptimizationProvenanceResponse
+from app.schemas.optimization_workspace import OptimizationDashboard
 from app.services.optimization_apply_service import OptimizationApplyService
 from app.services.optimization_proposal_service import OptimizationProposalService
+from app.services.optimization_provenance_service import OptimizationProvenanceService
+from app.services.optimization_workspace_service import OptimizationWorkspaceService
 
 router = APIRouter(tags=["optimization"])
 
@@ -80,3 +84,19 @@ async def apply_action(
     session: SessionDependency,
 ) -> OptimizationActionApplyResponse:
     return await OptimizationProposalService(session).apply_action(action_id, user, payload)
+
+
+@router.get(
+    "/optimization-actions/{action_id}/provenance", response_model=OptimizationProvenanceResponse
+)
+async def provenance(
+    action_id: UUID, _user: CurrentUser, session: SessionDependency, campaign_id: UUID | None = None
+) -> OptimizationProvenanceResponse:
+    return await OptimizationProvenanceService(session).get(action_id, campaign_id)
+
+
+@router.get("/dashboard/optimization", response_model=OptimizationDashboard)
+async def optimization_dashboard(
+    _user: CurrentUser, session: SessionDependency
+) -> OptimizationDashboard:
+    return await OptimizationWorkspaceService(session).dashboard()

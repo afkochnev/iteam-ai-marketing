@@ -17,7 +17,8 @@ export function useHashTarget(content: unknown) {
         if (parent instanceof HTMLDetailsElement) parent.open = true;
       }
       const topbar = document.querySelector(".app-topbar");
-      if (topbar) target.style.scrollMarginTop = `${topbar.getBoundingClientRect().height + 16}px`;
+      const campaignNavigation = document.querySelector(".campaign-navigation");
+      if (topbar) target.style.scrollMarginTop = `${topbar.getBoundingClientRect().height + (campaignNavigation?.getBoundingClientRect().height ?? 0) + 16}px`;
       target.scrollIntoView?.({ block: "start" });
       if (!target.hasAttribute("tabindex")) target.tabIndex = -1;
       target.focus({ preventScroll: true });

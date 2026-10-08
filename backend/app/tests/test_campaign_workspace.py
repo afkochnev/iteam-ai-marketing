@@ -527,5 +527,5 @@ async def test_director_links_to_the_first_missing_social_post_for_approved_plan
     assert workspace.director.next_step.entity_id == plan_item.id
     assert workspace.director.next_step.title == "Создать VK-пост для пункта №1"
     assert workspace.director.next_step.href == (
-        f"/campaigns/{campaign.id}#plan-item-{plan_item.id}"
+        f"/campaigns/{campaign.id}/plan#plan-item-{plan_item.id}"
     )

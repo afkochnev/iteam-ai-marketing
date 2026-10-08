@@ -142,6 +142,8 @@ class PublicationMetricsResponse(BaseModel):
 
 
 class PerformancePublicationResponse(BaseModel):
+    content_title: str | None = None
+    version_number: int | None = None
     publication_id: UUID
     content_item_id: UUID
     content_version_id: UUID

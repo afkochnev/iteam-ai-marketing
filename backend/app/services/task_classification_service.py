@@ -15,7 +15,16 @@ from app.models.task import Task, TaskStatus, TaskType
 TaskClassification = Literal["actionable", "superseded", "historical"]
 
 
+def is_legacy_feedback_task(task: Task) -> bool:
+    return (
+        task.task_type is TaskType.MANUAL
+        and (task.input_data or {}).get("feedback_analysis") is True
+    )
+
+
 def _default_classification(task: Task) -> TaskClassification:
+    if is_legacy_feedback_task(task) and task.status in {TaskStatus.FAILED, TaskStatus.COMPLETED}:
+        return "historical"
     if task.status in {
         TaskStatus.NEW,
         TaskStatus.BLOCKED,
@@ -35,7 +44,11 @@ async def classify_tasks(
     """Classify task list rows without rewriting their durable status."""
 
     result: dict[UUID, tuple[TaskClassification, str | None]] = {
-        task.id: (_default_classification(task), None) for task in tasks
+        task.id: (
+            _default_classification(task),
+            "Исторический анализ обратной связи" if is_legacy_feedback_task(task) else None,
+        )
+        for task in tasks
     }
     failed_plan_tasks: list[tuple[Task, str]] = []
     for task in tasks:
@@ -53,7 +66,12 @@ async def classify_tasks(
         return {
             task.id: (
                 classification,
-                "Историческая ошибка" if task.status is TaskStatus.FAILED else None,
+                result[task.id][1]
+                or (
+                    "Историческая ошибка"
+                    if classification == "historical" and task.status is TaskStatus.FAILED
+                    else None
+                ),
             )
             for task in tasks
             for classification, _label in [result[task.id]]

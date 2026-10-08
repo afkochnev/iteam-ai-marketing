@@ -5,6 +5,8 @@ import { optimizationApi, type FeedbackAnalysis, type OptimizationActionType, ty
 import { ExperimentCreateForm } from "@/components/marketing-experiments";
 import { FriendlyError } from "@/components/friendly-error";
 
+import { OptimizationProvenanceView } from "@/components/optimization-provenance";
+
 const types: Record<OptimizationActionType, string> = {CONTENT_REVISION: "Доработка контента", PUBLICATION_PLAN_REVISION: "Пересмотр медиаплана", STRATEGY_REVIEW: "Обзор стратегии", EXPERIMENT: "Предложение эксперимента", NO_CHANGE: "Без изменений"};
 const targets = {CONTENT_ITEM: "Контент", PUBLICATION_PLAN: "Медиаплан", CAMPAIGN_STRATEGY: "Стратегия кампании", CAMPAIGN: "Кампания"};
 const evidenceLabels = {publication: "Публикация", content_version: "Версия контента", metrics_snapshot: "Снимок метрик", marketing_feedback: "Обратная связь"};
@@ -38,14 +40,14 @@ export function OptimizationProposalPanel({analysis, archived}: {analysis: Feedb
     finally {pending.current = false; setBusy(false);}
   }
   if (!proposal) return error ? <FriendlyError error={error} /> : null;
-  return <section aria-label="Рекомендации к изменениям">
+  return <section id={`proposal-${proposal.id}`} aria-label="Рекомендации к изменениям">
     <h3>Рекомендации к изменениям</h3>
     <p className="notice">Принятие рекомендации фиксирует решение. Применение отдельно создаёт новый workflow или черновик с последующим согласованием.</p>
     <p>Стратегия версии {proposal.strategy_version} · Статус предложения: {proposal.status}</p>
     {Boolean(error) && <FriendlyError error={error} />}
-    <div className="optimization-actions">{proposal.actions.map(action => <article className="card optimization-action" key={action.id} aria-label={types[action.type]}>
+    <div className="optimization-actions">{proposal.actions.map(action => <article id={`action-${action.id}`} className="card optimization-action" key={action.id} aria-label={types[action.type]}>
       <h4>{types[action.type]}</h4>
-      <p>{targets[action.target_entity_type]}: {action.target_entity_id}{action.target_version_id ? ` · версия ${action.target_version_id}` : ""}</p>
+      <p>{targets[action.target_entity_type]}: {action.target_title ?? "Связанный объект"} <small title={action.target_entity_id}>{action.target_entity_id.slice(0, 8)}</small>{action.target_version_id && <span title={action.target_version_id}> · версия {action.target_version_number ? `v${action.target_version_number}` : action.target_version_id.slice(0, 8)}</span>}</p>
       <p><strong>Причина:</strong> {action.reason}</p><p><strong>Ожидаемый эффект:</strong> {action.expected_effect}</p><p><strong>Приоритет:</strong> {action.priority}</p>
       <p><strong>Доказательства из принятого анализа:</strong></p>
       {action.evidence_refs.length ? <ul>{action.evidence_refs.map(ref => <li key={`${ref.type}:${ref.id}`}>{evidenceLabels[ref.type]}: {ref.id}</li>)}</ul> : <p>Доказательств недостаточно для уверенного изменения.</p>}
@@ -71,6 +73,7 @@ export function OptimizationProposalPanel({analysis, archived}: {analysis: Feedb
         <a href={action.applied_artifact.href}>Открыть {action.applied_artifact.artifact_type === "TASK" ? "задачу" : action.applied_artifact.artifact_type === "MARKETING_EXPERIMENT" ? "эксперимент" : "медиаплан"}</a>
         {action.applied_artifact.error_message && <FriendlyError error={new Error(action.applied_artifact.error_message)} />}
       </div>}
+      <OptimizationProvenanceView actionId={action.id} />
     </article>)}</div>
   </section>;
 }

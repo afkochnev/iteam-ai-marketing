@@ -70,7 +70,7 @@ export function CampaignKPIBlock({ campaignId, archived, performance, onChange }
 
 export function PublicationPerformanceTable({ performance }: { performance: CampaignPerformance }) {
   return <div style={{ overflowX: "auto" }}><table aria-label="Эффективность публикаций"><thead><tr>{["Публикация", "Канал", "Дата публикации", "ContentVersion", "Просмотры", "Показы", "Реакции", "Комментарии", "Репосты", "Клики", "Источник", "Время наблюдения"].map((title) => <th key={title}>{title}</th>)}</tr></thead><tbody>{performance.publications.map((row) => <tr key={row.publication_id}>
-    <td><a href={`/content/${row.content_item_id}`}>{row.publication_id}</a></td><td>{row.channel}</td><td>{row.published_at ? new Date(row.published_at).toLocaleString() : "Нет данных"}</td><td>{row.content_version_id}</td>
+    <td><a href={`/content/${row.content_item_id}`}>{row.content_title ?? "Материал"}</a></td><td>{row.channel}</td><td>{row.published_at ? new Date(row.published_at).toLocaleString() : "Нет данных"}</td><td title={row.content_version_id}>v{row.version_number ?? "—"} · {row.content_version_id.slice(0, 8)}</td>
     {(["views", "impressions", "reactions", "comments", "shares", "clicks"] as const).map((field) => <td key={field}>{valueText(row[field] ?? row.metrics?.[field])}</td>)}
     <td>{row.source ?? row.metrics?.source ?? "Нет данных"}</td><td>{row.observed_at ?? row.metrics?.observed_at ?? "Нет данных"}</td>
   </tr>)}</tbody></table></div>;

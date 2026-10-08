@@ -116,6 +116,8 @@ class PublicationPlanItemResponse(BaseModel):
 
 
 class PublicationPlanResponse(BaseModel):
+    optimization_action_id: UUID | None = None
+    optimization_proposal_id: UUID | None = None
     model_config = ConfigDict(from_attributes=True)
     id: UUID
     campaign_id: UUID

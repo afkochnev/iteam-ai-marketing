@@ -6,7 +6,6 @@ import { useEffect, useState } from "react";
 
 import { useAuth } from "@/components/auth-provider";
 import { CampaignForm } from "@/components/campaign-form";
-import { PageBreadcrumbs } from "@/components/page-breadcrumbs";
 import {
   campaignsApi,
   type Campaign,
@@ -47,8 +46,8 @@ export default function EditCampaignPage() {
       .catch((reason: Error) => setError(reason.message));
   }, [authLoading, user, id, router]);
 
-  if (authLoading || (!campaign && !error)) return <main><p>Загружаем кампанию…</p></main>;
-  if (!campaign) return <main><section><p role="alert" className="error">{error}</p><Link href="/campaigns">К кампаниям</Link></section></main>;
+  if (authLoading || (!campaign && !error)) return <div><p>Загружаем кампанию…</p></div>;
+  if (!campaign) return <div><section><p role="alert" className="error">{error}</p><Link href="/campaigns">К кампаниям</Link></section></div>;
 
   const initial: CampaignInput = {
     name: campaign.name,
@@ -94,8 +93,7 @@ export default function EditCampaignPage() {
   }
 
   const activePlan = workspace?.publication_plan;
-  return <main className="wide">
-    <PageBreadcrumbs items={[{ label: "Кампании", href: "/campaigns" }, { label: campaign.name, href: `/campaigns/${id}` }, { label: "Внести изменения" }]} />
+  return <div className="wide">
     <header className="page-header"><div><p className="eyebrow">Управляемая редакция</p><h1>Внести изменения</h1><p className="muted">Сначала проверьте последствия. Утверждённые решения и материалы не переписываются автоматически.</p></div><Link href={`/campaigns/${id}`}>Отмена</Link></header>
     {error && <p role="alert" className="error">{error}</p>}
 
@@ -141,5 +139,5 @@ export default function EditCampaignPage() {
       <label htmlFor="change-comment">Причина или комментарий (необязательно)</label><textarea id="change-comment" value={comment} onChange={(event) => setComment(event.target.value)} />
       <div className="actions"><button disabled={saving} onClick={() => void save()}>{saving ? "Сохраняем…" : "Сохранить изменения"}</button><button className="secondary" onClick={() => { setPreview(null); setPendingValues(null); }}>Отмена</button></div>
     </section>}
-  </main>;
+  </div>;
 }

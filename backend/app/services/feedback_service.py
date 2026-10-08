@@ -355,6 +355,8 @@ class FeedbackService:
                 .where(
                     MarketingFeedbackAnalysis.campaign_id == campaign_id,
                     MarketingFeedbackAnalysis.status == FeedbackAnalysisStatus.DRAFT,
+                    MarketingFeedbackAnalysis.task_id.is_not(None),
+                    MarketingFeedbackAnalysis.evidence_fingerprint.is_not(None),
                 )
                 .limit(1)
             )

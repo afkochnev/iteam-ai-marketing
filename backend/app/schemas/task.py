@@ -101,6 +101,8 @@ class TaskListItem(BaseModel):
 
 
 class TaskResponse(TaskListItem):
+    optimization_action_id: UUID | None = None
+    historical_feedback_analysis: bool = False
     parent_task_id: UUID | None
     parent_task: TaskReference | None
     description: str | None
@@ -140,6 +142,9 @@ def task_to_response(task: Any) -> TaskResponse:
         else None,
         priority=task.priority,
         status=task.status,
+        optimization_action_id=task.optimization_action_id,
+        historical_feedback_analysis=task.task_type is TaskType.MANUAL
+        and (task.input_data or {}).get("feedback_analysis") is True,
         input_data=task.input_data,
         output_data=task.output_data,
         requires_approval=task.requires_approval,
