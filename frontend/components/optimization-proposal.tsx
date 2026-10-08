@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { optimizationApi, type FeedbackAnalysis, type OptimizationActionType, type OptimizationProposal } from "@/lib/api";
+import { ExperimentCreateForm } from "@/components/marketing-experiments";
 import { FriendlyError } from "@/components/friendly-error";
 
 const types: Record<OptimizationActionType, string> = {CONTENT_REVISION: "Доработка контента", PUBLICATION_PLAN_REVISION: "Пересмотр медиаплана", STRATEGY_REVIEW: "Обзор стратегии", EXPERIMENT: "Предложение эксперимента", NO_CHANGE: "Без изменений"};
@@ -51,7 +52,10 @@ export function OptimizationProposalPanel({analysis, archived}: {analysis: Feedb
       <p><strong>Статус:</strong> {statuses[action.status]}</p>
       <div className="actions"><button disabled={busy || archived || action.status !== "PROPOSED"} onClick={() => decide(action.id, "approve")}>Принять</button><button className="secondary" disabled={busy || archived || action.status !== "PROPOSED"} onClick={() => decide(action.id, "reject")}>Отклонить</button></div>
       {action.status === "APPROVED" && action.type === "NO_CHANGE" && <p>Изменения не требуются.</p>}
-      {action.status === "APPROVED" && action.type === "EXPERIMENT" && <p>Эксперимент будет доступен на следующем этапе.</p>}
+      {action.status === "APPROVED" && action.type === "EXPERIMENT" && (action.experiment_spec ? <>
+        <button disabled={busy || archived} onClick={() => setApplying(action.id)}>Создать эксперимент</button>
+        {applying === action.id && <ExperimentCreateForm action={action} campaignId={analysis.campaign_id} archived={archived} onCreated={async () => {setProposal(await optimizationApi.get(proposal.id)); setApplying(null);}} />}
+      </> : <p>Для этой старой рекомендации отсутствуют структурированные параметры эксперимента. Сформируйте новый анализ на актуальных данных.</p>)}
       {action.status === "APPROVED" && ["CONTENT_REVISION", "PUBLICATION_PLAN_REVISION", "STRATEGY_REVIEW"].includes(action.type) && <>
         <button disabled={busy || archived} onClick={() => {setApplying(action.id); setComment("");}}>Применить</button>
         {applying === action.id && <div role="group" aria-label="Подтверждение применения">
@@ -64,7 +68,7 @@ export function OptimizationProposalPanel({analysis, archived}: {analysis: Feedb
       </>}
       {action.status === "APPLIED" && action.applied_artifact && <div>
         <p>Создан: {action.applied_artifact.artifact_type} · Статус workflow: {action.applied_artifact.status}</p>
-        <a href={action.applied_artifact.href}>Открыть {action.applied_artifact.artifact_type === "TASK" ? "задачу" : "медиаплан"}</a>
+        <a href={action.applied_artifact.href}>Открыть {action.applied_artifact.artifact_type === "TASK" ? "задачу" : action.applied_artifact.artifact_type === "MARKETING_EXPERIMENT" ? "эксперимент" : "медиаплан"}</a>
         {action.applied_artifact.error_message && <FriendlyError error={new Error(action.applied_artifact.error_message)} />}
       </div>}
     </article>)}</div>

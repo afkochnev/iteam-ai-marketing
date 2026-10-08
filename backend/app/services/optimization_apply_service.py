@@ -43,6 +43,7 @@ ACTIONABLE = frozenset(
         OptimizationActionType.CONTENT_REVISION,
         OptimizationActionType.PUBLICATION_PLAN_REVISION,
         OptimizationActionType.STRATEGY_REVIEW,
+        OptimizationActionType.EXPERIMENT,
     }
 )
 
@@ -56,6 +57,22 @@ class OptimizationApplyService:
     ) -> OptimizationAppliedArtifact | None:
         if action.status is not OptimizationActionStatus.APPLIED:
             return None
+        if action.type is OptimizationActionType.EXPERIMENT:
+            from app.models.marketing_experiment import MarketingExperiment
+
+            experiment = await self.session.scalar(
+                select(MarketingExperiment).where(
+                    MarketingExperiment.source_optimization_action_id == action.id
+                )
+            )
+            if experiment is not None:
+                return OptimizationAppliedArtifact(
+                    artifact_type="MARKETING_EXPERIMENT",
+                    artifact_id=experiment.id,
+                    experiment_id=experiment.id,
+                    status=experiment.status.value,
+                    href=f"/campaigns/{experiment.campaign_id}#experiment-{experiment.id}",
+                )
         plan = await self.session.scalar(
             select(PublicationPlan).where(PublicationPlan.optimization_action_id == action.id)
         )
@@ -147,6 +164,12 @@ class OptimizationApplyService:
             CampaignOptimizationAction, action_id, with_for_update=True, populate_existing=True
         )
         assert proposal is not None and action is not None
+        if action.type is not OptimizationActionType.EXPERIMENT and data.experiment is not None:
+            raise AppError(
+                "EXPERIMENT_CONFIG_NOT_APPLICABLE",
+                "Параметры эксперимента недопустимы для этого действия.",
+                422,
+            )
         if action.status is OptimizationActionStatus.APPLIED:
             result = await self.response(action)
             await self.session.commit()
@@ -182,11 +205,21 @@ class OptimizationApplyService:
             raise AppError(
                 "OPTIMIZATION_CONTEXT_STALE", "Исходный принятый анализ недоступен.", 409
             )
+        if action.type is OptimizationActionType.EXPERIMENT:
+            if action.experiment_spec is None:
+                from app.services.experiment_service import LEGACY_SPEC_MESSAGE
+
+                raise AppError("OPTIMIZATION_EXPERIMENT_SPEC_MISSING", LEGACY_SPEC_MESSAGE, 409)
+            if data.experiment is None:
+                raise AppError(
+                    "EXPERIMENT_CONFIG_REQUIRED", "Выберите периоды и публикации эксперимента.", 422
+                )
         draft = OptimizationActionDraft.model_validate(
             {
                 key: getattr(action, key)
                 for key in (
                     "type",
+                    "experiment_spec",
                     "target_entity_type",
                     "target_entity_id",
                     "target_version_id",
@@ -198,6 +231,13 @@ class OptimizationApplyService:
             }
         )
         validate_action(analysis.input_snapshot, draft)
+        if action.type is OptimizationActionType.EXPERIMENT:
+            from app.services.experiment_service import ExperimentService
+
+            assert data.experiment is not None
+            return await ExperimentService(self.session).apply_locked(
+                campaign, proposal, action, user, data.experiment
+            )
         action_snapshot = {
             "id": str(action.id),
             "status": action.status.value,

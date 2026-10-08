@@ -2,8 +2,9 @@ from datetime import datetime
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
+from app.models.marketing_experiment import ExperimentMetric
 from app.models.marketing_feedback import (
     FeedbackAnalysisStatus,
     FeedbackCategory,
@@ -79,6 +80,14 @@ class FeedbackFinding(BaseModel):
     confidence: str = Field(min_length=1, max_length=40)
 
 
+class OptimizationExperimentSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    hypothesis: str = Field(min_length=1, max_length=1000)
+    proposed_change: str = Field(min_length=1, max_length=1000)
+    success_metric: ExperimentMetric
+    minimum_observation_requirement: str | None = Field(default=None, max_length=1000)
+
+
 class OptimizationActionDraft(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -90,6 +99,16 @@ class OptimizationActionDraft(BaseModel):
     expected_effect: str = Field(min_length=1, max_length=1000)
     priority: str = Field(min_length=1, max_length=40)
     evidence_refs: list[FeedbackEvidenceRef] = Field(max_length=8)
+    experiment_spec: OptimizationExperimentSpec | None = None
+
+    @model_validator(mode="after")
+    def validate_experiment_spec(self, info: ValidationInfo) -> "OptimizationActionDraft":
+        if self.type is OptimizationActionType.EXPERIMENT:
+            if self.experiment_spec is None and not (info.context or {}).get("legacy_experiment"):
+                raise ValueError("EXPERIMENT requires experiment_spec")
+        elif self.experiment_spec is not None:
+            raise ValueError("Only EXPERIMENT may include experiment_spec")
+        return self
 
 
 class FeedbackRecommendation(BaseModel):

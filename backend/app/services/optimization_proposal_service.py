@@ -124,7 +124,8 @@ class OptimizationProposalService:
                     "recommendations": recommendations,
                     "experiment_ideas": analysis.experiment_ideas,
                     "limitations": analysis.limitations,
-                }
+                },
+                context={"legacy_experiment": True},
             )
             drafts = [row.proposed_action for row in result.recommendations]
             evidence = {
@@ -164,7 +165,10 @@ class OptimizationProposalService:
                 proposal_id=proposal.id,
                 position=index,
                 source_recommendation_index=index,
-                **draft.model_dump(exclude={"evidence_refs"}),
+                **draft.model_dump(exclude={"evidence_refs", "experiment_spec"}),
+                experiment_spec=draft.experiment_spec.model_dump(mode="json")
+                if draft.experiment_spec
+                else None,
                 evidence_refs=[ref.model_dump(mode="json") for ref in draft.evidence_refs],
             )
             for index, draft in enumerate(drafts)

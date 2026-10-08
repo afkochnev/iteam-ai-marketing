@@ -40,6 +40,7 @@ ROLE_TASKS = {
         "dispatch_due_publications",
         "recover_stuck_publications",
         "sync_recent_publication_metrics",
+        "advance_marketing_experiments",
     },
 }
 

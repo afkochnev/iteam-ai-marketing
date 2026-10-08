@@ -407,13 +407,17 @@ async def test_apply_requires_approved(db_session, status, code):
 
 
 @pytest.mark.parametrize("kind", ["NO_CHANGE", "EXPERIMENT"])
-async def test_unimplemented_actions_have_no_apply(db_session, kind):
+async def test_actions_require_applicable_configuration(db_session, kind):
     user, *_, action = await setup_action(db_session, kind)
     with pytest.raises(AppError) as error:
         await OptimizationProposalService(db_session).apply_action(
             action.id, user, OptimizationActionApplyRequest()
         )
-    assert error.value.code == "OPTIMIZATION_ACTION_NOT_APPLICABLE"
+    assert error.value.code == (
+        "OPTIMIZATION_ACTION_NOT_APPLICABLE"
+        if kind == "NO_CHANGE"
+        else "EXPERIMENT_CONFIG_REQUIRED"
+    )
     assert await count_artifacts(db_session, action.id) == [0, 0]
 
 
@@ -595,7 +599,7 @@ async def test_durable_unique_and_restrict_fk(db_session, table, constraint):
             await db_session.delete(action)
             await db_session.flush()
     assert (
-        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007_0024"
+        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261008_0025"
     )
 
 

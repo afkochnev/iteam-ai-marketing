@@ -32,6 +32,11 @@ def build_beat_schedule(role: str | None, config: Settings) -> dict[str, Any]:
                 "schedule": config.task_dispatch_interval_seconds,
                 "options": {"queue": "publication_control"},
             },
+            "advance-marketing-experiments": {
+                "task": "advance_marketing_experiments",
+                "schedule": config.metrics_sync_interval_seconds,
+                "options": {"queue": "metrics"},
+            },
             "sync-recent-publication-metrics": {
                 "task": "sync_recent_publication_metrics",
                 "schedule": config.metrics_sync_interval_seconds,

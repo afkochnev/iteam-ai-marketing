@@ -59,3 +59,22 @@ async def _sync_recent() -> None:
             sync_publication_metrics.apply_async(args=[str(publication.id)], queue="metrics")
     finally:
         await engine.dispose()
+
+
+@celery_app.task(name="advance_marketing_experiments")  # type: ignore[misc]
+def advance_marketing_experiments() -> None:
+    asyncio.run(_advance_experiments())
+
+
+async def _advance_experiments() -> None:
+    from app.services.experiment_service import ExperimentService
+
+    engine = create_async_engine(settings.database_url, poolclass=NullPool)
+    try:
+        async with async_sessionmaker(engine, expire_on_commit=False)() as session:
+            await ExperimentService(session).advance()
+    except Exception as error:
+        report_exception(error, event="marketing_experiment_lifecycle")
+        raise
+    finally:
+        await engine.dispose()
