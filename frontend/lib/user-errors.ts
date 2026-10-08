@@ -10,6 +10,31 @@ export interface UserErrorPresentation {
 }
 
 const ERROR_HELP: Record<string, Omit<UserErrorPresentation, "code" | "technicalMessage">> = {
+  OPTIMIZATION_EXPERIMENT_SPEC_MISSING: {
+    title: "Параметры эксперимента отсутствуют",
+    reason: "Для этой старой рекомендации отсутствуют структурированные параметры эксперимента.",
+    nextStep: "Сформируйте новый анализ на актуальных данных.", retryable: false,
+  },
+  EXPERIMENT_CONFIG_REQUIRED: {
+    title: "Эксперимент не настроен", reason: "Периоды и группы публикаций ещё не выбраны.",
+    nextStep: "Выберите даты и существующие публикации обеих групп.", retryable: false,
+  },
+  EXPERIMENT_PUBLICATIONS_INVALID: {
+    title: "Группы публикаций недоступны", reason: "Публикации должны принадлежать этой кампании.",
+    nextStep: "Проверьте публикации обеих групп.", retryable: false,
+  },
+  EXPERIMENT_SOURCE_CHANGED: {
+    title: "Источник изменился", reason: "Точная версия публикации изменилась.",
+    nextStep: "Получите новую рекомендацию на актуальных данных.", retryable: false,
+  },
+  EXPERIMENT_CANCELLED: {
+    title: "Эксперимент отменён", reason: "Отменённый эксперимент нельзя запустить.",
+    nextStep: "История остаётся доступна для просмотра.", retryable: false,
+  },
+  EXPERIMENT_ALREADY_COMPLETED: {
+    title: "Эксперимент завершён", reason: "Завершённый эксперимент нельзя отменить.",
+    nextStep: "Откройте результат и ограничения.", retryable: false,
+  },
   OPTIMIZATION_CONTEXT_STALE: {
     title: "Контекст рекомендации устарел",
     reason: "После анализа изменилась версия стратегии кампании.",

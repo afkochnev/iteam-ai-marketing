@@ -123,4 +123,5 @@ class CampaignOptimizationAction(UUIDTimestampMixin, Base):
     applied_by_user_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("users.id", ondelete="RESTRICT")
     )
+    experiment_spec: Mapped[dict[str, object] | None] = mapped_column(JSONB)
     applied_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

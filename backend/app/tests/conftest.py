@@ -54,6 +54,10 @@ from app.models.marketing_chat import (  # noqa: E402
     MarketingConversation,
     MarketingMessage,
 )
+from app.models.marketing_experiment import (  # noqa: E402
+    MarketingExperiment,
+    MarketingExperimentPublication,
+)
 from app.models.marketing_feedback import (  # noqa: E402
     MarketingFeedback,
     MarketingFeedbackAnalysis,
@@ -85,6 +89,8 @@ async def db_session() -> AsyncIterator[AsyncSession]:
                 feedback_analysis_id=None,
             )
         )
+        await session.execute(delete(MarketingExperimentPublication))
+        await session.execute(delete(MarketingExperiment))
         await session.execute(delete(CampaignOptimizationAction))
         await session.execute(delete(CampaignOptimizationProposal))
         await session.execute(delete(MarketingFeedbackAnalysis))
@@ -126,6 +132,8 @@ async def db_session() -> AsyncIterator[AsyncSession]:
                 feedback_analysis_id=None,
             )
         )
+        await session.execute(delete(MarketingExperimentPublication))
+        await session.execute(delete(MarketingExperiment))
         await session.execute(delete(CampaignOptimizationAction))
         await session.execute(delete(CampaignOptimizationProposal))
         await session.execute(delete(MarketingFeedbackAnalysis))

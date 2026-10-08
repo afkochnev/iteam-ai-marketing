@@ -90,6 +90,12 @@ async def _run(agent_run_id: UUID) -> None:
             analyst = Agent(
                 name="Feedback Analyst",
                 instructions=(
+                    "Для каждого нового proposed_action типа EXPERIMENT обязательно "
+                    "укажи experiment_spec с hypothesis, proposed_change, success_metric "
+                    "из VIEWS/IMPRESSIONS/REACTIONS/LIKES/COMMENTS/SHARES/CLICKS/SUBSCRIBERS "
+                    "и nullable minimum_observation_requirement. Для остальных типов "
+                    "experiment_spec должен быть null. Не выводи статистическую значимость "
+                    "или причинный эффект. Используй тот же единственный анализ. "
                     "Выдавай только строгий FeedbackAnalystResult. Рекомендации консультативны."
                 ),
                 model=run.model,

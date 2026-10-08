@@ -7,6 +7,7 @@ from app.api.approvals import router as approvals_router
 from app.api.auth import router as auth_router
 from app.api.campaigns import router as campaigns_router
 from app.api.content import router as content_router
+from app.api.experiments import router as experiments_router
 from app.api.feedback import router as feedback_router
 from app.api.knowledge import router as knowledge_router
 from app.api.knowledge_packs import router as knowledge_packs_router
@@ -41,3 +42,6 @@ api_router.include_router(system_router)
 @api_router.get("/health", tags=["system"])
 async def api_health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+api_router.include_router(experiments_router)

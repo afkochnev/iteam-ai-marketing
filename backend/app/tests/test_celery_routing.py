@@ -82,6 +82,7 @@ def assert_message(app, task_name, expected_queue, *, options=None):
         ("publish_vk_publication", "publication"),
         ("dispatch_due_publications", "publication_control"),
         ("sync_publication_metrics", "metrics"),
+        ("advance_marketing_experiments", "metrics"),
         ("sync_recent_publication_metrics", "metrics"),
         ("index_knowledge_item", "ai"),
         ("dispatch_ready_tasks", "ai_control"),
@@ -121,6 +122,7 @@ def test_declared_queues_exclude_legacy_default():
         ("publication", "dispatch-due-publications", "publication_control"),
         ("publication", "recover-stuck-publications", "publication_control"),
         ("publication", "sync-recent-publication-metrics", "metrics"),
+        ("publication", "advance-marketing-experiments", "metrics"),
     ],
 )
 def test_beat_uses_explicit_queue(broker_app, role, entry_name, expected_queue):

@@ -66,6 +66,14 @@ def draft(s, kind="NO_CHANGE", **overrides):
         "expected_effect": "Сохранить проверенный подход",
         "priority": "LOW",
         "evidence_refs": [],
+        "experiment_spec": {
+            "hypothesis": "Изменение редакционного ракурса связано с наблюдаемыми кликами",
+            "proposed_change": "Сравнить два периода публикаций",
+            "success_metric": "CLICKS",
+            "minimum_observation_requirement": None,
+        }
+        if kind == "EXPERIMENT"
+        else None,
         **overrides,
     }
 
@@ -534,7 +542,7 @@ async def test_snapshot_freezes_real_content_version_and_plan_state(db_session):
 
 async def test_migration_tables_enums_and_restrict_provenance(db_session):
     assert (
-        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007_0024"
+        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261008_0025"
     )
     enums = list(
         await db_session.scalars(

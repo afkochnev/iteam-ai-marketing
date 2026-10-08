@@ -51,6 +51,7 @@ celery_app.conf.update(
         "dispatch_due_publications": {"queue": "publication_control"},
         "recover_stuck_publications": {"queue": "publication_control"},
         "sync_publication_metrics": {"queue": "metrics"},
+        "advance_marketing_experiments": {"queue": "metrics"},
         "sync_recent_publication_metrics": {"queue": "metrics"},
     },
     task_track_started=True,

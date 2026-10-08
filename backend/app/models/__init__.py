@@ -38,6 +38,8 @@ from app.models.task import Task, TaskDependency, TaskPriority, TaskStatus, Task
 from app.models.user import User, UserRole
 
 __all__ = [
+    "MarketingExperiment",
+    "MarketingExperimentPublication",
     "CampaignOptimizationAction",
     "CampaignOptimizationProposal",
     "MarketingConversation",
@@ -99,4 +101,5 @@ from app.models.marketing_chat import (
     MarketingConversation,
     MarketingMessage,
 )
+from app.models.marketing_experiment import MarketingExperiment, MarketingExperimentPublication
 from app.models.optimization import CampaignOptimizationAction, CampaignOptimizationProposal

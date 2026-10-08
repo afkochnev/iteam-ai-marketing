@@ -416,6 +416,7 @@ class FeedbackService:
         row = await self.session.get(MarketingFeedbackAnalysis, analysis_id, with_for_update=True)
         if row is None or row.agent_run_id != run_id:
             raise AppError("FEEDBACK_ANALYSIS_NOT_FOUND", "Анализ не найден.", 404)
+        result = FeedbackAnalystResult.model_validate(result.model_dump(mode="json"))
         self.validate_evidence(row.input_snapshot, result)
         row.summary = result.summary
         row.findings = [item.model_dump(mode="json") for item in result.findings]

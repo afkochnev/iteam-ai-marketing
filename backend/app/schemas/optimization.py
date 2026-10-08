@@ -10,16 +10,20 @@ from app.models.optimization import (
     OptimizationProposalStatus,
     OptimizationTargetEntityType,
 )
-from app.schemas.feedback import FeedbackEvidenceRef
+from app.schemas.experiment import ExperimentConfiguration
+from app.schemas.feedback import FeedbackEvidenceRef, OptimizationExperimentSpec
 
 
 class OptimizationActionApplyRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    experiment: ExperimentConfiguration | None = None
     human_comment: str | None = Field(default=None, max_length=2000)
 
 
 class OptimizationAppliedArtifact(BaseModel):
-    artifact_type: Literal["TASK", "PUBLICATION_PLAN"]
+    artifact_type: Literal["TASK", "PUBLICATION_PLAN", "MARKETING_EXPERIMENT"]
     artifact_id: UUID
+    experiment_id: UUID | None = None
     task_id: UUID | None = None
     publication_plan_id: UUID | None = None
     agent_run_id: UUID | None = None
@@ -39,6 +43,7 @@ class OptimizationActionResponse(BaseModel):
     reason: str
     expected_effect: str
     priority: str
+    experiment_spec: OptimizationExperimentSpec | None = None
     evidence_refs: list[FeedbackEvidenceRef]
     status: OptimizationActionStatus
     applied_by_user_id: UUID | None = None
