@@ -1,3 +1,4 @@
+from typing import Any
 from uuid import UUID
 
 from sqlalchemy import select
@@ -300,3 +301,52 @@ class CampaignPlanningService:
         )
         run = await self._enqueue_planning(task)
         return campaign, task, run
+
+    async def prepare_optimization_revision(
+        self, campaign: Campaign, user: User, action_id: UUID, context: dict[str, Any]
+    ) -> tuple[Task, AgentRun]:
+        """Prepare a successor strategy without replacing the active strategy; caller commits."""
+        if (
+            campaign.status is not CampaignStatus.ACTIVE
+            or not campaign.strategy
+            or campaign.strategy_version < 1
+        ):
+            raise AppError(
+                "CAMPAIGN_STRATEGY_NOT_APPROVED", "Нужна действующая утверждённая стратегия.", 409
+            )
+        agent = await self._marketing_director()
+        campaign.status = CampaignStatus.PLANNING
+        task = await TaskService(self.session).create_task(
+            TaskCreate(
+                campaign_id=campaign.id,
+                task_type=TaskType.CAMPAIGN_PLANNING,
+                title=f"Подготовить стратегию v{campaign.strategy_version + 1}",
+                description="Пересмотреть стратегию по принятой рекомендации.",
+                assigned_agent_id=agent.id,
+                priority="HIGH",
+                input_data={
+                    **context,
+                    "strategy_version": campaign.strategy_version + 1,
+                    "current_strategy_version": campaign.strategy_version,
+                    "revision": True,
+                    "preserve_active_strategy": True,
+                    "previous_strategy": campaign.strategy,
+                    "reviewer_feedback": context.get("human_comment"),
+                },
+            ),
+            commit=False,
+        )
+        task.optimization_action_id = action_id
+        await self.session.flush()
+        run = await AgentRunService(self.session).create_queued_run(task.id, commit=False)
+        await ActivityLogService(self.session).record(
+            "STRATEGY_REVISION_PREPARATION_STARTED",
+            campaign_id=campaign.id,
+            task_id=task.id,
+            user_id=user.id,
+            metadata={
+                "active_strategy_version": campaign.strategy_version,
+                "target_strategy_version": campaign.strategy_version + 1,
+            },
+        )
+        return task, run

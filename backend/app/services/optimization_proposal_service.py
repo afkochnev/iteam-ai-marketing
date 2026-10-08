@@ -19,6 +19,7 @@ from app.models.optimization import (
 )
 from app.models.user import User
 from app.schemas.feedback import FeedbackAnalystResult, OptimizationActionDraft
+from app.schemas.optimization import OptimizationActionApplyRequest, OptimizationActionApplyResponse
 from app.services.activity_log_service import ActivityLogService
 
 
@@ -242,7 +243,7 @@ class OptimizationProposalService:
                 )
             )
         )
-        proposal.status = self.aggregate(statuses)
+        await self.update_aggregation(proposal)
         if OptimizationActionStatus.PROPOSED not in statuses:
             proposal.reviewed_by_user_id = user.id
             proposal.reviewed_at = datetime.now(UTC)
@@ -272,3 +273,31 @@ class OptimizationProposalService:
         if statuses == {OptimizationActionStatus.REJECTED}:
             return OptimizationProposalStatus.REJECTED
         return OptimizationProposalStatus.PARTIALLY_APPROVED
+
+    async def update_aggregation(self, proposal: CampaignOptimizationProposal) -> None:
+        actions = list(
+            await self.session.scalars(
+                select(CampaignOptimizationAction).where(
+                    CampaignOptimizationAction.proposal_id == proposal.id
+                )
+            )
+        )
+        statuses = {action.status for action in actions}
+        if OptimizationActionStatus.APPLIED in statuses and not any(
+            action.status in {OptimizationActionStatus.PROPOSED, OptimizationActionStatus.FAILED}
+            or (
+                action.status is OptimizationActionStatus.APPROVED
+                and action.type is not OptimizationActionType.NO_CHANGE
+            )
+            for action in actions
+        ):
+            proposal.status = OptimizationProposalStatus.APPLIED
+        else:
+            proposal.status = self.aggregate(statuses)
+
+    async def apply_action(
+        self, action_id: UUID, user: User, data: "OptimizationActionApplyRequest"
+    ) -> "OptimizationActionApplyResponse":
+        from app.services.optimization_apply_service import OptimizationApplyService
+
+        return await OptimizationApplyService(self.session).apply(action_id, user, data)

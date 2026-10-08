@@ -10,6 +10,24 @@ export interface UserErrorPresentation {
 }
 
 const ERROR_HELP: Record<string, Omit<UserErrorPresentation, "code" | "technicalMessage">> = {
+  OPTIMIZATION_CONTEXT_STALE: {
+    title: "Контекст рекомендации устарел",
+    reason: "После анализа изменилась версия стратегии кампании.",
+    nextStep: "Обновите страницу и получите рекомендации для текущей стратегии.",
+    retryable: false,
+  },
+  OPTIMIZATION_TARGET_STALE: {
+    title: "Исходный материал изменился",
+    reason: "Версия контента или утверждённый медиаплан больше не актуальны.",
+    nextStep: "Проверьте текущую версию и получите новую рекомендацию перед применением.",
+    retryable: false,
+  },
+  OPTIMIZATION_ACTION_NOT_APPROVED: {
+    title: "Рекомендация ещё не принята",
+    reason: "Применение доступно только после отдельного человеческого решения.",
+    nextStep: "Сначала рассмотрите и примите рекомендацию.",
+    retryable: false,
+  },
   APPROVED_ARTICLES_NOT_FOUND: {
     title: "Не удалось создать медиаплан",
     reason: "В кампании пока нет утверждённых статей.",

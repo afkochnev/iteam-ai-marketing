@@ -443,7 +443,7 @@ async def test_concurrent_sibling_decisions_aggregate_without_lost_update(db_ses
     assert proposal.status is PS.APPROVED and proposal.reviewed_at
 
 
-async def test_api_auth_archived_readonly_no_apply(db_session, client: AsyncClient):
+async def test_api_auth_archived_readonly(db_session, client: AsyncClient):
     user, campaign, analysis, proposal = await accepted(db_session)
     pid, aid, cid = proposal.id, proposal.actions[0].id, campaign.id
     for url in [
@@ -468,7 +468,9 @@ async def test_api_auth_archived_readonly_no_apply(db_session, client: AsyncClie
         assert (
             await client.post(f"/api/v1/optimization-actions/{aid}/{decision}")
         ).status_code == 409
-    assert (await client.post(f"/api/v1/optimization-actions/{aid}/apply")).status_code == 404
+    assert (
+        await client.post(f"/api/v1/optimization-actions/{aid}/apply", json={})
+    ).status_code == 409
     assert analysis.status is FeedbackAnalysisStatus.ACCEPTED
 
 
@@ -532,7 +534,7 @@ async def test_snapshot_freezes_real_content_version_and_plan_state(db_session):
 
 async def test_migration_tables_enums_and_restrict_provenance(db_session):
     assert (
-        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007_0023"
+        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261007_0024"
     )
     enums = list(
         await db_session.scalars(

@@ -133,7 +133,10 @@ def test_beat_uses_explicit_queue(broker_app, role, entry_name, expected_queue):
 @pytest.mark.parametrize("countdown", [0, 45])
 async def test_agent_enqueue_and_retry_keep_queue_and_job_id(monkeypatch, isolated, countdown):
     run = SimpleNamespace(id=uuid4(), input_data={"isolated_ai_execution": isolated})
+    run.status = AgentRunStatus.QUEUED
+    run.queue_job_id = None
     session = AsyncMock()
+    session.scalar.return_value = run
     service = AgentRunService(session)
     service.repository = SimpleNamespace(update=AsyncMock())
     service.get_run = AsyncMock(return_value=run)
@@ -149,7 +152,10 @@ async def test_agent_enqueue_and_retry_keep_queue_and_job_id(monkeypatch, isolat
 
 async def test_agent_enqueue_failure_is_recorded(monkeypatch):
     run = SimpleNamespace(id=uuid4(), input_data={})
+    run.status = AgentRunStatus.QUEUED
+    run.queue_job_id = None
     session = AsyncMock()
+    session.scalar.return_value = run
     service = AgentRunService(session)
     service.repository = SimpleNamespace(update=AsyncMock())
     monkeypatch.setattr(

@@ -1,7 +1,8 @@
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.optimization import (
     OptimizationActionStatus,
@@ -10,6 +11,21 @@ from app.models.optimization import (
     OptimizationTargetEntityType,
 )
 from app.schemas.feedback import FeedbackEvidenceRef
+
+
+class OptimizationActionApplyRequest(BaseModel):
+    human_comment: str | None = Field(default=None, max_length=2000)
+
+
+class OptimizationAppliedArtifact(BaseModel):
+    artifact_type: Literal["TASK", "PUBLICATION_PLAN"]
+    artifact_id: UUID
+    task_id: UUID | None = None
+    publication_plan_id: UUID | None = None
+    agent_run_id: UUID | None = None
+    status: str
+    href: str
+    error_message: str | None = None
 
 
 class OptimizationActionResponse(BaseModel):
@@ -25,6 +41,9 @@ class OptimizationActionResponse(BaseModel):
     priority: str
     evidence_refs: list[FeedbackEvidenceRef]
     status: OptimizationActionStatus
+    applied_by_user_id: UUID | None = None
+    applied_at: datetime | None = None
+    applied_artifact: OptimizationAppliedArtifact | None = None
 
 
 class OptimizationProposalResponse(BaseModel):
@@ -40,3 +59,7 @@ class OptimizationProposalResponse(BaseModel):
     reviewed_at: datetime | None
     created_at: datetime
     actions: list[OptimizationActionResponse]
+
+
+class OptimizationActionApplyResponse(OptimizationAppliedArtifact):
+    action: OptimizationActionResponse

@@ -28,6 +28,7 @@ class PublicationPlanItemStatus(StrEnum):
 class PublicationPlan(UUIDTimestampMixin, Base):
     __tablename__ = "publication_plans"
     __table_args__ = (
+        UniqueConstraint("optimization_action_id", name="uq_publication_plans_optimization_action"),
         Index("ix_publication_plans_campaign_id", "campaign_id"),
         Index("ix_publication_plans_status", "status"),
     )
@@ -50,6 +51,12 @@ class PublicationPlan(UUIDTimestampMixin, Base):
     )
     feedback_analysis_id: Mapped[UUID | None] = mapped_column(
         ForeignKey("marketing_feedback_analyses.id", ondelete="RESTRICT")
+    )
+    optimization_action_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("campaign_optimization_actions.id", ondelete="RESTRICT")
+    )
+    optimization_proposal_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey("campaign_optimization_proposals.id", ondelete="RESTRICT")
     )
     approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     approved_by_user_id: Mapped[UUID | None] = mapped_column(
