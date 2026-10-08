@@ -542,7 +542,7 @@ async def test_snapshot_freezes_real_content_version_and_plan_state(db_session):
 
 async def test_migration_tables_enums_and_restrict_provenance(db_session):
     assert (
-        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261008_0025"
+        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261008_0026"
     )
     enums = list(
         await db_session.scalars(

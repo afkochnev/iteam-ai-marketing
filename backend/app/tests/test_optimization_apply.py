@@ -599,7 +599,7 @@ async def test_durable_unique_and_restrict_fk(db_session, table, constraint):
             await db_session.delete(action)
             await db_session.flush()
     assert (
-        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261008_0025"
+        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261008_0026"
     )
 
 

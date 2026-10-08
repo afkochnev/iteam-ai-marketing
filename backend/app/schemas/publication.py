@@ -141,9 +141,34 @@ class PublicationMetricsResponse(BaseModel):
     history: list[PublicationMetricsSnapshotResponse]
 
 
+class PerformancePublicationResponse(BaseModel):
+    publication_id: UUID
+    content_item_id: UUID
+    content_version_id: UUID
+    channel: ContentChannel
+    published_at: datetime | None
+    latest_metrics_snapshot_id: UUID | None
+    source: MetricsSource | None
+    observed_at: datetime | None
+    views: int | None
+    impressions: int | None
+    reactions: int | None
+    likes: int | None
+    comments: int | None
+    shares: int | None
+    clicks: int | None
+    subscribers: int | None
+    metrics: PublicationMetricsSnapshotResponse | None
+
+
 class CampaignPerformanceResponse(BaseModel):
     total_published: int
     with_metrics: int
     metric_coverage: dict[str, float]
-    totals: dict[str, int]
-    publications: list[dict[str, Any]]
+    totals: dict[str, int | None]
+    campaign_id: UUID
+    period: dict[str, datetime]
+    data_quality: dict[str, int | float]
+    derived: dict[str, float | None]
+    kpis: list[dict[str, Any]]
+    publications: list[PerformancePublicationResponse]

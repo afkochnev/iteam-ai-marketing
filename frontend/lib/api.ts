@@ -58,7 +58,7 @@ export interface Publication { is_overdue?: boolean; lateness_seconds?: number; 
 export interface PublicationCalendarItem { is_overdue?: boolean; lateness_seconds?: number; publication_id: string; content_item_id: string; content_version_id: string; title: string; channel: "TELEGRAM" | "VK"; status: PublicationStatus; scheduled_at: string | null; published_at: string | null; external_url: string | null; provider_enabled: boolean; failure_code: string | null; }
 export interface PublicationMetricsSnapshot { id: string; publication_id: string; channel: "TELEGRAM" | "VK"; observed_at: string; views: number | null; impressions: number | null; reactions: number | null; likes: number | null; comments: number | null; shares: number | null; clicks: number | null; subscribers: number | null; source: "PROVIDER" | "MANUAL"; provider: string | null; created_at: string; }
 export interface PublicationMetrics { publication_id: string; sync_capable: boolean; latest: PublicationMetricsSnapshot | null; history: PublicationMetricsSnapshot[]; }
-export interface CampaignPerformance { total_published: number; with_metrics: number; metric_coverage: Record<string, number>; totals: Record<string, number>; publications: Array<{ publication_id: string; content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK"; published_at: string | null; metrics: PublicationMetricsSnapshot | null }>; }
+export interface CampaignPerformance { total_published: number; with_metrics: number; metric_coverage: Record<string, number>; totals: Record<string, number | null>; campaign_id?: string; period?: { from: string; to: string }; data_quality?: { publication_count: number; publications_with_any_metrics: number; coverage_ratio: number }; derived?: { ctr: number | null; engagement_rate: number | null }; kpis?: KPIEvaluation[]; publications: Array<{ publication_id: string; content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK"; published_at: string | null; latest_metrics_snapshot_id?: string | null; source?: string | null; observed_at?: string | null; views?: number | null; impressions?: number | null; reactions?: number | null; likes?: number | null; comments?: number | null; shares?: number | null; clicks?: number | null; subscribers?: number | null; metrics: PublicationMetricsSnapshot | null }>; }
 export interface Activity { id: string; event_type: string; campaign_id: string | null; task_id: string | null; content_item_id: string | null; approval_id: string | null; metadata: Record<string, unknown>; created_at: string; }
 export interface MarketingFeedback { id: string; campaign_id: string; publication_id: string | null; content_item_id: string | null; content_version_id: string | null; source_type: string; category: string; rating: number | null; comment: string | null; observed_at: string | null; created_by_user_id: string | null; created_at: string; }
 export interface FeedbackAnalysis { id: string; campaign_id: string; status: "DRAFT" | "ACCEPTED" | "REJECTED" | "FAILED"; strategy_version: number; summary: string; input_snapshot: Record<string, unknown>; findings: Array<Record<string, unknown>>; recommendations: Array<Record<string, unknown>>; experiment_ideas: Array<Record<string, unknown>>; limitations: string[]; agent_run_id: string | null; generated_at: string | null; reviewed_by_user_id: string | null; reviewed_at: string | null; }
@@ -97,6 +97,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const validationMessage = body.error?.details?.errors?.[0]?.message;
     throw new ApiError(validationMessage ?? body.error?.message ?? fallback, response.status, body.error?.code);
   }
+  if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;
 }
 
@@ -268,4 +269,15 @@ export const experimentsApi = {
   create: (campaignId: string, source_optimization_action_id: string, config: ExperimentConfiguration) => request<MarketingExperiment>(`/campaigns/${campaignId}/experiments`, {method: "POST", body: JSON.stringify({...config, source_optimization_action_id})}),
   approve: (id: string) => request<MarketingExperiment>(`/experiments/${id}/approve`, {method: "POST"}),
   cancel: (id: string) => request<MarketingExperiment>(`/experiments/${id}/cancel`, {method: "POST"}),
+};
+
+export type KPIMetric = "VIEWS" | "IMPRESSIONS" | "REACTIONS" | "LIKES" | "COMMENTS" | "SHARES" | "CLICKS" | "SUBSCRIBERS" | "ENGAGEMENT_RATE" | "CTR";
+export interface KPIConfiguration { metric: KPIMetric; channel: "TELEGRAM" | "VK" | null; target_value: string; comparison: "GTE" | "LTE"; period_start: string; period_end: string; description?: string | null; is_active?: boolean; }
+export interface CampaignKPI extends KPIConfiguration { id: string; campaign_id: string; is_active: boolean; created_at: string; updated_at: string; }
+export interface KPIEvaluation { kpi_id: string; metric: KPIMetric; channel: string | null; target_value: string; comparison: "GTE" | "LTE"; period_start: string; period_end: string; observed_value: string | number | null; target_met: boolean | null; observed_publication_count: number; eligible_publication_count: number; coverage_ratio: number; limitation: string | null; }
+export const campaignKpisApi = {
+ list: (campaignId: string) => request<CampaignKPI[]>(`/campaigns/${campaignId}/kpis`),
+ create: (campaignId: string, data: KPIConfiguration) => request<CampaignKPI>(`/campaigns/${campaignId}/kpis`, { method: "POST", body: JSON.stringify(data) }),
+ update: (id: string, data: Partial<KPIConfiguration>) => request<CampaignKPI>(`/campaign-kpis/${id}`, { method: "PATCH", body: JSON.stringify(data) }),
+ delete: (id: string) => request<void>(`/campaign-kpis/${id}`, { method: "DELETE" }),
 };
