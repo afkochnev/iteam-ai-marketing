@@ -41,6 +41,7 @@ from app.models.agent import Agent  # noqa: E402
 from app.models.agent_run import AgentRun, ToolCall  # noqa: E402
 from app.models.approval import Approval  # noqa: E402
 from app.models.campaign import Campaign  # noqa: E402
+from app.models.campaign_kpi import CampaignKPI  # noqa: E402
 from app.models.content import (  # noqa: E402
     ContentDerivation,
     ContentItem,
@@ -114,6 +115,7 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.execute(delete(AgentRun))
         await session.execute(delete(TaskDependency))
         await session.execute(delete(Task))
+        await session.execute(delete(CampaignKPI))
         await session.execute(delete(Campaign))
         await session.execute(delete(Agent))
         await session.execute(delete(User))
@@ -157,6 +159,7 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.execute(delete(AgentRun))
         await session.execute(delete(TaskDependency))
         await session.execute(delete(Task))
+        await session.execute(delete(CampaignKPI))
         await session.execute(delete(Campaign))
         await session.execute(delete(Agent))
         await session.execute(delete(User))

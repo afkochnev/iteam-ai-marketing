@@ -1,4 +1,5 @@
 "use client";
+import { CampaignKPIBlock, PublicationPerformanceTable } from "@/components/campaign-kpis";
 
 import { MarketingExperimentsPanel } from "@/components/marketing-experiments";
 import { OptimizationProposalPanel } from "@/components/optimization-proposal";
@@ -363,6 +364,8 @@ export default function CampaignDetailsPage() {
 
     <details id="feedback" className="disclosure"><summary>Эффективность публикаций и обратная связь</summary>
       <div className="page-section">
+        <CampaignKPIBlock campaignId={id} archived={campaign?.status === "ARCHIVED"} performance={performance} onChange={load} />
+        {performance && <PublicationPerformanceTable performance={performance} />}
         {performance ? <><div className="summary-grid metric-cards"><div className="metric-card"><strong>{performance.total_published}</strong><span>Опубликовано</span></div><div className="metric-card"><strong>{performance.with_metrics}</strong><span>С метриками</span></div><div className="metric-card"><strong>{performance.totals.views ?? "Нет данных"}</strong><span>Просмотры</span></div><div className="metric-card"><strong>{performance.totals.likes ?? "Нет данных"}</strong><span>Лайки</span></div></div><p>Ноль — измеренное значение. «Нет данных» означает, что показатель не передан или ещё не синхронизирован.</p><ul>{performance.publications.map((row) => { const publication = publications.find((item) => item.id === row.publication_id); const latest = row.metrics; return <li key={row.publication_id}><Link href={`/content/${row.content_item_id}`}>{contents.find((item) => item.id === row.content_item_id)?.title ?? "Материал"}</Link> · просмотры: {latest?.views ?? "Нет данных"}{latest ? ` · источник: ${latest.source === "MANUAL" ? "вручную" : latest.provider ?? "провайдер"}, ${formatDateTime(latest.observed_at)}` : " · не синхронизировано"}{publication?.status === "PUBLISHED" && <button className="secondary" disabled={metricsBusy === row.publication_id} onClick={() => addManualMetrics(row.publication_id)}>Внести метрики вручную</button>}</li>; })}</ul></> : <p>Метрики пока недоступны.</p>}
         <div className="actions"><button onClick={addFeedback}>Добавить обратную связь</button><button className="secondary" onClick={generateFeedbackAnalysis}>Сформировать выводы</button></div>
         {feedback.length ? <ul>{feedback.map((item) => <li key={item.id}>{item.category}: {item.comment} · {formatDateTime(item.created_at)}</li>)}</ul> : <p>Обратной связи пока нет.</p>}

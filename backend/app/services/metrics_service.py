@@ -73,6 +73,7 @@ class MetricsService:
                 .order_by(
                     PublicationMetricsSnapshot.observed_at.desc(),
                     PublicationMetricsSnapshot.created_at.desc(),
+                    PublicationMetricsSnapshot.id.desc(),
                 )
                 .limit(1)
             ),
@@ -219,53 +220,6 @@ class MetricsService:
             )
         if end - start > timedelta(days=180):
             raise AppError("METRICS_RANGE_TOO_LARGE", "Диапазон не может превышать 180 дней.", 422)
-        pubs_query = select(Publication).where(
-            Publication.campaign_id == campaign_id,
-            Publication.status == PublicationStatus.PUBLISHED,
-            Publication.published_at >= start.astimezone(UTC),
-            Publication.published_at <= end.astimezone(UTC),
-        )
-        if channel is not None:
-            pubs_query = pubs_query.where(Publication.channel == channel)
-        publications = list((await self.session.scalars(pubs_query)).all())
-        rows: list[dict[str, Any]] = []
-        totals = {
-            field: 0
-            for field in (
-                "views",
-                "impressions",
-                "reactions",
-                "likes",
-                "comments",
-                "shares",
-                "clicks",
-            )
-        }
-        coverage = {field: 0 for field in totals}
-        for publication in publications:
-            snapshot = await self._latest(publication.id)
-            row = {
-                "publication_id": publication.id,
-                "content_item_id": publication.content_item_id,
-                "content_version_id": publication.content_version_id,
-                "channel": publication.channel,
-                "published_at": publication.published_at,
-                "metrics": snapshot,
-            }
-            rows.append(row)
-            if snapshot:
-                for field in totals:
-                    value = getattr(snapshot, field)
-                    if value is not None:
-                        totals[field] += value
-                        coverage[field] += 1
-        return {
-            "total_published": len(publications),
-            "with_metrics": sum(1 for row in rows if row["metrics"] is not None),
-            "metric_coverage": {
-                field: (coverage[field] / len(publications) if publications else 0)
-                for field in totals
-            },
-            "totals": totals,
-            "publications": rows,
-        }
+        from app.services.campaign_performance_service import CampaignPerformanceService
+
+        return await CampaignPerformanceService(self.session).read(campaign_id, start, end, channel)

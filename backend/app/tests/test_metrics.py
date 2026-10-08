@@ -213,7 +213,7 @@ async def test_campaign_performance_uses_latest_snapshot_and_coverage(
     assert result["with_metrics"] == 1
     assert result["totals"]["views"] == 0
     assert result["metric_coverage"]["views"] == 1
-    assert result["totals"]["likes"] == 0
+    assert result["totals"]["likes"] is None
 
 
 @pytest.mark.asyncio

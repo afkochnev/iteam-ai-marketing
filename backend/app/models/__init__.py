@@ -57,6 +57,7 @@ __all__ = [
     "ApprovalObjectType",
     "ApprovalStatus",
     "Campaign",
+    "CampaignKPI",
     "CampaignStatus",
     "ContentChannel",
     "ContentDerivation",
@@ -96,6 +97,7 @@ __all__ = [
     "UserRole",
 ]
 
+from app.models.campaign_kpi import CampaignKPI
 from app.models.marketing_chat import (
     MarketingContextSnapshot,
     MarketingConversation,
