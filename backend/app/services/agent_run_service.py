@@ -533,6 +533,19 @@ class AgentRunService:
         return await self.get_run(run.id)
 
     async def enqueue(self, run: AgentRun, *, countdown: int = 0) -> AgentRun:
+        # Serialize normal enqueue and recovery on the durable run, not the broker.
+        locked = await self.session.scalar(
+            select(AgentRun)
+            .where(AgentRun.id == run.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if locked is None:
+            raise AppError("AGENT_RUN_NOT_FOUND", "AI-запуск не найден.", 404)
+        run = locked
+        if run.status is not AgentRunStatus.QUEUED or run.queue_job_id is not None:
+            await self.session.commit()
+            return await self.get_run(run.id)
         try:
             from app.workers.agent_worker import execute_agent_run
 

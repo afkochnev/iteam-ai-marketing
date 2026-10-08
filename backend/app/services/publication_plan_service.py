@@ -534,11 +534,25 @@ class PublicationPlanService:
         return await self.get_plan(plan.id)
 
     async def enqueue_generation(self, plan: PublicationPlan, run: AgentRun) -> None:
+        locked = await self.session.scalar(
+            select(AgentRun)
+            .where(AgentRun.id == run.id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if locked is None:
+            raise AppError("AGENT_RUN_NOT_FOUND", "AI-запуск не найден.", 404)
+        run = locked
+        if run.status is not AgentRunStatus.QUEUED or run.queue_job_id is not None:
+            await self.session.commit()
+            return
         campaign_id = plan.campaign_id
         try:
             from app.workers.publication_plan_worker import generate_publication_plan
 
-            generate_publication_plan.apply_async(args=[str(run.id)], queue="ai")
+            result = generate_publication_plan.apply_async(args=[str(run.id)], queue="ai")
+            run.queue_job_id = result.id
+            await self.session.commit()
         except Exception as exc:
             await self.session.execute(
                 select(PublicationPlan).where(PublicationPlan.id == plan.id).with_for_update()

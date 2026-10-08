@@ -811,3 +811,267 @@ async def test_content_revision_normal_execution_new_version_separate_approval(d
         select(PublicationPlanItem).where(PublicationPlanItem.publication_plan_id == plan.id)
     )
     assert plan_item.source_content_version_id == version.id
+
+
+class SimulatedProcessDeath(BaseException):
+    """Bypass application exception handling as an abruptly killed API would."""
+
+
+async def stranded_apply(db_session, monkeypatch, kind, *, accepted=False):
+    user, _, _, version, *_, action = await setup_action(db_session, kind)
+    if accepted and kind == "PUBLICATION_PLAN_REVISION":
+        version.content = (
+            "Команда выбирает приоритеты, но ежедневная операционная работа вытесняет "
+            "их из управления. Владелец исполнения и регулярный обзор решений "
+            "помогают вернуть выбранные приоритеты в рабочий контур."
+        )
+        await db_session.commit()
+    worker = generate_publication_plan if kind == "PUBLICATION_PLAN_REVISION" else execute_agent_run
+    deliveries = []
+
+    def die(**kwargs):
+        if accepted:
+            deliveries.append(kwargs["args"][0])
+        raise SimulatedProcessDeath
+
+    monkeypatch.setattr(worker, "apply_async", die)
+    with pytest.raises(SimulatedProcessDeath):
+        await OptimizationProposalService(db_session).apply_action(
+            action.id, user, OptimizationActionApplyRequest(human_comment="Human")
+        )
+    # Drop the uncommitted enqueue transaction, preserving the Apply commit.
+    await db_session.rollback()
+    await db_session.refresh(action)
+    await db_session.refresh(user)
+    assert action.status is AS.APPLIED
+    artifact = await OptimizationProposalService(db_session).apply_action(
+        action.id, user, OptimizationActionApplyRequest()
+    )
+    run = await db_session.get(AgentRun, artifact.agent_run_id)
+    assert run.status is AgentRunStatus.QUEUED and run.queue_job_id is None
+    assert (
+        await db_session.scalar(
+            select(func.count()).where(
+                Task.campaign_id == run.campaign_id,
+                Task.task_type
+                == (
+                    TaskType.MANUAL
+                    if kind == "PUBLICATION_PLAN_REVISION"
+                    else TaskType.CAMPAIGN_PLANNING
+                ),
+            )
+        )
+        == 1
+    )
+
+    def enqueue(**kwargs):
+        deliveries.append(kwargs["args"][0])
+        return SimpleNamespace(id="recovered-job")
+
+    monkeypatch.setattr(worker, "apply_async", enqueue)
+    return user, action, artifact, run, deliveries
+
+
+@pytest.mark.parametrize("kind", ["PUBLICATION_PLAN_REVISION", "STRATEGY_REVIEW"])
+async def test_durable_apply_crash_recovery_same_run(db_session, monkeypatch, kind):
+    from app.services.task_recovery_service import TaskRecoveryService
+
+    user, action, artifact, run, deliveries = await stranded_apply(db_session, monkeypatch, kind)
+    assert [r.id for r in await TaskRecoveryService(db_session).recover_stuck()] == [run.id]
+    assert run.queue_job_id == "recovered-job"
+    assert await TaskRecoveryService(db_session).recover_stuck() == []
+    repeated = await OptimizationProposalService(db_session).apply_action(
+        action.id, user, OptimizationActionApplyRequest()
+    )
+    assert (repeated.artifact_id, repeated.task_id, repeated.agent_run_id) == (
+        artifact.artifact_id,
+        artifact.task_id,
+        run.id,
+    )
+    assert deliveries == [str(run.id)]
+    assert await db_session.scalar(select(func.count()).where(AgentRun.task_id == run.task_id)) == 1
+    assert await count_artifacts(db_session, action.id) == (
+        [0, 1] if kind == "PUBLICATION_PLAN_REVISION" else [1, 0]
+    )
+
+
+@pytest.mark.parametrize("kind", ["PUBLICATION_PLAN_REVISION", "STRATEGY_REVIEW"])
+async def test_concurrent_recovery_apply_and_normal_enqueue(db_session, monkeypatch, kind):
+    from app.services.task_recovery_service import TaskRecoveryService
+
+    user, action, artifact, run, deliveries = await stranded_apply(db_session, monkeypatch, kind)
+    uid, aid, rid = user.id, action.id, run.id
+    await db_session.commit()
+
+    async def recover():
+        async with async_session_factory() as session:
+            return await TaskRecoveryService(session).recover_stuck()
+
+    async def repeat():
+        async with async_session_factory() as session:
+            current_user = await session.get(User, uid)
+            return await OptimizationProposalService(session).apply_action(
+                aid, current_user, OptimizationActionApplyRequest()
+            )
+
+    async def normal_enqueue():
+        async with async_session_factory() as session:
+            current = await session.get(AgentRun, rid)
+            if kind == "PUBLICATION_PLAN_REVISION":
+                plan = await session.get(PublicationPlan, artifact.artifact_id)
+                await PublicationPlanService(session).enqueue_generation(plan, current)
+            else:
+                await AgentRunService(session).enqueue(current)
+
+    _, _, repeated, _ = await asyncio.gather(recover(), recover(), repeat(), normal_enqueue())
+    assert repeated.artifact_id == artifact.artifact_id and repeated.agent_run_id == rid
+    assert deliveries == [str(rid)]
+    assert await recover() == []
+    assert await count_artifacts(db_session, aid) == (
+        [0, 1] if kind == "PUBLICATION_PLAN_REVISION" else [1, 0]
+    )
+
+
+@pytest.mark.parametrize("kind", ["PUBLICATION_PLAN_REVISION", "STRATEGY_REVIEW"])
+async def test_recovery_enqueue_failure_uses_existing_artifact(db_session, monkeypatch, kind):
+    from app.services.task_recovery_service import TaskRecoveryService
+
+    _, action, artifact, run, _ = await stranded_apply(db_session, monkeypatch, kind)
+    worker = generate_publication_plan if kind == "PUBLICATION_PLAN_REVISION" else execute_agent_run
+
+    def fail(**kwargs):
+        raise RuntimeError("broker offline")
+
+    monkeypatch.setattr(worker, "apply_async", fail)
+    assert [r.id for r in await TaskRecoveryService(db_session).recover_stuck()] == [run.id]
+    assert run.status is AgentRunStatus.FAILED
+    task = await db_session.get(Task, artifact.task_id)
+    assert task.status is TaskStatus.FAILED
+    assert await TaskRecoveryService(db_session).recover_stuck() == []
+    assert await count_artifacts(db_session, action.id) == (
+        [0, 1] if kind == "PUBLICATION_PLAN_REVISION" else [1, 0]
+    )
+
+
+@pytest.mark.parametrize("kind", ["PUBLICATION_PLAN_REVISION", "STRATEGY_REVIEW"])
+async def test_ambiguous_delivery_claims_same_run_once(db_session, monkeypatch, kind):
+    from app.services.task_recovery_service import TaskRecoveryService
+    from app.workers import publication_plan_worker
+
+    _, _, artifact, run, deliveries = await stranded_apply(
+        db_session, monkeypatch, kind, accepted=True
+    )
+    await TaskRecoveryService(db_session).recover_stuck()
+    assert deliveries == [str(run.id), str(run.id)]
+    if kind == "STRATEGY_REVIEW":
+
+        async def claim():
+            async with async_session_factory() as session:
+                return await AgentRunService(session).claim(run.id)
+
+        first, second = await asyncio.gather(claim(), claim())
+        assert sum(result is not None for result in (first, second)) == 1
+        from app.tests.test_campaign_planning import plan_data
+
+        await db_session.refresh(run)
+        service = AgentRunService(db_session)
+        result = RuntimeResult(plan_data(), 1, 10, 5, 15, None)
+        await service.finish_success(run.id, result)
+        await service.finish_success(run.id, result)
+        assert (
+            await db_session.scalar(
+                select(func.count()).where(Approval.object_id == run.campaign_id)
+            )
+            == 1
+        )
+    else:
+        # The winner deliberately pauses after the committed claim. The duplicate
+        # must return before constructing a provider client or writing plan items.
+        entered, release = asyncio.Event(), asyncio.Event()
+        calls = []
+        from uuid import UUID
+
+        from app.tests.test_publication_plan import _planner_result
+
+        output = _planner_result(
+            UUID(run.input_data["publication_plan_snapshot"]["article_version_ids"][0])
+        )
+        output.items[0].source_claim_ids = [
+            run.input_data["publication_plan_snapshot"]["article_digests"][0]["allowed_claims"][0][
+                "claim_id"
+            ]
+        ]
+
+        class PausedClient:
+            def __init__(self, **kwargs):
+                calls.append("client")
+
+            async def close(self):
+                pass
+
+        async def paused_runner(*args, **kwargs):
+            entered.set()
+            await release.wait()
+            return SimpleNamespace(final_output=output)
+
+        monkeypatch.setattr(settings, "openai_api_key", "offline-placeholder")
+        monkeypatch.setattr(publication_plan_worker, "AsyncOpenAI", PausedClient)
+        monkeypatch.setattr(publication_plan_worker.Runner, "run", paused_runner)
+        # Responses model construction stays offline and accepts the fake client.
+        monkeypatch.setattr(publication_plan_worker, "OpenAIResponsesModel", lambda *a: None)
+        winner = asyncio.create_task(publication_plan_worker._run(run.id))
+        await asyncio.wait_for(entered.wait(), timeout=10)
+        await publication_plan_worker._run(run.id)
+        assert calls == ["client"]
+        release.set()
+        await winner
+        await publication_plan_worker._run(run.id)
+        assert (
+            await db_session.scalar(
+                select(func.count()).where(
+                    PublicationPlanItem.publication_plan_id == artifact.artifact_id
+                )
+            )
+            == 1
+        )
+        await db_session.refresh(run)
+        assert run.status is AgentRunStatus.COMPLETED
+        assert calls == ["client"]
+    assert await db_session.scalar(select(func.count()).where(AgentRun.task_id == run.task_id)) == 1
+
+
+async def test_content_apply_commit_crash_keeps_autonomous_dispatch(db_session, monkeypatch):
+    from app.services.task_dispatcher_service import TaskDispatcherService
+    from app.services.task_recovery_service import TaskRecoveryService
+
+    user, *_, action = await setup_action(db_session)
+    original = AgentRunService.create_queued_run
+
+    async def die(*args, **kwargs):
+        raise SimulatedProcessDeath
+
+    monkeypatch.setattr(AgentRunService, "create_queued_run", die)
+    with pytest.raises(SimulatedProcessDeath):
+        await OptimizationProposalService(db_session).apply_action(
+            action.id, user, OptimizationActionApplyRequest(human_comment="Human")
+        )
+    await db_session.rollback()
+    await db_session.refresh(action)
+    task = await db_session.scalar(select(Task).where(Task.optimization_action_id == action.id))
+    assert action.status is AS.APPLIED and task.status is TaskStatus.READY
+    assert await db_session.scalar(select(func.count()).where(AgentRun.task_id == task.id)) == 0
+    assert await TaskRecoveryService(db_session).recover_stuck() == []
+    monkeypatch.setattr(AgentRunService, "create_queued_run", original)
+    assert task.id in await TaskDispatcherService(db_session).dispatch_ready_tasks()
+    assert await db_session.scalar(select(func.count()).where(AgentRun.task_id == task.id)) == 1
+
+
+@pytest.mark.parametrize("kind", ["PUBLICATION_PLAN_REVISION", "STRATEGY_REVIEW"])
+async def test_recovery_requires_applied_durable_action(db_session, monkeypatch, kind):
+    from app.services.task_recovery_service import TaskRecoveryService
+
+    _, action, _, _, deliveries = await stranded_apply(db_session, monkeypatch, kind)
+    action.status = AS.APPROVED
+    await db_session.commit()
+    assert await TaskRecoveryService(db_session).recover_stuck() == []
+    assert deliveries == []
