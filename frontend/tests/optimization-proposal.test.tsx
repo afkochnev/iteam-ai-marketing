@@ -2,8 +2,10 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, expect, it, vi } from "vitest";
 import { OptimizationProposalPanel } from "../components/optimization-proposal";
 import type { FeedbackAnalysis, OptimizationProposal } from "../lib/api";
-const mocks = vi.hoisted(() => ({list:vi.fn(), get:vi.fn(), approve:vi.fn(), reject:vi.fn(), apply:vi.fn()}));
+import type { OptimizationProvenance } from "../lib/optimization-workspace";
+const mocks = vi.hoisted(() => ({list:vi.fn(), get:vi.fn(), approve:vi.fn(), reject:vi.fn(), apply:vi.fn(), provenance:vi.fn()}));
 vi.mock("@/lib/api", async (original) => ({...await original<object>(), optimizationApi:mocks}));
+vi.mock("@/lib/optimization-workspace", async (original) => ({...await original<object>(), optimizationWorkspaceApi:{dashboard:vi.fn(), provenance:mocks.provenance}}));
 const analysis={id:"analysis",campaign_id:"campaign",status:"ACCEPTED"} as FeedbackAnalysis;
 let proposal:OptimizationProposal;
 beforeEach(() => {
@@ -13,7 +15,19 @@ beforeEach(() => {
  {id:"two",position:1,type:"NO_CHANGE",target_entity_type:"CAMPAIGN",target_entity_id:"campaign",target_version_id:null,reason:"Недостаточно доказательств",expected_effect:"Сохранить подход",priority:"LOW",evidence_refs:[],status:"PROPOSED"}]};
  mocks.list.mockImplementation(async()=>[structuredClone(proposal)]);mocks.get.mockImplementation(async()=>structuredClone(proposal));
  mocks.approve.mockImplementation(async(id)=>{proposal.actions.find(a=>a.id===id)!.status="APPROVED";});mocks.reject.mockImplementation(async(id)=>{proposal.actions.find(a=>a.id===id)!.status="REJECTED";});
+ mocks.provenance.mockImplementation(async()=>provenance());
 });
+function provenance(): OptimizationProvenance {
+ const action=structuredClone(proposal.actions[0]);
+ return {
+  campaign:{id:"campaign",type:"CAMPAIGN",title:"Campaign",status:"ACTIVE",href:"/campaigns/campaign",details:{}},
+  analysis:{id:"analysis",status:"ACCEPTED",strategy_version:7,evidence_fingerprint:"fingerprint",analysis_period_start:null,analysis_period_end:null,data_quality:null},
+  source_recommendation:{index:0,text:"Source recommendation",category:"EDITORIAL",expected_effect:"Effect",priority:"HIGH"},
+  proposal:{id:"proposal",type:"PROPOSAL",title:"Summary",status:proposal.status,href:"#proposal",details:{}},
+  action,
+  resolved_evidence:[],downstream_artifacts:[],content_versions:[],publications:[],limitations:[],
+ };
+}
 async function ready(archived=false){render(<OptimizationProposalPanel analysis={analysis} archived={archived}/>);await screen.findByRole("heading",{name:"Рекомендации к изменениям"});}
 it("loads accepted proposal with separate cards, target, reason, effect, priority and evidence",async()=>{
  await ready();expect(mocks.list).toHaveBeenCalledWith("campaign");const card=screen.getByRole("article",{name:"Доработка контента"});
@@ -22,6 +36,19 @@ it("loads accepted proposal with separate cards, target, reason, effect, priorit
 it("approves one action and refreshes terminal decision",async()=>{
  await ready();fireEvent.click(within(screen.getByRole("article",{name:"Доработка контента"})).getByRole("button",{name:"Принять"}));await waitFor(()=>expect(mocks.get).toHaveBeenCalledWith("proposal"));
  const card=screen.getByRole("article",{name:"Доработка контента"});await within(card).findByText(/Принято/);for(const name of ["Принять","Отклонить"])expect(within(card).getByRole("button",{name})).toBeDisabled();expect(mocks.approve).toHaveBeenCalledWith("one");expect(mocks.reject).not.toHaveBeenCalled();expect(screen.getByRole("article",{name:"Без изменений"})).toHaveTextContent("Ожидает решения");
+});
+it("invalidates opened provenance after an action decision and reloads current status",async()=>{
+ await ready();
+ const card=screen.getByRole("article",{name:"Доработка контента"});
+ fireEvent.click(within(card).getByRole("button",{name:"Почему предложено?"}));
+ await screen.findByText("Уточнить аргумент · Повысить ясность · PROPOSED");
+ expect(mocks.provenance).toHaveBeenCalledTimes(1);
+ fireEvent.click(within(card).getByRole("button",{name:"Принять"}));
+ await within(card).findByText(/Принято/);
+ await waitFor(()=>expect(screen.queryByText("Уточнить аргумент · Повысить ясность · PROPOSED")).not.toBeInTheDocument());
+ fireEvent.click(within(screen.getByRole("article",{name:"Доработка контента"})).getByRole("button",{name:"Почему предложено?"}));
+ await screen.findByText("Уточнить аргумент · Повысить ясность · APPROVED");
+ expect(mocks.provenance).toHaveBeenCalledTimes(2);
 });
 it("rejects one action without approving others",async()=>{await ready();fireEvent.click(within(screen.getByRole("article",{name:"Без изменений"})).getByRole("button",{name:"Отклонить"}));await waitFor(()=>expect(mocks.reject).toHaveBeenCalledWith("two"));await within(screen.getByRole("article",{name:"Без изменений"})).findByText(/Отклонено/);expect(mocks.approve).not.toHaveBeenCalled();});
 it("persists terminal state after page reload",async()=>{proposal.actions[0].status="APPROVED";const view=render(<OptimizationProposalPanel analysis={analysis} archived={false}/>);await screen.findByText(/Принято/);view.unmount();await ready();for(const name of ["Принять","Отклонить"])expect(within(screen.getByRole("article",{name:"Доработка контента"})).getByRole("button",{name})).toBeDisabled();});
