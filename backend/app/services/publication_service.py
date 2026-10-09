@@ -401,6 +401,7 @@ class PublicationService:
             approved_for_publish_at=publication.approved_for_publish_at,
             approved_for_publish_by=publication.approved_for_publish_by,
             external_id=publication.external_id,
+            provider_target_id=publication.provider_target_id,
             external_url=publication.external_url,
             published_at=publication.published_at,
             failure_code=publication.failure_code,
@@ -1138,6 +1139,7 @@ class PublicationService:
             return None
         publication.status = PublicationStatus.PUBLISHED
         publication.external_id = result.external_id
+        publication.provider_target_id = result.provider_target_id
         publication.external_url = result.external_url
         publication.published_at = result.published_at
         publication.failure_code = None
@@ -1295,6 +1297,7 @@ class PublicationService:
             return None
         publication.status = PublicationStatus.PUBLISHED
         publication.external_id = result.external_id
+        publication.provider_target_id = result.provider_target_id
         publication.external_url = result.external_url
         publication.published_at = result.published_at
         publication.failure_code = None
