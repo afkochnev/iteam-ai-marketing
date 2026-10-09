@@ -49,6 +49,16 @@ services:
       args:
         BUILD_SHA: ${BUILD_SHA:-unknown}
     env_file: .env
+    environment: &no-metrics-environment
+      TELEGRAM_METRICS_ENABLED: "false"
+      TELEGRAM_METRICS_API_ID: ""
+      TELEGRAM_METRICS_API_HASH: ""
+      TELEGRAM_METRICS_SESSION: ""
+      TELEGRAM_METRICS_PEER: ""
+      TELEGRAM_METRICS_CHAT_ID: ""
+      VK_METRICS_ENABLED: "false"
+      VK_METRICS_ACCESS_TOKEN: ""
+      VK_METRICS_OWNER_ID: ""
     ports:
       - "8000:8000"
     depends_on:
@@ -67,6 +77,7 @@ services:
     command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --queues=ai
     restart: unless-stopped
     environment: &ai-worker-environment
+      <<: *no-metrics-environment
       WORKER_ROLE: ai
       SCHEDULER_ROLE: ""
       TELEGRAM_PUBLISHING_ENABLED: "false"
@@ -98,6 +109,7 @@ services:
     command: celery -A app.workers.celery_app:celery_app beat --loglevel=INFO --schedule=/tmp/publication-celerybeat-schedule
     profiles: [publishing]
     environment:
+      <<: *no-metrics-environment
       WORKER_ROLE: ""
       SCHEDULER_ROLE: publication
       OPENAI_API_KEY: ""
@@ -107,6 +119,7 @@ services:
     command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --queues=publication
     profiles: [publishing]
     environment:
+      <<: *no-metrics-environment
       WORKER_ROLE: publication
       SCHEDULER_ROLE: ""
       OPENAI_API_KEY: ""
@@ -116,6 +129,7 @@ services:
     command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --queues=publication_control
     profiles: [publishing]
     environment:
+      <<: *no-metrics-environment
       WORKER_ROLE: publication_control
       SCHEDULER_ROLE: ""
       OPENAI_API_KEY: ""
@@ -126,6 +140,12 @@ services:
     profiles: [publishing]
     environment:
       WORKER_ROLE: metrics
+      TELEGRAM_PUBLISHING_ENABLED: "false"
+      TELEGRAM_BOT_TOKEN: ""
+      TELEGRAM_TARGET_CHAT_ID: ""
+      VK_PUBLISHING_ENABLED: "false"
+      VK_ACCESS_TOKEN: ""
+      VK_OWNER_ID: ""
       SCHEDULER_ROLE: ""
       OPENAI_API_KEY: ""
 

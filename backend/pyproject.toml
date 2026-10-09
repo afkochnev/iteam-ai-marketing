@@ -22,6 +22,7 @@ dependencies = [
   "PyJWT==2.10.1",
   "sqlalchemy[asyncio]==2.0.43",
   "uvicorn[standard]==0.35.0",
+  "Telethon==1.45.0",
 ]
 
 [project.optional-dependencies]
@@ -54,5 +55,5 @@ strict = true
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
-module = ["celery.*", "kombu.*"]
+module = ["celery.*", "kombu.*", "telethon.*"]
 ignore_missing_imports = true

@@ -101,7 +101,7 @@ async def test_telegram_metrics_is_explicitly_unsupported(db_session: AsyncSessi
     publication, _user = await _published_publication(db_session)
     with pytest.raises(AppError) as error:
         await MetricsService(db_session).sync(publication.id)
-    assert error.value.code == "TELEGRAM_METRICS_UNSUPPORTED"
+    assert error.value.code == "TELEGRAM_METRICS_DISABLED"
     row = await db_session.get(Publication, publication.id)
     assert row is not None and row.status is PublicationStatus.PUBLISHED
 
@@ -181,7 +181,7 @@ async def test_vk_metrics_unsupported_preserves_publication(db_session: AsyncSes
     with pytest.raises(AppError) as error:
         await MetricsService(db_session).sync(publication.id)
     await db_session.refresh(publication)
-    assert error.value.code == "VK_METRICS_UNSUPPORTED"
+    assert error.value.code == "VK_METRICS_DISABLED"
     assert (publication.status, publication.external_id, publication.published_at) == before
 
 
@@ -220,4 +220,4 @@ async def test_campaign_performance_uses_latest_snapshot_and_coverage(
 async def test_vk_provider_is_explicitly_unsupported() -> None:
     with pytest.raises(MetricsProviderError) as error:
         await VKMetricsProvider().get_metrics(external_id="964")
-    assert error.value.code == "VK_METRICS_UNSUPPORTED"
+    assert error.value.code == "VK_METRICS_DISABLED"

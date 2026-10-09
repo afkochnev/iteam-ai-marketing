@@ -1,0 +1,15 @@
+# Read-only provider metrics
+
+Metrics runs only in `metrics_worker`, through the existing hourly `sync_recent_publication_metrics` schedule and per-publication `metrics` queue. `METRICS_SYNC_ENABLED` is the master schedule gate; enable either/both channel read providers independently. Manual sync API requests also enqueue this existing queue. No Analyst/model execution occurs in the metrics worker. Existing discovery, cooldown, frozen evidence and human review gates are unchanged.
+
+Telegram uses Telethon 1.45.0 with a pre-authorized **user** StringSession. Supply API ID/hash/session/peer and the exact marked numeric chat id. No interactive login, bot session, session file, message send, or view increment is performed. Peer is resolved and its marked id must match the configured chat id. `get_messages` first reads the exact Publication.external_id and supplies any counters actually present on that message; `messages.getMessagesViews` with `increment=false` is best-effort enrichment. A supergroup/message may have no view counter or reject the views method: available reactions/replies/forwards are preserved, unavailable fields stay NULL. If the provider returns no concrete metric at all, no snapshot is created and evidence identity stays unchanged. This is not channel-level impressions or subscriber analytics.
+
+VK uses a separate `VK_METRICS_ACCESS_TOKEN` and negative `VK_METRICS_OWNER_ID`. Preflight this credential for `wall.getById` before enabling; no fallback to the community publishing token exists. Exact owner/post identity is checked. Only returned views/likes/comments/reposts counts are mapped.
+
+Compose clears all metrics configuration from backend, AI and publication workers/schedulers. Only metrics_worker inherits read credentials; it clears OpenAI and both publication write credentials. Startup capability validation enforces these boundaries even outside Compose. Enabling read providers requires the complete corresponding config. Defaults are disabled. Do not commit/export sessions or tokens; provision credentials locally via the operations secret mechanism. SDK/provider failures persist only application-authored safe codes/messages, never provider bodies/session/token text.
+
+Snapshots remain append-only. Identical values reuse the latest snapshot from the same source/provider, even after manual observations; a changed result creates a new immutable snapshot and therefore changes evidence identity. Missing values are NULL, explicit observed zero stays zero. Each publication has its own queue job, so a read failure does not stop other recent jobs. Only PUBLISHED recent rows with external_id and an enabled read provider are queued.
+
+No schema migration or production acceptance is part of PR35. All provider calls are mocked in tests; use naturally existing evidence for later controlled live acceptance.
+
+References: [Telegram getMessagesViews](https://core.telegram.org/method/messages.getMessagesViews), [Telethon StringSession](https://docs.telethon.dev/en/stable/concepts/sessions.html), [VK official wall API schema](https://github.com/VKCOM/vk-api-schema/blob/master/wall/methods.json).

@@ -64,12 +64,18 @@ class MetricsService:
                 "METRICS_INVALID_VALUE", "Метрики должны быть целыми неотрицательными числами.", 422
             )
 
-    async def _latest(self, publication_id: UUID) -> PublicationMetricsSnapshot | None:
+    async def _latest(
+        self, publication_id: UUID, source: MetricsSource, provider: str | None
+    ) -> PublicationMetricsSnapshot | None:
         return cast(
             PublicationMetricsSnapshot | None,
             await self.session.scalar(
                 select(PublicationMetricsSnapshot)
-                .where(PublicationMetricsSnapshot.publication_id == publication_id)
+                .where(
+                    PublicationMetricsSnapshot.publication_id == publication_id,
+                    PublicationMetricsSnapshot.source == source,
+                    PublicationMetricsSnapshot.provider == provider,
+                )
                 .order_by(
                     PublicationMetricsSnapshot.observed_at.desc(),
                     PublicationMetricsSnapshot.created_at.desc(),
@@ -96,7 +102,7 @@ class MetricsService:
             )
         self._validate_values(values)
         observed_at = observed_at.astimezone(UTC)
-        latest = await self._latest(publication.id)
+        latest = await self._latest(publication.id, source, provider)
         if (
             latest is not None
             and all(getattr(latest, field) == values.get(field) for field in METRIC_FIELDS)
@@ -176,13 +182,28 @@ class MetricsService:
                 metadata={"publication_id": str(publication.id), "code": error.code},
             )
             await self.session.commit()
-            raise AppError(error.code, error.safe_message, 502) from error
+            raise AppError(error.code, error.safe_message, 502) from None
+        values = {field: getattr(result, field) for field in METRIC_FIELDS}
+        if all(value is None for value in values.values()):
+            await ActivityLogService(self.session).record(
+                "PUBLICATION_METRICS_SYNC_FAILED",
+                operation_key=f"publication-metrics-no-data:{publication.id}:{datetime.now(UTC).isoformat()}",
+                campaign_id=publication.campaign_id,
+                content_item_id=publication.content_item_id,
+                metadata={"publication_id": str(publication.id), "code": "METRICS_NO_DATA"},
+            )
+            await self.session.commit()
+            raise AppError(
+                "METRICS_NO_DATA",
+                "Провайдер не вернул ни одной наблюдаемой метрики.",
+                502,
+            )
         return await self._store(
             publication,
             source=MetricsSource.PROVIDER,
             observed_at=result.observed_at,
             provider=result.provider,
-            values={field: getattr(result, field) for field in METRIC_FIELDS},
+            values=values,
         )
 
     async def publication_metrics(self, publication_id: UUID) -> dict[str, Any]:
