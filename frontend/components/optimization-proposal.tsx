@@ -73,7 +73,7 @@ export function OptimizationProposalPanel({analysis, archived}: {analysis: Feedb
         <a href={action.applied_artifact.href}>Открыть {action.applied_artifact.artifact_type === "TASK" ? "задачу" : action.applied_artifact.artifact_type === "MARKETING_EXPERIMENT" ? "эксперимент" : "медиаплан"}</a>
         {action.applied_artifact.error_message && <FriendlyError error={new Error(action.applied_artifact.error_message)} />}
       </div>}
-      <OptimizationProvenanceView actionId={action.id} />
+      <OptimizationProvenanceView key={`${action.id}:${action.status}`} actionId={action.id} />
     </article>)}</div>
   </section>;
 }
