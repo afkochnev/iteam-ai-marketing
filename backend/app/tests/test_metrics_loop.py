@@ -156,8 +156,8 @@ async def test_all_null_provider_result_creates_no_evidence(db_session, vk):  # 
 
 @pytest.mark.integration
 async def test_metrics_scheduler_skips_legacy_and_wrong_provider_targets(
-    db_session, monkeypatch, vk  # noqa: F811
-):
+    db_session, monkeypatch, vk
+):  # noqa: F811
     _user, campaign, post, version, _analyst = await fixture(db_session, evidence=False)
     post.channel = ContentChannel.VK
     rows = []
