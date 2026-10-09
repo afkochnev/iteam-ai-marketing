@@ -103,18 +103,6 @@ class TelegramMetricsProvider:
                     raise MetricsProviderError(
                         "TELEGRAM_METRICS_PEER_MISMATCH", "Peer метрик не совпадает с target."
                     )
-                response = await client(
-                    functions.messages.GetMessagesViewsRequest(
-                        peer=peer,
-                        id=[message_id],
-                        increment=False,
-                    )
-                )
-                if len(response.views) != 1:
-                    raise MetricsProviderError(
-                        "TELEGRAM_METRICS_RESPONSE_INVALID", "Сообщение метрик недоступно."
-                    )
-                view = response.views[0]
                 message = await client.get_messages(peer, ids=message_id)
                 if message is None or message.id != message_id:
                     raise MetricsProviderError(
@@ -127,13 +115,37 @@ class TelegramMetricsProvider:
                     counts = [_count(getattr(x, "count", None)) for x in results]
                     if all(x is not None for x in counts):
                         reaction_count = sum(x for x in counts if x is not None)
-                replies = getattr(view, "replies", None)
+                replies = getattr(message, "replies", None)
+                views = _count(getattr(message, "views", None))
+                shares = _count(getattr(message, "forwards", None))
+                comments = _count(getattr(replies, "replies", None))
+                try:
+                    response = await client(
+                        functions.messages.GetMessagesViewsRequest(
+                            peer=peer,
+                            id=[message_id],
+                            increment=False,
+                        )
+                    )
+                    if len(response.views) == 1:
+                        view = response.views[0]
+                        enriched_replies = getattr(view, "replies", None)
+                        enriched_views = _count(getattr(view, "views", None))
+                        enriched_shares = _count(getattr(view, "forwards", None))
+                        enriched_comments = _count(getattr(enriched_replies, "replies", None))
+                        views = enriched_views if enriched_views is not None else views
+                        shares = enriched_shares if enriched_shares is not None else shares
+                        comments = enriched_comments if enriched_comments is not None else comments
+                except errors.RPCError:
+                    # Some supergroup messages have no channel-style view counter.
+                    # Preserve exact-message metrics instead of discarding partial evidence.
+                    pass
                 return ProviderMetricsResult(
                     observed_at=datetime.now(UTC),
                     provider="telegram_mtproto",
-                    views=_count(getattr(view, "views", None)),
-                    shares=_count(getattr(view, "forwards", None)),
-                    comments=_count(getattr(replies, "replies", None)),
+                    views=views,
+                    shares=shares,
+                    comments=comments,
                     reactions=reaction_count,
                 )
         except MetricsProviderError:
