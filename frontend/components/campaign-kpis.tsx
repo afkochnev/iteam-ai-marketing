@@ -62,6 +62,7 @@ export function CampaignKPIBlock({ campaignId, archived, performance, onChange }
       <label>Сравнение<select value={comparison} disabled={archived || busy} onChange={(event) => setComparison(event.target.value as "GTE" | "LTE")}><option value="GTE">≥</option><option value="LTE">≤</option></select></label>
       <label>Начало периода (местное время)<input type="datetime-local" required value={start} disabled={archived || busy} onChange={(event) => setStart(event.target.value)} /></label>
       <label>Конец периода (местное время)<input type="datetime-local" required value={end} disabled={archived || busy} onChange={(event) => setEnd(event.target.value)} /></label>
+      {(!start || !end || !Number.isFinite(new Date(start).getTime()) || !Number.isFinite(new Date(end).getTime())) && <p role="status">Укажите дату и время начала/окончания.</p>}
       <label>Описание<input value={description} maxLength={2000} disabled={archived || busy} onChange={(event) => setDescription(event.target.value)} /></label>
       <button disabled={!valid || archived || busy}>Сохранить KPI</button><button type="button" className="secondary" onClick={() => setOpen(false)}>Закрыть</button>
     </form>}

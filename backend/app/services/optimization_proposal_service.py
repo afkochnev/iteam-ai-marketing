@@ -22,23 +22,33 @@ from app.schemas.feedback import FeedbackAnalystResult, OptimizationActionDraft
 from app.schemas.optimization import OptimizationActionApplyRequest, OptimizationActionApplyResponse
 from app.services.activity_log_service import ActivityLogService
 
+EVIDENCE_SNAPSHOT_FIELDS = {
+    "publication": "publication_ids",
+    "content_version": "content_version_ids",
+    "metrics_snapshot": "metrics_snapshot_ids",
+    "marketing_feedback": "feedback_ids",
+}
+ACTION_TARGET_TYPES = {
+    OptimizationActionType.NO_CHANGE: OptimizationTargetEntityType.CAMPAIGN,
+    OptimizationActionType.STRATEGY_REVIEW: OptimizationTargetEntityType.CAMPAIGN_STRATEGY,
+    OptimizationActionType.EXPERIMENT: OptimizationTargetEntityType.CAMPAIGN,
+    OptimizationActionType.CONTENT_REVISION: OptimizationTargetEntityType.CONTENT_ITEM,
+    OptimizationActionType.PUBLICATION_PLAN_REVISION: OptimizationTargetEntityType.PUBLICATION_PLAN,
+}
+
 
 def validate_action(snapshot: dict[str, Any], action: OptimizationActionDraft) -> None:
-    def invalid() -> None:
+    def invalid(validation_code: str = "OPTIMIZATION_TARGET_INVALID") -> None:
         raise AppError(
             "OPTIMIZATION_ACTION_INVALID",
             "Действие не соответствует зафиксированному контексту анализа.",
             422,
+            {"validation_code": validation_code},
         )
 
-    evidence = {
-        "publication": snapshot.get("publication_ids", []),
-        "content_version": snapshot.get("content_version_ids", []),
-        "metrics_snapshot": snapshot.get("metrics_snapshot_ids", []),
-        "marketing_feedback": snapshot.get("feedback_ids", []),
-    }
+    evidence = {kind: snapshot.get(key, []) for kind, key in EVIDENCE_SNAPSHOT_FIELDS.items()}
     if any(str(ref.id) not in evidence[ref.type] for ref in action.evidence_refs):
-        invalid()
+        invalid("EVIDENCE_REF_INVALID")
     allowed = snapshot.get("optimization_target_allowlist", {})
     campaign = allowed.get("campaign", {})
     if campaign.get("id") != snapshot.get("campaign_id") or campaign.get(
@@ -71,11 +81,7 @@ def validate_action(snapshot: dict[str, Any], action: OptimizationActionDraft) -
         ):
             invalid()
     else:
-        expected = (
-            OptimizationTargetEntityType.CAMPAIGN_STRATEGY
-            if action.type is OptimizationActionType.STRATEGY_REVIEW
-            else OptimizationTargetEntityType.CAMPAIGN
-        )
+        expected = ACTION_TARGET_TYPES[action.type]
         if (
             action.target_entity_type is not expected
             or target != campaign["id"]
