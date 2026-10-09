@@ -1122,6 +1122,7 @@ async def test_telegram_publish_uses_exact_version_and_is_idempotent(
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
+    monkeypatch.setattr(settings, "telegram_target_chat_id", "-1001321892281")
     user, _campaign, post, version = await _approved_post(db_session)
     service = PublicationService(db_session)
     publication = await service.create(
@@ -1133,6 +1134,7 @@ async def test_telegram_publish_uses_exact_version_and_is_idempotent(
     await service.approve(publication.id, user)
     claimed = await service.claim_for_publish(publication.id, user)
     assert claimed.status is PublicationStatus.PUBLISHING
+    assert claimed.provider_target_id == "-1001321892281"
     provider = _FakeTelegramProvider()
     result = await service.execute_telegram(publication.id, provider)
     assert result is not None and result.status is PublicationStatus.PUBLISHED
