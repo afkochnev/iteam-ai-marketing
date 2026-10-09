@@ -156,7 +156,9 @@ async def test_all_null_provider_result_creates_no_evidence(db_session, vk):  # 
 
 @pytest.mark.integration
 async def test_metrics_scheduler_skips_legacy_and_wrong_provider_targets(
-    db_session, monkeypatch, vk  # noqa: F811
+    db_session,
+    monkeypatch,
+    vk,  # noqa: F811
 ):
     _user, campaign, post, version, _analyst = await fixture(db_session, evidence=False)
     post.channel = ContentChannel.VK
@@ -183,9 +185,7 @@ async def test_metrics_scheduler_skips_legacy_and_wrong_provider_targets(
     enqueue = Mock()
     monkeypatch.setattr(metrics_worker.sync_publication_metrics, "apply_async", enqueue)
     await metrics_worker._sync_recent()
-    assert [call.kwargs["args"][0] for call in enqueue.call_args_list] == [
-        str(rows[0].id)
-    ]
+    assert [call.kwargs["args"][0] for call in enqueue.call_args_list] == [str(rows[0].id)]
 
     with pytest.raises(AppError) as unbound:
         await MetricsService(db_session).sync(rows[1].id)
