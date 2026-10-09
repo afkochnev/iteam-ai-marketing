@@ -31,6 +31,7 @@ async def test_provider_sync_to_normal_automatic_discovery(db_session, monkeypat
         channel=ContentChannel.VK,
         status=PublicationStatus.PUBLISHED,
         external_id="964",
+        provider_target_id="-150574411",
         published_at=datetime.now(UTC),
     )
     db_session.add(publication)
@@ -94,6 +95,7 @@ async def test_failed_publication_does_not_stop_other_sync_jobs(db_session, monk
             channel=ContentChannel.VK,
             status=PublicationStatus.PUBLISHED,
             external_id=external,
+            provider_target_id="-150574411" if external is not None else None,
             published_at=datetime.now(UTC),
         )
         db_session.add(p)
@@ -133,6 +135,7 @@ async def test_all_null_provider_result_creates_no_evidence(db_session, vk):  # 
         channel=ContentChannel.VK,
         status=PublicationStatus.PUBLISHED,
         external_id="964",
+        provider_target_id="-150574411",
         published_at=datetime.now(UTC),
     )
     db_session.add(publication)
@@ -152,10 +155,52 @@ async def test_all_null_provider_result_creates_no_evidence(db_session, vk):  # 
 
 
 @pytest.mark.integration
+async def test_metrics_scheduler_skips_legacy_and_wrong_provider_targets(
+    db_session, monkeypatch, vk  # noqa: F811
+):
+    _user, campaign, post, version, _analyst = await fixture(db_session, evidence=False)
+    post.channel = ContentChannel.VK
+    rows = []
+    for external, target in [
+        ("964", "-150574411"),
+        ("965", None),
+        ("966", "-999999"),
+    ]:
+        row = Publication(
+            campaign_id=campaign.id,
+            content_item_id=post.id,
+            content_version_id=version.id,
+            channel=ContentChannel.VK,
+            status=PublicationStatus.PUBLISHED,
+            external_id=external,
+            provider_target_id=target,
+            published_at=datetime.now(UTC),
+        )
+        db_session.add(row)
+        rows.append(row)
+    await db_session.commit()
+    monkeypatch.setattr(settings, "metrics_sync_enabled", True)
+    enqueue = Mock()
+    monkeypatch.setattr(metrics_worker.sync_publication_metrics, "apply_async", enqueue)
+    await metrics_worker._sync_recent()
+    assert [call.kwargs["args"][0] for call in enqueue.call_args_list] == [str(rows[0].id)]
+
+    with pytest.raises(AppError) as unbound:
+        await MetricsService(db_session).sync(rows[1].id)
+    assert unbound.value.code == "METRICS_PROVIDER_TARGET_UNBOUND"
+
+    with pytest.raises(AppError) as mismatch:
+        await MetricsService(db_session).sync(rows[2].id)
+    assert mismatch.value.code == "METRICS_PROVIDER_TARGET_MISMATCH"
+
+
+@pytest.mark.integration
 async def test_telegram_provider_values_persist_without_fabricated_metrics(db_session, telegram):  # noqa: F811
     from app.tests.test_metrics import _published_publication
 
     publication, _user = await _published_publication(db_session)
+    publication.provider_target_id = "-1001321892281"
+    await db_session.commit()
     result = await MetricsService(db_session).sync(publication.id)
     assert result.views == 12 and result.provider == "telegram_mtproto"
     assert result.observed_at.tzinfo == UTC
