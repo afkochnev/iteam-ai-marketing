@@ -183,12 +183,27 @@ class MetricsService:
             )
             await self.session.commit()
             raise AppError(error.code, error.safe_message, 502) from None
+        values = {field: getattr(result, field) for field in METRIC_FIELDS}
+        if all(value is None for value in values.values()):
+            await ActivityLogService(self.session).record(
+                "PUBLICATION_METRICS_SYNC_FAILED",
+                operation_key=f"publication-metrics-no-data:{publication.id}:{datetime.now(UTC).isoformat()}",
+                campaign_id=publication.campaign_id,
+                content_item_id=publication.content_item_id,
+                metadata={"publication_id": str(publication.id), "code": "METRICS_NO_DATA"},
+            )
+            await self.session.commit()
+            raise AppError(
+                "METRICS_NO_DATA",
+                "Провайдер не вернул ни одной наблюдаемой метрики.",
+                502,
+            )
         return await self._store(
             publication,
             source=MetricsSource.PROVIDER,
             observed_at=result.observed_at,
             provider=result.provider,
-            values={field: getattr(result, field) for field in METRIC_FIELDS},
+            values=values,
         )
 
     async def publication_metrics(self, publication_id: UUID) -> dict[str, Any]:
