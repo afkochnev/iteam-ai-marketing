@@ -60,7 +60,8 @@ async def _sync_recent() -> None:
                 target_conditions.append(
                     and_(
                         Publication.channel == ContentChannel.VK,
-                        Publication.provider_target_id == str(settings.vk_metrics_owner_id),
+                        Publication.provider_target_id
+                        == str(settings.vk_metrics_owner_id),
                     )
                 )
             if not target_conditions:
