@@ -45,23 +45,18 @@ async def _sync_recent() -> None:
         async with async_sessionmaker(engine, expire_on_commit=False)() as session:
             cutoff = datetime.now(UTC) - timedelta(days=settings.metrics_lookback_days)
             target_conditions = []
-            if (
-                settings.telegram_metrics_enabled
-                and settings.telegram_metrics_chat_id is not None
-            ):
+            if settings.telegram_metrics_enabled and settings.telegram_metrics_chat_id is not None:
                 target_conditions.append(
                     and_(
                         Publication.channel == ContentChannel.TELEGRAM,
-                        Publication.provider_target_id
-                        == str(settings.telegram_metrics_chat_id),
+                        Publication.provider_target_id == str(settings.telegram_metrics_chat_id),
                     )
                 )
             if settings.vk_metrics_enabled and settings.vk_metrics_owner_id is not None:
                 target_conditions.append(
                     and_(
                         Publication.channel == ContentChannel.VK,
-                        Publication.provider_target_id
-                        == str(settings.vk_metrics_owner_id),
+                        Publication.provider_target_id == str(settings.vk_metrics_owner_id),
                     )
                 )
             if not target_conditions:
