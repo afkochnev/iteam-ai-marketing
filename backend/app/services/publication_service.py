@@ -982,6 +982,12 @@ class PublicationService:
         )
         await self._ensure_plan_snapshot(publication, item)
         publication.status = PublicationStatus.PUBLISHING
+        target_id = (
+            settings.telegram_target_chat_id
+            if publication.channel.value == "TELEGRAM"
+            else str(settings.vk_owner_id) if settings.vk_owner_id is not None else None
+        )
+        publication.provider_target_id = str(target_id) if target_id else None
         # Bind the queue message to a durable, one-use attempt before commit.
         # Workers must present this token; an old message carrying only the
         # publication id can no longer authorize a later retry.
