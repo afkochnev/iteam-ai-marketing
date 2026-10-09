@@ -87,6 +87,32 @@ async def test_telegram_supplied_counts_including_zero(telegram):
     assert result.likes is None
 
 
+async def test_telegram_supergroup_partial_metrics_survive_unsupported_views_rpc(
+    telegram, monkeypatch
+):
+    client, req = telegram
+
+    class SyntheticRPCError(Exception):
+        pass
+
+    monkeypatch.setattr(metrics.errors, "RPCError", SyntheticRPCError)
+    client.get_messages.return_value = NS(
+        id=964,
+        views=None,
+        forwards=None,
+        replies=NS(replies=2),
+        reactions=NS(results=[NS(count=3)]),
+    )
+    req.side_effect = SyntheticRPCError()
+    result = await metrics.TelegramMetricsProvider().get_metrics(external_id="964")
+    assert result.views is None
+    assert result.shares is None
+    assert result.comments == 2
+    assert result.reactions == 3
+    called = req.call_args.args[0]
+    assert called.id == [964] and called.increment is False
+
+
 async def test_telegram_wrong_peer_never_reads_messages(telegram, monkeypatch):
     client, request = telegram
     monkeypatch.setattr(metrics.utils, "get_peer_id", lambda peer: -100999)
