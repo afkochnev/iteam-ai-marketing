@@ -1145,7 +1145,9 @@ class PublicationService:
             return None
         publication.status = PublicationStatus.PUBLISHED
         publication.external_id = result.external_id
-        publication.provider_target_id = result.provider_target_id
+        publication.provider_target_id = (
+            result.provider_target_id or publication.provider_target_id
+        )
         publication.external_url = result.external_url
         publication.published_at = result.published_at
         publication.failure_code = None
@@ -1303,7 +1305,9 @@ class PublicationService:
             return None
         publication.status = PublicationStatus.PUBLISHED
         publication.external_id = result.external_id
-        publication.provider_target_id = result.provider_target_id
+        publication.provider_target_id = (
+            result.provider_target_id or publication.provider_target_id
+        )
         publication.external_url = result.external_url
         publication.published_at = result.published_at
         publication.failure_code = None
