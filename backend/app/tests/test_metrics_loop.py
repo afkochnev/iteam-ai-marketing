@@ -123,6 +123,35 @@ async def test_failed_publication_does_not_stop_other_sync_jobs(db_session, monk
 
 
 @pytest.mark.integration
+async def test_all_null_provider_result_creates_no_evidence(db_session, vk):  # noqa: F811
+    _user, campaign, post, version, _analyst = await fixture(db_session, evidence=False)
+    post.channel = ContentChannel.VK
+    publication = Publication(
+        campaign_id=campaign.id,
+        content_item_id=post.id,
+        content_version_id=version.id,
+        channel=ContentChannel.VK,
+        status=PublicationStatus.PUBLISHED,
+        external_id="964",
+        published_at=datetime.now(UTC),
+    )
+    db_session.add(publication)
+    await db_session.commit()
+    before = await FeedbackService(db_session)._input_snapshot(campaign.id)
+    before_fp = evidence_fingerprint(before)
+    response, _request = vk
+    response.json = lambda: {"response": [{"id": 964, "owner_id": -150574411}]}
+    with pytest.raises(AppError) as error:
+        await MetricsService(db_session).sync(publication.id)
+    assert error.value.code == "METRICS_NO_DATA"
+    assert await db_session.scalar(select(func.count(PublicationMetricsSnapshot.id))) == 0
+    after = await FeedbackService(db_session)._input_snapshot(campaign.id)
+    assert after["metrics_snapshot_ids"] == []
+    assert after["metric_coverage_ratio"] == 0
+    assert evidence_fingerprint(after) == before_fp
+
+
+@pytest.mark.integration
 async def test_telegram_provider_values_persist_without_fabricated_metrics(db_session, telegram):  # noqa: F811
     from app.tests.test_metrics import _published_publication
 
