@@ -29,7 +29,11 @@ from app.repositories.agents import AgentRepository
 from app.schemas.feedback import FeedbackAnalystResult
 from app.services.activity_log_service import ActivityLogService
 from app.services.campaign_performance_service import RAW_FIELDS
-from app.services.optimization_proposal_service import OptimizationProposalService, validate_action
+from app.services.optimization_proposal_service import (
+    EVIDENCE_SNAPSHOT_FIELDS,
+    OptimizationProposalService,
+    validate_action,
+)
 from app.services.performance_evidence import evidence_fingerprint
 
 
@@ -484,12 +488,7 @@ class FeedbackService:
 
     @staticmethod
     def validate_evidence(snapshot: dict[str, Any], result: FeedbackAnalystResult) -> None:
-        allowed = {
-            "publication": set(snapshot["publication_ids"]),
-            "content_version": set(snapshot["content_version_ids"]),
-            "metrics_snapshot": set(snapshot["metrics_snapshot_ids"]),
-            "marketing_feedback": set(snapshot["feedback_ids"]),
-        }
+        allowed = {kind: set(snapshot[key]) for kind, key in EVIDENCE_SNAPSHOT_FIELDS.items()}
         for recommendation in result.recommendations:
             validate_action(snapshot, recommendation.proposed_action)
         for item in [*result.findings, *result.recommendations]:

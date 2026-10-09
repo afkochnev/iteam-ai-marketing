@@ -183,3 +183,12 @@ describe("Tasks UI", () => {
     await waitFor(() => expect(mocks.retry).toHaveBeenCalledWith("task-1"));
   });
 });
+
+it("shows safe analyst category from AgentRun JSON technical details",async()=>{
+ mocks.get.mockResolvedValue({...task,task_type:"ANALYZE_PERFORMANCE",status:"FAILED"});
+ mocks.runList.mockResolvedValue([{id:"run-repair",status:"FAILED",model:"test-model",created_at:task.created_at,error_code:"FEEDBACK_ANALYSIS_REPAIR_EXHAUSTED",error_message:"Не удалось выполнить анализ.",output_data:{last_validation_code:"OPTIMIZATION_TARGET_INVALID"}}]);
+ render(<TaskDetailsPage/>);
+ expect(await screen.findByText("Анализ не прошёл проверку")).toBeInTheDocument();
+ const category = await screen.findByText("OPTIMIZATION_TARGET_INVALID");
+ expect(category.closest("details")).not.toBeNull();
+});

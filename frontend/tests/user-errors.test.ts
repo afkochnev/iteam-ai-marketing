@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ApiError } from "@/lib/api";
-import { presentError } from "@/lib/user-errors";
+import { presentError, safeAnalysisValidationCategory } from "@/lib/user-errors";
 
 describe("user-facing error presentation", () => {
   it("explains a missing approved article without exposing only a code", () => {
@@ -33,4 +33,19 @@ describe("user-facing error presentation", () => {
     expect(view.nextStep).toContain("пункта медиаплана");
     expect(view.retryable).toBe(false);
   });
+});
+
+it("analyst repair exhaustion gives safe guidance without repeating raw provider text", () => {
+  const view = presentError(new ApiError("PRIVATE_FEEDBACK_SECRET_123", 422, "FEEDBACK_ANALYSIS_REPAIR_EXHAUSTED"));
+  expect(view.title).toBe("Анализ не прошёл проверку");
+  expect(view.reason).toContain("дважды");
+  expect(view.nextStep).toContain("Не повторяйте анализ многократно");
+  expect(view.retryable).toBe(false);
+  expect(JSON.stringify(view)).not.toContain("PRIVATE_FEEDBACK_SECRET_123");
+});
+
+it("technical analyst category accepts only application codes", () => {
+  expect(safeAnalysisValidationCategory("OPTIMIZATION_TARGET_INVALID")).toBe("OPTIMIZATION_TARGET_INVALID");
+  expect(safeAnalysisValidationCategory("PRIVATE_FEEDBACK_SECRET_123")).toBeUndefined();
+  expect(safeAnalysisValidationCategory({code:"SCHEMA_INVALID"})).toBeUndefined();
 });

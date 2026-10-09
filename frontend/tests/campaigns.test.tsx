@@ -567,6 +567,14 @@ describe("Plan-bound publication scheduling", () => {
 
 describe("PR32 functional campaign routes",()=>{
  afterEach(()=>cleanup());
+
+ it("uses performance content_title even when content list does not contain the published item", async () => {
+  contentList.mockResolvedValue([]);
+  performance.mockResolvedValue({total_published:1,with_metrics:0,totals:{},metric_coverage:{},kpis:[],publications:[{publication_id:"real-pub",content_item_id:"not-in-content-list",content_version_id:"version",content_title:"Exact performance title",channel:"VK",published_at:null,metrics:null}]});
+  render(<CampaignDetailsPage sections={["performance"]}/>);
+  const list = await screen.findByRole("heading",{name:"Результаты публикаций"});
+  await waitFor(()=>expect(list.closest("section")?.querySelector("ul a")?.textContent).toBe("Exact performance title"));
+ });
  it.each([["overview","Проверить материалы"],["strategy","Стратегия кампании и согласование"],["content","Статьи"],["plan","Медиаплан"],["publications","Публикации кампании"],["performance","Результаты и оптимизация"],["tasks","Задачи"],["activity","Активность"]] as const)("renders %s purpose with persistent navigation",async(section,title)=>{
   // Earlier suite initializes these persisted read fixtures; each route owns only its functional area.
   get.mockResolvedValue(campaign);workspace.mockResolvedValue({campaign,director:{next_step:{title:"Проверить материалы",description:"Current step",href:"/campaigns/campaign-1/performance"}},knowledge:{campaign_packs:[],ready_item_count:0},articles:[],social_posts:[],other_plans:[],attention_tasks:[],feedback:{new_feedback_count:0,new_metrics_count:0}});

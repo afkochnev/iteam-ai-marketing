@@ -3,6 +3,7 @@ from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 from app.models.marketing_experiment import ExperimentMetric
 from app.models.marketing_feedback import (
@@ -109,9 +110,13 @@ class OptimizationActionDraft(BaseModel):
     def validate_experiment_spec(self, info: ValidationInfo) -> "OptimizationActionDraft":
         if self.type is OptimizationActionType.EXPERIMENT:
             if self.experiment_spec is None and not (info.context or {}).get("legacy_experiment"):
-                raise ValueError("EXPERIMENT requires experiment_spec")
+                raise PydanticCustomError(
+                    "experiment_spec_invalid", "EXPERIMENT requires experiment_spec"
+                )
         elif self.experiment_spec is not None:
-            raise ValueError("Only EXPERIMENT may include experiment_spec")
+            raise PydanticCustomError(
+                "experiment_spec_invalid", "Only EXPERIMENT may include experiment_spec"
+            )
         return self
 
 
@@ -155,8 +160,9 @@ class FeedbackAnalystResult(BaseModel):
     def validate_interpretations(self) -> "FeedbackAnalystResult":
         for item in self.interpretations:
             if any(index < 0 or index >= len(self.findings) for index in item.supporting_findings):
-                raise ValueError(
-                    "supporting_findings must contain valid zero-based finding positions"
+                raise PydanticCustomError(
+                    "interpretation_index_invalid",
+                    "supporting_findings must contain valid zero-based finding positions",
                 )
         return self
 

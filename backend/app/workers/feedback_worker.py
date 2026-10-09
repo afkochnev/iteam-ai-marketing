@@ -19,6 +19,11 @@ from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.marketing_feedback import FeedbackAnalysisStatus, MarketingFeedbackAnalysis
 from app.models.task import Task, TaskStatus, TaskType
 from app.schemas.feedback import FeedbackAnalystResult
+from app.services.feedback_analysis_validation import (
+    classify_feedback_analysis_validation_error,
+    feedback_analysis_constraints,
+    feedback_analysis_repair_instruction,
+)
 from app.services.feedback_service import FeedbackService
 from app.services.performance_analysis_lifecycle import fail_linked_analysis
 from app.services.performance_evidence import canonical_json
@@ -101,7 +106,11 @@ async def _generate(run_id: UUID) -> None:
                     tools=[],
                     output_type=FeedbackAnalystResult,
                 )
-                prompt = "Проанализируй замороженные данные:\n" + canonical_json(snapshot)
+                prompt = (
+                    "Проанализируй замороженные данные:\n"
+                    + canonical_json(snapshot)
+                    + feedback_analysis_constraints(snapshot)
+                )
                 result = None
                 for attempt in range(2):
                     async with factory() as session:
@@ -134,17 +143,33 @@ async def _generate(run_id: UUID) -> None:
                         FeedbackService.validate_evidence(snapshot, result)
                         break
                     except (AppError, ModelBehaviorError, ValidationError) as error:
+                        failure = classify_feedback_analysis_validation_error(error)
+                        async with factory() as session:
+                            run = await session.get(AgentRun, run_id, with_for_update=True)
+                            if run is None or run.status is not AgentRunStatus.RUNNING:
+                                await session.rollback()
+                                return
+                            previous = run.output_data or {}
+                            failures = list(previous.get("validation_failures", []))
+                            failures.append(
+                                {
+                                    "validation_code": failure.validation_code.value,
+                                    "validation_stage": failure.validation_stage,
+                                    "attempt_number": attempt + 1,
+                                }
+                            )
+                            run.output_data = {
+                                "validation_failures": failures,
+                                "last_validation_code": failure.validation_code.value,
+                            }
+                            await session.commit()
                         if attempt == 1:
                             raise AppError(
                                 "FEEDBACK_ANALYSIS_REPAIR_EXHAUSTED",
                                 "Не удалось подтвердить структурированный результат.",
                                 422,
-                            ) from error
-                        # Never send potentially raw feedback/provider errors back as instructions.
-                        prompt += (
-                            "\nИсправь формат и ссылки: используй только allowlist evidence "
-                            "и корректные индексы findings."
-                        )
+                            ) from None
+                        prompt += feedback_analysis_repair_instruction(failure)
                 assert result is not None
             finally:
                 await client.close()
@@ -171,6 +196,7 @@ async def _generate(run_id: UUID) -> None:
                 run.status = AgentRunStatus.COMPLETED
                 run.completed_at = datetime.now(UTC)
                 run.output_data = {
+                    **(run.output_data or {}),
                     "analysis_id": str(analysis.id),
                     "final_validation_state": "COMPLETED_VALIDATED",
                     "model_request_count": run.request_count,
@@ -197,6 +223,7 @@ async def _generate(run_id: UUID) -> None:
                 )
                 run.completed_at = datetime.now(UTC)
                 run.output_data = {
+                    **(run.output_data or {}),
                     "final_validation_state": run.error_code,
                     "model_request_count": run.request_count,
                 }

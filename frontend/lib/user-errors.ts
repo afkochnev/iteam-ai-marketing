@@ -10,6 +10,12 @@ export interface UserErrorPresentation {
 }
 
 const ERROR_HELP: Record<string, Omit<UserErrorPresentation, "code" | "technicalMessage">> = {
+  FEEDBACK_ANALYSIS_REPAIR_EXHAUSTED: {
+    title: "Анализ не прошёл проверку",
+    reason: "Ответ модели дважды не соответствовал допустимой структуре или зафиксированным evidence.",
+    nextStep: "Не повторяйте анализ многократно. Проверьте техническую категорию ошибки; после устранения причины можно повторить анализ с тем же evidence.",
+    retryable: false,
+  },
   OPTIMIZATION_EXPERIMENT_SPEC_MISSING: {
     title: "Параметры эксперимента отсутствуют",
     reason: "Для этой старой рекомендации отсутствуют структурированные параметры эксперимента.",
@@ -149,7 +155,7 @@ export function presentError(error: unknown, fallback = "Не удалось в�
   const message = error instanceof Error ? error.message : "";
   const code = error instanceof ApiError ? error.code : undefined;
   const mapped = code ? ERROR_HELP[code] : undefined;
-  if (mapped) return { ...mapped, code, technicalMessage: message || undefined };
+  if (mapped) return { ...mapped, code, technicalMessage: code === "FEEDBACK_ANALYSIS_REPAIR_EXHAUSTED" ? undefined : message || undefined };
   if (error instanceof TypeError && /fetch|network/i.test(message)) {
     return {
       title: fallback,
@@ -177,4 +183,9 @@ export function presentError(error: unknown, fallback = "Не удалось в�
     code,
     technicalMessage: message || undefined,
   };
+}
+
+// Never display arbitrary diagnostic values from model/provider data.
+export function safeAnalysisValidationCategory(value: unknown): string | undefined {
+  return typeof value === "string" && ["SCHEMA_INVALID", "INTERPRETATION_INDEX_INVALID", "EVIDENCE_REF_INVALID", "OPTIMIZATION_TARGET_INVALID", "EXPERIMENT_SPEC_INVALID", "MODEL_BEHAVIOR_INVALID"].includes(value) ? value : undefined;
 }
