@@ -50,6 +50,18 @@ async def _sync_recent() -> None:
                         .where(
                             Publication.status == PublicationStatus.PUBLISHED,
                             Publication.published_at >= cutoff,
+                            Publication.external_id.is_not(None),
+                            Publication.external_id != "",
+                            Publication.channel.in_(
+                                [
+                                    channel
+                                    for channel, enabled in [
+                                        ("TELEGRAM", settings.telegram_metrics_enabled),
+                                        ("VK", settings.vk_metrics_enabled),
+                                    ]
+                                    if enabled
+                                ]
+                            ),
                         )
                         .limit(100)
                     )

@@ -195,3 +195,13 @@ def block_live_provider_dns(monkeypatch: pytest.MonkeyPatch) -> None:
         return original(host, *args, **kwargs)
 
     monkeypatch.setattr(socket, "getaddrinfo", guarded)
+
+
+@pytest.fixture(autouse=True)
+def block_live_metrics_mtproto(monkeypatch):
+    from telethon import TelegramClient
+
+    async def forbidden_connect(*args, **kwargs):
+        raise AssertionError("Live MTProto is forbidden in tests; mock the metrics client")
+
+    monkeypatch.setattr(TelegramClient, "connect", forbidden_connect)

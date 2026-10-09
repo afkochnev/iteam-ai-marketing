@@ -64,12 +64,18 @@ class MetricsService:
                 "METRICS_INVALID_VALUE", "Метрики должны быть целыми неотрицательными числами.", 422
             )
 
-    async def _latest(self, publication_id: UUID) -> PublicationMetricsSnapshot | None:
+    async def _latest(
+        self, publication_id: UUID, source: MetricsSource, provider: str | None
+    ) -> PublicationMetricsSnapshot | None:
         return cast(
             PublicationMetricsSnapshot | None,
             await self.session.scalar(
                 select(PublicationMetricsSnapshot)
-                .where(PublicationMetricsSnapshot.publication_id == publication_id)
+                .where(
+                    PublicationMetricsSnapshot.publication_id == publication_id,
+                    PublicationMetricsSnapshot.source == source,
+                    PublicationMetricsSnapshot.provider == provider,
+                )
                 .order_by(
                     PublicationMetricsSnapshot.observed_at.desc(),
                     PublicationMetricsSnapshot.created_at.desc(),
@@ -96,7 +102,7 @@ class MetricsService:
             )
         self._validate_values(values)
         observed_at = observed_at.astimezone(UTC)
-        latest = await self._latest(publication.id)
+        latest = await self._latest(publication.id, source, provider)
         if (
             latest is not None
             and all(getattr(latest, field) == values.get(field) for field in METRIC_FIELDS)
@@ -176,7 +182,7 @@ class MetricsService:
                 metadata={"publication_id": str(publication.id), "code": error.code},
             )
             await self.session.commit()
-            raise AppError(error.code, error.safe_message, 502) from error
+            raise AppError(error.code, error.safe_message, 502) from None
         return await self._store(
             publication,
             source=MetricsSource.PROVIDER,

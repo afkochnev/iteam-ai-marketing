@@ -35,7 +35,9 @@ def compose_config(tmp_path_factory):
     env_file = project_dir / ".env"
     env_file.write_text(
         "OPENAI_API_KEY=synthetic-openai-key\nOPENAI_DEFAULT_MODEL=synthetic-model\n"
-        + "\n".join(f"{key}={value}" for key, value in PUBLICATION_FIELDS.items())
+        + "\n".join(
+            f"{key}={value}" for key, value in {**PUBLICATION_FIELDS, **METRICS_FIELDS}.items()
+        )
         + "\n"
     )
     environment = {
@@ -131,7 +133,11 @@ def test_publication_workers_opt_in_and_without_openai_credential(compose_config
     assert environment["OPENAI_API_KEY"] == ""
     # Publishing workers retain their own synthetic provider capabilities.
     for field, value in PUBLICATION_FIELDS.items():
-        assert environment[field] == value
+        assert environment[field] == (
+            ("false" if field.endswith("_ENABLED") else "")
+            if service_name == "metrics_worker"
+            else value
+        )
     config = Settings(_env_file=None, **{key.lower(): value for key, value in environment.items()})
     config.validate_worker_capabilities()
 
@@ -237,7 +243,7 @@ def test_ai_startup_fails_before_worker_import_with_publishing_capability(role):
 
 @pytest.mark.parametrize("role", ["publication", "publication_control", "metrics"])
 def test_publication_worker_startup_without_openai_execution_capability(role):
-    started = import_worker_app(role, PUBLICATION_FIELDS)
+    started = import_worker_app(role, {} if role == "metrics" else PUBLICATION_FIELDS)
     assert started.returncode == 0, started.stderr
 
 
@@ -252,3 +258,46 @@ def test_default_compose_only_enables_ai_workers(compose_config):
 def test_ai_worker_startup_with_cleared_publication_capability(role):
     started = import_worker_app(role)
     assert started.returncode == 0, started.stderr
+
+
+METRICS_FIELDS = {
+    "TELEGRAM_METRICS_ENABLED": "true",
+    "TELEGRAM_METRICS_API_ID": "123",
+    "TELEGRAM_METRICS_API_HASH": "private-metrics-secret",
+    "TELEGRAM_METRICS_SESSION": "private-metrics-secret",
+    "TELEGRAM_METRICS_PEER": "@synthetic",
+    "TELEGRAM_METRICS_CHAT_ID": "-100123",
+    "VK_METRICS_ENABLED": "true",
+    "VK_METRICS_ACCESS_TOKEN": "private-metrics-secret",
+    "VK_METRICS_OWNER_ID": "-123",
+}
+
+
+@pytest.mark.parametrize(
+    "service_name",
+    [
+        "backend",
+        "ai_worker",
+        "ai_control_worker",
+        "ai_scheduler",
+        "publication_worker",
+        "publication_control_worker",
+        "publication_scheduler",
+    ],
+)
+def test_compose_clears_all_metrics_credentials(compose_config, service_name):
+    environment = compose_config["services"][service_name]["environment"]
+    for field in METRICS_FIELDS:
+        assert environment[field] == ("false" if field.endswith("_ENABLED") else "")
+
+
+def test_metrics_worker_receives_only_read_credentials(compose_config):
+    environment = compose_config["services"]["metrics_worker"]["environment"]
+    assert environment["OPENAI_API_KEY"] == ""
+    for field, value in METRICS_FIELDS.items():
+        assert environment[field] == value
+    for field in PUBLICATION_FIELDS:
+        assert environment[field] == ("false" if field.endswith("_ENABLED") else "")
+    Settings(
+        _env_file=None, **{k.lower(): v for k, v in environment.items()}
+    ).validate_worker_capabilities()

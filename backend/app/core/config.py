@@ -69,6 +69,16 @@ class Settings(BaseSettings):
     vk_owner_id: int | None = None
     vk_api_version: str = "5.199"
     vk_request_timeout_seconds: int = 30
+    telegram_metrics_enabled: bool = False
+    telegram_metrics_api_id: int | None = None
+    telegram_metrics_api_hash: str | None = None
+    telegram_metrics_session: str | None = None
+    telegram_metrics_peer: str | None = None
+    telegram_metrics_chat_id: int | None = None
+    vk_metrics_enabled: bool = False
+    vk_metrics_access_token: str | None = None
+    vk_metrics_owner_id: int | None = None
+    metrics_request_timeout_seconds: int = Field(default=30, gt=0)
     metrics_sync_enabled: bool = False
     metrics_sync_interval_seconds: int = 3600
     metrics_lookback_days: int = 30
@@ -96,7 +106,13 @@ class Settings(BaseSettings):
     def celery_result_backend_url(self) -> str:
         return "cache+memory://" if self.is_test_context else self.redis_url
 
-    @field_validator("vk_owner_id", mode="before")
+    @field_validator(
+        "vk_owner_id",
+        "telegram_metrics_api_id",
+        "telegram_metrics_chat_id",
+        "vk_metrics_owner_id",
+        mode="before",
+    )
     @classmethod
     def normalize_empty_vk_owner_id(cls, value: object) -> object:
         # Compose clears this optional integer along with the publication tokens.
@@ -108,6 +124,7 @@ class Settings(BaseSettings):
         return None if isinstance(value, str) and not value.strip() else value
 
     def validate_scheduler_capabilities(self) -> None:
+        self.validate_metrics_capabilities()
         if self.scheduler_role is None:
             return
         if self.scheduler_role not in {"ai", "publication"}:
@@ -118,6 +135,7 @@ class Settings(BaseSettings):
             self._validate_ai_publication_capabilities("AI scheduler")
 
     def validate_worker_capabilities(self) -> None:
+        self.validate_metrics_capabilities()
         # API/producers leave WORKER_ROLE unset; workers declare their boundary.
         if self.worker_role is None:
             return
@@ -148,6 +166,51 @@ class Settings(BaseSettings):
                 f"{process} publication capability is forbidden; clear: " + ", ".join(errors)
             )
 
+    def validate_metrics_capabilities(self) -> None:
+        fields = {
+            "TELEGRAM_METRICS_ENABLED": self.telegram_metrics_enabled,
+            "TELEGRAM_METRICS_API_ID": self.telegram_metrics_api_id,
+            "TELEGRAM_METRICS_API_HASH": self.telegram_metrics_api_hash,
+            "TELEGRAM_METRICS_SESSION": self.telegram_metrics_session,
+            "TELEGRAM_METRICS_PEER": self.telegram_metrics_peer,
+            "TELEGRAM_METRICS_CHAT_ID": self.telegram_metrics_chat_id,
+            "VK_METRICS_ENABLED": self.vk_metrics_enabled,
+            "VK_METRICS_ACCESS_TOKEN": self.vk_metrics_access_token,
+            "VK_METRICS_OWNER_ID": self.vk_metrics_owner_id,
+        }
+        if self.worker_role != "metrics" or self.scheduler_role is not None:
+            forbidden = [name for name, value in fields.items() if value]
+            if forbidden:
+                raise RuntimeError(
+                    "Metrics capability is forbidden; clear: " + ", ".join(forbidden)
+                )
+            return
+        required: list[str] = []
+        if self.telegram_metrics_enabled:
+            required.extend(
+                name
+                for name, value in fields.items()
+                if name.startswith("TELEGRAM_METRICS_") and not value
+            )
+            if self.telegram_metrics_api_id is not None and self.telegram_metrics_api_id <= 0:
+                required.append("TELEGRAM_METRICS_API_ID")
+            if self.telegram_metrics_chat_id is not None and self.telegram_metrics_chat_id >= 0:
+                required.append("TELEGRAM_METRICS_CHAT_ID")
+        if self.vk_metrics_enabled:
+            if not self.vk_metrics_access_token:
+                required.append("VK_METRICS_ACCESS_TOKEN")
+            if self.vk_metrics_owner_id is None or self.vk_metrics_owner_id >= 0:
+                required.append("VK_METRICS_OWNER_ID")
+        if required:
+            raise RuntimeError(
+                "Metrics configuration is invalid; set: " + ", ".join(sorted(set(required)))
+            )
+        if self.openai_api_key:
+            raise RuntimeError(
+                "Metrics worker OpenAI capability is forbidden; clear: OPENAI_API_KEY"
+            )
+        self._validate_ai_publication_capabilities("Metrics worker")
+
     def validate_redis_isolation(self) -> None:
         if not self.is_test_context:
             return
@@ -156,6 +219,7 @@ class Settings(BaseSettings):
         ensure_safe_test_redis_url(self.redis_url)
 
     def validate_production(self) -> None:
+        self.validate_metrics_capabilities()
         self.validate_redis_isolation()
         numeric_errors: list[str] = []
         positive_values = {
