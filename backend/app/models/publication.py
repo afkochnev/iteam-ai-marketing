@@ -61,6 +61,7 @@ class Publication(UUIDTimestampMixin, Base):
         Index("ix_publications_campaign_id", "campaign_id"),
         Index("ix_publications_content_item_id", "content_item_id"),
         Index("ix_publications_status", "status"),
+        Index("ix_publications_provider_target_id", "provider_target_id"),
         Index(
             "uq_publications_active_version_channel",
             "content_version_id",
@@ -93,6 +94,7 @@ class Publication(UUIDTimestampMixin, Base):
         ForeignKey("users.id", ondelete="RESTRICT")
     )
     external_id: Mapped[str | None] = mapped_column(String(255))
+    provider_target_id: Mapped[str | None] = mapped_column(String(255))
     external_url: Mapped[str | None] = mapped_column(Text)
     published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     failure_code: Mapped[str | None] = mapped_column(String(100))

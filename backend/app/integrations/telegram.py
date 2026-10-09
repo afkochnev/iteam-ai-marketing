@@ -33,6 +33,7 @@ class ProviderPublicationResult:
     external_id: str
     external_url: str | None
     published_at: datetime
+    provider_target_id: str | None = None
 
 
 class PublicationProvider(Protocol):
@@ -85,6 +86,7 @@ class TelegramProvider:
             payload: dict[str, Any] = response.json()
             result = payload["result"]
             message_id = str(result["message_id"])
+            target_id = str(result["chat"]["id"])
         except (ValueError, KeyError, TypeError) as exc:
             raise TelegramProviderError(
                 "TELEGRAM_PROVIDER_ERROR", "Telegram returned an invalid response."
@@ -93,6 +95,7 @@ class TelegramProvider:
             external_id=message_id,
             external_url=None,
             published_at=datetime.now(UTC),
+            provider_target_id=target_id,
         )
 
 
@@ -155,4 +158,5 @@ class VKProvider:
             external_id=post_id,
             external_url=None,
             published_at=datetime.now(UTC),
+            provider_target_id=str(settings.vk_owner_id),
         )

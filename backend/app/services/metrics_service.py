@@ -7,6 +7,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.errors import AppError
 from app.integrations.metrics import (
     MetricsProvider,
@@ -165,12 +166,30 @@ class MetricsService:
 
     async def sync(self, publication_id: UUID) -> PublicationMetricsSnapshot:
         publication = await self._publication(publication_id)
+        expected_target: str | None = None
         if publication.channel is ContentChannel.TELEGRAM:
             provider: MetricsProvider = TelegramMetricsProvider()
+            if settings.telegram_metrics_enabled and settings.telegram_metrics_chat_id is not None:
+                expected_target = str(settings.telegram_metrics_chat_id)
         elif publication.channel is ContentChannel.VK:
             provider = VKMetricsProvider()
+            if settings.vk_metrics_enabled and settings.vk_metrics_owner_id is not None:
+                expected_target = str(settings.vk_metrics_owner_id)
         else:
             raise AppError("METRICS_CHANNEL_UNSUPPORTED", "Канал не поддерживает метрики.", 409)
+        if expected_target is not None:
+            if publication.provider_target_id is None:
+                raise AppError(
+                    "METRICS_PROVIDER_TARGET_UNBOUND",
+                    "Публикация не привязана к точной внешней площадке.",
+                    409,
+                )
+            if publication.provider_target_id != expected_target:
+                raise AppError(
+                    "METRICS_PROVIDER_TARGET_MISMATCH",
+                    "Публикация относится к другой внешней площадке.",
+                    409,
+                )
         try:
             result = await provider.get_metrics(external_id=publication.external_id or "")
         except MetricsProviderError as error:

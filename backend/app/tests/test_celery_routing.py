@@ -250,6 +250,8 @@ async def test_publication_dispatch_routes_claimed_execution(monkeypatch, channe
 
 
 async def test_recent_metrics_fanout_routes_each_publication(monkeypatch):
+    monkeypatch.setattr(settings, "vk_metrics_enabled", True)
+    monkeypatch.setattr(settings, "vk_metrics_owner_id", -150574411)
     rows = [SimpleNamespace(id=uuid4()), SimpleNamespace(id=uuid4())]
     session = AsyncMock()
     session.scalars.return_value = SimpleNamespace(all=lambda: rows)

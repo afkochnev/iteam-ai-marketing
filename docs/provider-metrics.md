@@ -13,3 +13,5 @@ Snapshots remain append-only. Identical values reuse the latest snapshot from th
 No schema migration or production acceptance is part of PR35. All provider calls are mocked in tests; use naturally existing evidence for later controlled live acceptance.
 
 References: [Telegram getMessagesViews](https://core.telegram.org/method/messages.getMessagesViews), [Telethon StringSession](https://docs.telethon.dev/en/stable/concepts/sessions.html), [VK official wall API schema](https://github.com/VKCOM/vk-api-schema/blob/master/wall/methods.json).
+
+Provider metrics are target-bound. A successful publication persists the exact external target (`provider_target_id`): Telegram uses the numeric chat id returned by Bot API; VK uses the exact negative wall owner id. Automatic/provider sync runs only when this durable target matches the configured metrics target. Legacy PUBLISHED rows without a target, and rows bound to another target, are never inferred or synced automatically. This prevents historical test-channel message/post ids from being reinterpreted inside a production peer or wall.

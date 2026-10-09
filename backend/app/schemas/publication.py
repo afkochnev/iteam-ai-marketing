@@ -69,6 +69,7 @@ class PublicationResponse(BaseModel):
     approved_for_publish_at: datetime | None
     approved_for_publish_by: UUID | None
     external_id: str | None
+    provider_target_id: str | None
     external_url: str | None
     published_at: datetime | None
     failure_code: str | None

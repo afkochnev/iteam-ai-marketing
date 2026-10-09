@@ -1109,7 +1109,9 @@ class _FakeTelegramProvider:
         assert isinstance(chat_id, str)
         if self.failure:
             raise self.failure
-        return ProviderPublicationResult("telegram-1", "https://t.me/c/1", datetime.now(UTC))
+        return ProviderPublicationResult(
+            "telegram-1", "https://t.me/c/1", datetime.now(UTC), provider_target_id="-1001321892281"
+        )
 
 
 @pytest.mark.integration
@@ -1120,6 +1122,7 @@ async def test_telegram_publish_uses_exact_version_and_is_idempotent(
     from app.core.config import settings
 
     monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
+    monkeypatch.setattr(settings, "telegram_target_chat_id", "-1001321892281")
     user, _campaign, post, version = await _approved_post(db_session)
     service = PublicationService(db_session)
     publication = await service.create(
@@ -1131,10 +1134,15 @@ async def test_telegram_publish_uses_exact_version_and_is_idempotent(
     await service.approve(publication.id, user)
     claimed = await service.claim_for_publish(publication.id, user)
     assert claimed.status is PublicationStatus.PUBLISHING
+    assert claimed.provider_target_id == "-1001321892281"
     provider = _FakeTelegramProvider()
     result = await service.execute_telegram(publication.id, provider)
     assert result is not None and result.status is PublicationStatus.PUBLISHED
     assert result.external_id == "telegram-1"
+    assert result.provider_target_id == "-1001321892281"
+    persisted = await db_session.get(Publication, publication.id)
+    assert persisted is not None
+    assert persisted.provider_target_id == "-1001321892281"
     assert provider.calls == 1
     assert await service.execute_telegram(publication.id, provider) is None
     assert provider.calls == 1
@@ -1649,6 +1657,39 @@ async def test_publication_keeps_bound_approved_version_when_newer_version_is_cu
     assert provider.calls == 1
 
 
+async def test_telegram_provider_persists_exact_response_chat_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Response:
+        status_code = 200
+
+        def json(self):
+            return {
+                "ok": True,
+                "result": {"message_id": 77, "chat": {"id": -1001321892281}},
+            }
+
+    class _Client:
+        def __init__(self, **kwargs):
+            assert kwargs["timeout"] == 30
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def post(self, *_args, **_kwargs):
+            return _Response()
+
+    monkeypatch.setattr("app.integrations.telegram.httpx.AsyncClient", _Client)
+    result = await TelegramProvider("fake-bot-token").publish(
+        text="Привет", chat_id="-1001321892281"
+    )
+    assert result.external_id == "77"
+    assert result.provider_target_id == "-1001321892281"
+
+
 @pytest.mark.parametrize(
     ("status_code", "expected_code", "retryable"),
     [
@@ -1772,6 +1813,7 @@ async def test_vk_provider_maps_success_and_bad_request(monkeypatch: pytest.Monk
     monkeypatch.setattr("app.integrations.telegram.httpx.AsyncClient", _Client)
     result = await VKProvider().publish(text="Привет", chat_id="-123")
     assert result.external_id == "42"
+    assert result.provider_target_id == "-123"
     assert "fake-vk-token" not in str(request["url"])
     data = request["data"]
     assert isinstance(data, dict)

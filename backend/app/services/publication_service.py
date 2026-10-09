@@ -401,6 +401,7 @@ class PublicationService:
             approved_for_publish_at=publication.approved_for_publish_at,
             approved_for_publish_by=publication.approved_for_publish_by,
             external_id=publication.external_id,
+            provider_target_id=publication.provider_target_id,
             external_url=publication.external_url,
             published_at=publication.published_at,
             failure_code=publication.failure_code,
@@ -981,6 +982,12 @@ class PublicationService:
         )
         await self._ensure_plan_snapshot(publication, item)
         publication.status = PublicationStatus.PUBLISHING
+        target_id = (
+            settings.telegram_target_chat_id
+            if publication.channel.value == "TELEGRAM"
+            else (str(settings.vk_owner_id) if settings.vk_owner_id is not None else None)
+        )
+        publication.provider_target_id = str(target_id) if target_id else None
         # Bind the queue message to a durable, one-use attempt before commit.
         # Workers must present this token; an old message carrying only the
         # publication id can no longer authorize a later retry.
@@ -1138,6 +1145,7 @@ class PublicationService:
             return None
         publication.status = PublicationStatus.PUBLISHED
         publication.external_id = result.external_id
+        publication.provider_target_id = result.provider_target_id or publication.provider_target_id
         publication.external_url = result.external_url
         publication.published_at = result.published_at
         publication.failure_code = None
@@ -1295,6 +1303,7 @@ class PublicationService:
             return None
         publication.status = PublicationStatus.PUBLISHED
         publication.external_id = result.external_id
+        publication.provider_target_id = result.provider_target_id or publication.provider_target_id
         publication.external_url = result.external_url
         publication.published_at = result.published_at
         publication.failure_code = None
