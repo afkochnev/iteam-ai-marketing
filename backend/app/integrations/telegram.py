@@ -106,8 +106,16 @@ class VKProvider:
         self._token = token or settings.vk_access_token
         if not self._token or settings.vk_owner_id is None:
             raise VKProviderError("VK_AUTH_ERROR", "VK publishing is not configured.")
+        if settings.vk_owner_id >= 0:
+            raise VKProviderError(
+                "VK_TARGET_INVALID", "VK publishing target must be a community wall."
+            )
 
     async def publish(self, *, text: str, chat_id: str) -> ProviderPublicationResult:
+        if chat_id != str(settings.vk_owner_id):
+            raise VKProviderError(
+                "VK_TARGET_MISMATCH", "VK publishing target does not match configured owner."
+            )
         if not text.strip() or len(text) > 4096:
             raise VKProviderError("VK_BAD_REQUEST", "VK message is invalid.")
         try:
@@ -118,6 +126,7 @@ class VKProvider:
                     # URLs at INFO level; form data is not included there.
                     data={
                         "owner_id": settings.vk_owner_id,
+                        "from_group": 1,
                         "access_token": self._token,
                         "v": settings.vk_api_version,
                         "message": text,

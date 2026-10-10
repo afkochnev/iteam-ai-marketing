@@ -1817,10 +1817,40 @@ async def test_vk_provider_maps_success_and_bad_request(monkeypatch: pytest.Monk
     assert "fake-vk-token" not in str(request["url"])
     data = request["data"]
     assert isinstance(data, dict)
+    assert data["owner_id"] == -123
+    assert data["from_group"] == 1
     assert data["access_token"] == "fake-vk-token"
     with pytest.raises(VKProviderError) as invalid:
         await VKProvider().publish(text="", chat_id="-123")
     assert invalid.value.code == "VK_BAD_REQUEST"
+
+
+async def test_vk_provider_rejects_target_mismatch_before_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "vk_access_token", "fake-vk-token")
+    monkeypatch.setattr(settings, "vk_owner_id", -150574411)
+
+    class _NeverClient:
+        def __init__(self, **_kwargs):
+            pytest.fail("VK network must not be reached for target mismatch")
+
+    monkeypatch.setattr("app.integrations.telegram.httpx.AsyncClient", _NeverClient)
+    with pytest.raises(VKProviderError) as error:
+        await VKProvider().publish(text="Привет", chat_id="-999")
+    assert error.value.code == "VK_TARGET_MISMATCH"
+
+
+async def test_vk_provider_requires_community_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "vk_access_token", "fake-vk-token")
+    monkeypatch.setattr(settings, "vk_owner_id", 150574411)
+    with pytest.raises(VKProviderError) as error:
+        VKProvider()
+    assert error.value.code == "VK_TARGET_INVALID"
 
 
 @pytest.mark.parametrize(
