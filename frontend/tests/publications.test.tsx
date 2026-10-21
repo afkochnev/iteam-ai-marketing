@@ -201,10 +201,10 @@ describe("publication operator actions", () => {
       scheduled_at: null,
     }));
     render(<PublicationsPage />);
-    const section = await screen.findByRole("region", { name: "Требуют действия / В процессе" });
-    expect(within(section).getByRole("button", { name: "Согласовать публикацию" })).toBeInTheDocument();
+    const approveButton = await screen.findByRole("button", { name: "Согласовать публикацию" });
+    const section = screen.getByRole("region", { name: "Требуют действия / В процессе" });
     expect(within(section).getByRole("button", { name: "Отменить" })).toBeInTheDocument();
-    fireEvent.click(within(section).getByRole("button", { name: "Согласовать публикацию" }));
+    fireEvent.click(approveButton);
     await waitFor(() => expect(mocks.approve).toHaveBeenCalledWith("active"));
   });
 
@@ -228,8 +228,8 @@ describe("publication operator actions", () => {
     }));
     vi.spyOn(window, "prompt").mockReturnValue("2026-10-26T10:00:00Z");
     render(<PublicationsPage />);
-    const section = await screen.findByRole("region", { name: "Требуют действия / В процессе" });
-    fireEvent.click(within(section).getByRole("button", { name: "Назначить время" }));
+    const scheduleButton = await screen.findByRole("button", { name: "Назначить время" });
+    fireEvent.click(scheduleButton);
     await waitFor(() => expect(mocks.schedule).toHaveBeenCalledWith("active", "2026-10-26T10:00:00.000Z"));
   });
 
@@ -242,8 +242,8 @@ describe("publication operator actions", () => {
       scheduled_at: "2026-10-25T10:00:00Z",
     })]);
     render(<PublicationsPage />);
-    const section = await screen.findByRole("region", { name: "Требуют действия / В процессе" });
-    expect(within(section).getByRole("status")).toHaveTextContent("результат ещё не подтверждён");
+    expect(await screen.findByText(/результат ещё не подтверждён/)).toHaveAttribute("role", "status");
+    const section = screen.getByRole("region", { name: "Требуют действия / В процессе" });
     expect(within(section).queryByRole("button")).not.toBeInTheDocument();
   });
 
@@ -269,7 +269,7 @@ describe("publication operator actions", () => {
     render(<PublicationsPage />);
     const section = await screen.findByRole("region", { name: "Просрочены / Требуют решения" });
     expect(within(section).queryByRole("button", { name: "Опубликовать сейчас" })).not.toBeInTheDocument();
-    fireEvent.click(within(section).getByRole("button", { name: "Отменить" }));
+    fireEvent.click(await within(section).findByRole("button", { name: "Отменить" }));
     await waitFor(() => expect(mocks.cancel).toHaveBeenCalledWith("overdue"));
     expect(await screen.findByRole("status")).toHaveTextContent("Публикация отменена");
     await waitFor(() => expect(within(section).queryByText("Просроченный пост")).not.toBeInTheDocument());
@@ -314,7 +314,7 @@ describe("publication operator actions", () => {
     vi.spyOn(window, "prompt").mockReturnValue("2026-10-27T10:00:00Z");
     render(<PublicationsPage />);
     const section = await screen.findByRole("region", { name: "Предстоящие" });
-    fireEvent.click(within(section).getByRole("button", { name: "Перенести" }));
+    fireEvent.click(await within(section).findByRole("button", { name: "Перенести" }));
     await waitFor(() => expect(mocks.schedule).toHaveBeenCalledWith("upcoming", "2026-10-27T10:00:00.000Z"));
     expect(within(section).getByRole("button", { name: "Отменить" })).toBeInTheDocument();
   });
@@ -332,7 +332,7 @@ describe("publication operator actions", () => {
     })]);
     render(<PublicationsPage />);
     const section = await screen.findByRole("region", { name: "Ошибки отправки" });
-    expect(within(section).getByRole("button", { name: "Подтвердить публикацию" })).toBeInTheDocument();
+    expect(await within(section).findByRole("button", { name: "Подтвердить публикацию" })).toBeInTheDocument();
     expect(within(section).getByRole("button", { name: "Подтвердить отсутствие публикации" })).toBeInTheDocument();
     expect(within(section).getByRole("button", { name: "Повторить" })).toBeInTheDocument();
   });
