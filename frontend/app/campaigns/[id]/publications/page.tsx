@@ -1,2 +1,6 @@
-import CampaignSections from "@/components/campaign-sections";
-export default function Page() { return <CampaignSections section="publications" />; }
+import { redirect } from "next/navigation";
+
+export default async function Page({ params }: { params: Promise<{ id: string }> }) {
+  const { id } = await params;
+  redirect(`/publications?campaign_id=${encodeURIComponent(id)}`);
+}
