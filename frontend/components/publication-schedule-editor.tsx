@@ -62,12 +62,14 @@ export function PublicationScheduleEditor({
     <label htmlFor={inputId}>Дата и время публикации</label>
     <input
       id={inputId}
+      name="scheduled_at"
       type="datetime-local"
       min={minimum}
       step={STEP_MINUTES * 60}
       value={value}
       onChange={(event) => setValue(event.target.value)}
       aria-describedby={helpId}
+      autoComplete="off"
       required
       autoFocus
     />
