@@ -76,6 +76,7 @@ function PublicationsWorkspace() {
   const [error, setError] = useState("");
   const [actionNotice, setActionNotice] = useState("");
   const [busyKey, setBusyKey] = useState<string | null>(null);
+  const [snapshotTime, setSnapshotTime] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<Record<string, ActionFeedback>>({});
   const cache = useRef(new Map<string, Partial<ReadData>>());
   const [failures, setFailures] = useState<ReadFailure[]>([]);
@@ -85,7 +86,8 @@ function PublicationsWorkspace() {
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
-    const from = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const loadStartedAt = Date.now();
+    const from = new Date(loadStartedAt - 30 * 24 * 60 * 60 * 1000);
     const end = new Date(from.getTime() + 90 * 24 * 60 * 60 * 1000);
     try {
       const allCampaigns = await campaignsApi.list();
@@ -182,6 +184,7 @@ function PublicationsWorkspace() {
           }));
         return { rows: [...all.values()], candidates: ready, failed };
       }));
+      setSnapshotTime(loadStartedAt);
       setFailures(results.flatMap((result) => result.failed));
       setRows(results.flatMap((result) => result.rows));
       setCandidates(results.flatMap((result) => result.candidates));
@@ -376,7 +379,7 @@ function PublicationsWorkspace() {
     if (!value) return;
     const parsed = new Date(value);
     const key = `candidate:${item.id}`;
-    if (Number.isNaN(parsed.getTime()) || parsed.getTime() <= Date.now()) {
+    if (Number.isNaN(parsed.getTime())) {
       setFeedback((current) => ({
         ...current,
         [key]: {
@@ -452,7 +455,8 @@ function PublicationsWorkspace() {
   const overdueCandidates = candidates.filter((item) => (
     item.planApproved
     && item.plan_scheduled_at
-    && Date.parse(item.plan_scheduled_at) <= Date.now()
+    && snapshotTime !== null
+    && Date.parse(item.plan_scheduled_at) <= snapshotTime
   ));
   const overdueCandidateIds = new Set(overdueCandidates.map((item) => item.id));
   const ready = candidates.filter((item) => item.planApproved && !overdueCandidateIds.has(item.id));

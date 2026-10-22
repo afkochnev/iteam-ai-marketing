@@ -168,7 +168,6 @@ class PublicationService:
             )
         return scheduled.astimezone(UTC)
 
-
     @staticmethod
     def _plan_override_operation_key(publication_id: UUID) -> str:
         return f"publication-plan-slot-rescheduled:{publication_id}"
@@ -288,9 +287,7 @@ class PublicationService:
             .where(
                 Publication.content_item_id == item.id,
                 Publication.channel == plan_item.channel,
-                Publication.status.in_(
-                    (*ACTIVE_PUBLICATION_STATUSES, PublicationStatus.PUBLISHED)
-                ),
+                Publication.status.in_((*ACTIVE_PUBLICATION_STATUSES, PublicationStatus.PUBLISHED)),
             )
             .order_by(Publication.created_at.desc())
             .with_for_update()
@@ -1175,10 +1172,7 @@ class PublicationService:
         self.session.add(replacement)
         await self.session.flush()
         plan_item = await self._plan_item(item)
-        if (
-            plan_item is not None
-            and replacement.scheduled_at != plan_item.scheduled_at
-        ):
+        if plan_item is not None and replacement.scheduled_at != plan_item.scheduled_at:
             await self._record_plan_schedule_override(
                 replacement,
                 plan_item,

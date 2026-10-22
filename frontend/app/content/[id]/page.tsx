@@ -66,6 +66,7 @@ export default function ContentDetailPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
+  const [snapshotTime, setSnapshotTime] = useState<number | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [draftText, setDraftText] = useState("");
   const [editComment, setEditComment] = useState("");
@@ -95,6 +96,7 @@ export default function ContentDetailPage() {
       setPlans(campaignPlans);
       setPublications(campaignPublications);
       setRevisionProgress(currentRevision);
+      setSnapshotTime(Date.now());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Не удалось загрузить материал.");
     } finally {
@@ -148,7 +150,9 @@ export default function ContentDetailPage() {
   const hasScheduledApprovedCurrentVersion = Boolean(item?.content_type === "SOCIAL_POST" && item.status === "APPROVED" && publication?.status === "SCHEDULED" && item.current_version && item.approved_version_id === item.current_version.id && publication.content_version_id === item.approved_version_id);
   const canReplaceScheduledPublication = Boolean(item?.status === "APPROVED" && publication?.status === "SCHEDULED" && item.current_version && publication.content_version_id !== item.current_version.id && item.approved_version_id === item.current_version.id);
   const planScheduleInPast = Boolean(
-    planItem?.scheduled_at && Date.parse(planItem.scheduled_at) <= Date.now()
+    planItem?.scheduled_at
+    && snapshotTime !== null
+    && Date.parse(planItem.scheduled_at) <= snapshotTime
   );
   const cancelledPlanDecision = publications.find((candidate) => (
     candidate.content_item_id === item?.id

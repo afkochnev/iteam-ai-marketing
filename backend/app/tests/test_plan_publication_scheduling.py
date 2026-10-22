@@ -409,7 +409,6 @@ async def test_concurrent_scheduling_creates_one_authorized_delivery(db_session:
     assert await db_session.scalar(select(func.count()).select_from(Publication)) == 1
 
 
-
 @pytest.mark.asyncio
 async def test_overdue_plan_slot_can_be_cancelled_without_provider_authorization(
     db_session: AsyncSession,
@@ -464,8 +463,7 @@ async def test_overdue_plan_slot_reschedule_is_audited_and_claimable(
 
     event = await db_session.scalar(
         select(ActivityLog).where(
-            ActivityLog.operation_key
-            == f"publication-plan-slot-rescheduled:{result.id}"
+            ActivityLog.operation_key == f"publication-plan-slot-rescheduled:{result.id}"
         )
     )
     assert event is not None
