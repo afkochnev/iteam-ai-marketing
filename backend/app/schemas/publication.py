@@ -21,6 +21,19 @@ class PublicationScheduleRequest(BaseModel):
     scheduled_at: datetime = Field(description="Timezone-aware future publication time")
 
 
+class PublicationPlanContentCancelRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str | None = Field(default=None, max_length=2000)
+
+
+class PublicationPlanContentRescheduleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scheduled_at: datetime = Field(description="Timezone-aware future publication time")
+    reason: str | None = Field(default=None, max_length=2000)
+
+
 class PublicationReconcilePublishedRequest(BaseModel):
     external_id: str = Field(min_length=1, max_length=255)
     external_url: str | None = None

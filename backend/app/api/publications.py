@@ -14,6 +14,8 @@ from app.schemas.publication import (
     PublicationMetricsInput,
     PublicationMetricsResponse,
     PublicationMetricsSnapshotResponse,
+    PublicationPlanContentCancelRequest,
+    PublicationPlanContentRescheduleRequest,
     PublicationReconcileNotPublishedRequest,
     PublicationReconcilePublishedRequest,
     PublicationResponse,
@@ -42,6 +44,41 @@ async def schedule_plan_content(
     content_id: UUID, user: CurrentUser, session: SessionDependency
 ) -> PublicationResponse:
     return await PublicationService(session).schedule_content(content_id, user)
+
+
+@router.post(
+    "/plan-content/{content_id}/cancel",
+    response_model=PublicationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def cancel_overdue_plan_content(
+    content_id: UUID,
+    payload: PublicationPlanContentCancelRequest,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> PublicationResponse:
+    return await PublicationService(session).cancel_overdue_plan_content(
+        content_id, user, reason=payload.reason
+    )
+
+
+@router.post(
+    "/plan-content/{content_id}/reschedule",
+    response_model=PublicationResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def reschedule_overdue_plan_content(
+    content_id: UUID,
+    payload: PublicationPlanContentRescheduleRequest,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> PublicationResponse:
+    return await PublicationService(session).reschedule_overdue_plan_content(
+        content_id,
+        payload.scheduled_at,
+        user,
+        reason=payload.reason,
+    )
 
 
 @router.get("/campaign/{campaign_id}", response_model=list[PublicationResponse])

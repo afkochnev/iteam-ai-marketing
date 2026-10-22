@@ -15,6 +15,8 @@ const mocks = vi.hoisted(() => ({
   approve: vi.fn(),
   schedule: vi.fn(),
   cancel: vi.fn(),
+  cancelPlanContent: vi.fn(),
+  reschedulePlanContent: vi.fn(),
   publishNow: vi.fn(),
   retry: vi.fn(),
   reconcilePublished: vi.fn(),
@@ -42,6 +44,8 @@ vi.mock("@/lib/api", async (original) => {
       approve: mocks.approve,
       schedule: mocks.schedule,
       cancel: mocks.cancel,
+      cancelPlanContent: mocks.cancelPlanContent,
+      reschedulePlanContent: mocks.reschedulePlanContent,
       publishNow: mocks.publishNow,
       retry: mocks.retry,
       reconcilePublished: mocks.reconcilePublished,
@@ -273,6 +277,84 @@ describe("publication operator actions", () => {
     await waitFor(() => expect(mocks.cancel).toHaveBeenCalledWith("overdue"));
     expect(await screen.findByRole("status")).toHaveTextContent("Публикация отменена");
     await waitFor(() => expect(within(section).queryByText("Просроченный пост")).not.toBeInTheDocument());
+    expect(mocks.publishNow).not.toHaveBeenCalled();
+  });
+
+  it("reschedules an overdue approved plan slot before a Publication exists", async () => {
+    mocks.content.mockResolvedValue([{
+      id: "post-overdue-plan",
+      campaign_id: "campaign-1",
+      title: "Просроченный плановый пост",
+      content_type: "SOCIAL_POST",
+      status: "APPROVED",
+      current_version_id: "exact-v3",
+      approved_version_id: "exact-v3",
+      approved_version_number: 3,
+      publication_plan_item_id: "plan-item-overdue",
+      plan_channel: "TELEGRAM",
+      plan_scheduled_at: "2026-10-20T09:00:00Z",
+    }]);
+    mocks.plans.mockResolvedValue([{
+      status: "APPROVED",
+      items: [{ id: "plan-item-overdue", status: "PLANNED" }],
+    }]);
+    mocks.reschedulePlanContent.mockResolvedValue(publication({
+      id: "rescheduled",
+      content_item_id: "post-overdue-plan",
+      content_version_id: "exact-v3",
+      channel: "TELEGRAM",
+      scheduled_at: "2026-10-30T09:00:00Z",
+      publication_plan_item_id: "plan-item-overdue",
+    }));
+    vi.spyOn(window, "prompt").mockReturnValue("2026-10-30T09:00:00Z");
+
+    render(<PublicationsPage />);
+    const section = await screen.findByRole("region", { name: "Просрочены / Требуют решения" });
+    expect(await within(section).findByText("Просроченный плановый пост")).toBeInTheDocument();
+    fireEvent.click(within(section).getByRole("button", { name: "Перенести" }));
+    await waitFor(() => expect(mocks.reschedulePlanContent).toHaveBeenCalledWith(
+      "post-overdue-plan",
+      "2026-10-30T09:00:00.000Z",
+    ));
+  });
+
+  it("cancels an overdue approved plan slot before a Publication exists", async () => {
+    mocks.content.mockResolvedValue([{
+      id: "post-overdue-plan",
+      campaign_id: "campaign-1",
+      title: "Просроченный плановый пост",
+      content_type: "SOCIAL_POST",
+      status: "APPROVED",
+      current_version_id: "exact-v3",
+      approved_version_id: "exact-v3",
+      approved_version_number: 3,
+      publication_plan_item_id: "plan-item-overdue",
+      plan_channel: "TELEGRAM",
+      plan_scheduled_at: "2026-10-20T09:00:00Z",
+    }]);
+    mocks.plans.mockResolvedValue([{
+      status: "APPROVED",
+      items: [{ id: "plan-item-overdue", status: "PLANNED" }],
+    }]);
+    mocks.cancelPlanContent.mockResolvedValue(publication({
+      id: "cancelled-slot",
+      content_item_id: "post-overdue-plan",
+      content_version_id: "exact-v3",
+      channel: "TELEGRAM",
+      status: "CANCELLED",
+      scheduled_at: "2026-10-20T09:00:00Z",
+      publication_plan_item_id: "plan-item-overdue",
+    }));
+
+    render(<PublicationsPage />);
+    const section = await screen.findByRole("region", { name: "Просрочены / Требуют решения" });
+    fireEvent.click(await within(section).findByRole("button", { name: "Отменить слот" }));
+    await waitFor(() => expect(mocks.cancelPlanContent).toHaveBeenCalledWith(
+      "post-overdue-plan",
+    ));
+    await waitFor(() => expect(
+      within(section).queryByText("Просроченный плановый пост"),
+    ).not.toBeInTheDocument());
     expect(mocks.publishNow).not.toHaveBeenCalled();
   });
 

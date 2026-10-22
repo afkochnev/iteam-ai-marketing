@@ -188,6 +188,7 @@ describe("Content and approvals UI", () => {
   it("shows the approved post version, article provenance and its plan-owned schedule action", async () => {
     const articleVersion = "article-version-1";
     const postVersion = "post-version-1";
+    const plannedAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     mocks.get.mockResolvedValue({
       ...article,
       id: "post-1",
@@ -200,8 +201,8 @@ describe("Content and approvals UI", () => {
       current_version: { ...article.current_version, id: postVersion, content: "Текст поста", version_number: 1, derivations: [{ source_content_item_id: "article-1", source_content_item_title: "Исходная статья", source_content_version_id: articleVersion, source_version_number: 2, section_key: "problem" }] },
       versions: [{ id: postVersion, version_number: 1, created_at: article.created_at, change_description: null }],
     });
-    mocks.plansList.mockResolvedValue([{ id: "plan-1", campaign_id: "campaign-1", status: "APPROVED", planning_horizon_start: article.created_at, planning_horizon_end: article.updated_at, timezone_policy: "browser", created_by_user_id: "user-1", generated_by_agent_run_id: null, feedback_analysis_id: null, approved_at: article.updated_at, approved_by_user_id: "user-1", items: [{ id: "plan-item-1", position: 1, scheduled_at: "2026-10-03T10:00:00Z", channel: "VK", source_content_item_id: "article-1", source_content_version_id: articleVersion, topic: "Проблема", angle: "Практический вывод", purpose: "Объяснить", format: "post", message_brief: "Бриф", source_claim_ids: ["claim-1"], source_support_summary: "Тезис из статьи", status: "PLANNED", near_publication_warnings: [] }] }]);
-    mocks.scheduleContent.mockResolvedValue({ id: "publication-1", content_item_id: "post-1", content_version_id: postVersion, channel: "VK", status: "SCHEDULED", scheduled_at: "2026-10-03T10:00:00Z" });
+    mocks.plansList.mockResolvedValue([{ id: "plan-1", campaign_id: "campaign-1", status: "APPROVED", planning_horizon_start: article.created_at, planning_horizon_end: article.updated_at, timezone_policy: "browser", created_by_user_id: "user-1", generated_by_agent_run_id: null, feedback_analysis_id: null, approved_at: article.updated_at, approved_by_user_id: "user-1", items: [{ id: "plan-item-1", position: 1, scheduled_at: plannedAt, channel: "VK", source_content_item_id: "article-1", source_content_version_id: articleVersion, topic: "Проблема", angle: "Практический вывод", purpose: "Объяснить", format: "post", message_brief: "Бриф", source_claim_ids: ["claim-1"], source_support_summary: "Тезис из статьи", status: "PLANNED", near_publication_warnings: [] }] }]);
+    mocks.scheduleContent.mockResolvedValue({ id: "publication-1", content_item_id: "post-1", content_version_id: postVersion, channel: "VK", status: "SCHEDULED", scheduled_at: plannedAt });
     render(<ContentDetailPage />);
     expect((await screen.findAllByRole("link", { name: "Исходная статья" })).length).toBeGreaterThan(0);
     expect(screen.getAllByRole("link", { name: "Исходная статья" })[0]).toHaveAttribute("href", "/content/article-1");
