@@ -1,0 +1,96 @@
+name: Fix PR39 CI findings
+
+on:
+  push:
+    branches:
+      - fix/overdue-plan-content-decisions
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/overdue-plan-content-decisions
+          fetch-depth: 0
+
+      - name: Apply targeted fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              file = Path(path)
+              text = file.read_text(encoding="utf-8")
+              if text.count(old) != 1:
+                  raise SystemExit(f"Expected one match in {path}: {old!r}; found {text.count(old)}")
+              file.write_text(text.replace(old, new, 1), encoding="utf-8")
+
+          content_path = "frontend/app/content/[id]/page.tsx"
+          replace_once(
+              content_path,
+              '  const [notice, setNotice] = useState("");\n',
+              '  const [notice, setNotice] = useState("");\n  const [snapshotTime, setSnapshotTime] = useState<number | null>(null);\n',
+          )
+          replace_once(
+              content_path,
+              '      setRevisionProgress(currentRevision);\n',
+              '      setRevisionProgress(currentRevision);\n      setSnapshotTime(Date.now());\n',
+          )
+          replace_once(
+              content_path,
+              '  const planScheduleInPast = Boolean(\n    planItem?.scheduled_at && Date.parse(planItem.scheduled_at) <= Date.now()\n  );\n',
+              '  const planScheduleInPast = Boolean(\n    planItem?.scheduled_at\n    && snapshotTime !== null\n    && Date.parse(planItem.scheduled_at) <= snapshotTime\n  );\n',
+          )
+
+          publications_path = "frontend/app/publications/page.tsx"
+          replace_once(
+              publications_path,
+              '  const [busyKey, setBusyKey] = useState<string | null>(null);\n',
+              '  const [busyKey, setBusyKey] = useState<string | null>(null);\n  const [snapshotTime, setSnapshotTime] = useState<number | null>(null);\n',
+          )
+          replace_once(
+              publications_path,
+              '    const from = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);\n',
+              '    const loadStartedAt = Date.now();\n    const from = new Date(loadStartedAt - 30 * 24 * 60 * 60 * 1000);\n',
+          )
+          replace_once(
+              publications_path,
+              '      setFailures(results.flatMap((result) => result.failed));\n',
+              '      setSnapshotTime(loadStartedAt);\n      setFailures(results.flatMap((result) => result.failed));\n',
+          )
+          replace_once(
+              publications_path,
+              '    if (Number.isNaN(parsed.getTime()) || parsed.getTime() <= Date.now()) {\n',
+              '    if (Number.isNaN(parsed.getTime())) {\n',
+          )
+          replace_once(
+              publications_path,
+              '    item.planApproved\n    && item.plan_scheduled_at\n    && Date.parse(item.plan_scheduled_at) <= Date.now()\n',
+              '    item.planApproved\n    && item.plan_scheduled_at\n    && snapshotTime !== null\n    && Date.parse(item.plan_scheduled_at) <= snapshotTime\n',
+          )
+          PY
+
+          cd backend
+          python -m pip install --quiet ruff==0.12.10
+          ruff format app/services/publication_service.py app/tests/test_plan_publication_scheduling.py
+          cd ..
+          rm -f .github/workflows/fix-pr39-ci.yml
+
+      - name: Commit fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo "No changes produced" >&2; exit 1; }
+          git commit -m "Fix PR39 CI findings"
+          git push origin HEAD:fix/overdue-plan-content-decisions
