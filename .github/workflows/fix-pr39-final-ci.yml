@@ -31,56 +31,16 @@ jobs:
               text = file.read_text(encoding="utf-8")
               count = text.count(old)
               if count != 1:
-                  raise SystemExit(f"Expected one match in {path}; found {count}: {old!r}")
+                  raise SystemExit(f"Expected one match in {path}; found {count}")
               file.write_text(text.replace(old, new, 1), encoding="utf-8")
 
-          replace_once(
-              "backend/app/services/publication_service.py",
-              '''    async def _active_or_published_for_plan_content(
-        self,
-        item: ContentItem,
-        plan_item: PublicationPlanItem,
-    ) -> Publication | None:
-        return await self.session.scalar(
-            select(Publication)
-            .where(
-                Publication.content_item_id == item.id,
-                Publication.channel == plan_item.channel,
-                Publication.status.in_((*ACTIVE_PUBLICATION_STATUSES, PublicationStatus.PUBLISHED)),
-            )
-            .order_by(Publication.created_at.desc())
-            .with_for_update()
-        )
-''',
-              '''    async def _active_or_published_for_plan_content(
-        self,
-        item: ContentItem,
-        plan_item: PublicationPlanItem,
-    ) -> Publication | None:
-        publication: Publication | None = await self.session.scalar(
-            select(Publication)
-            .where(
-                Publication.content_item_id == item.id,
-                Publication.channel == plan_item.channel,
-                Publication.status.in_((*ACTIVE_PUBLICATION_STATUSES, PublicationStatus.PUBLISHED)),
-            )
-            .order_by(Publication.created_at.desc())
-            .with_for_update()
-        )
-        return publication
-''',
-          )
+          service = "backend/app/services/publication_service.py"
+          replace_once(service, "        return await self.session.scalar(\n            select(Publication)\n            .where(\n                Publication.content_item_id == item.id,\n                Publication.channel == plan_item.channel,\n                Publication.status.in_((*ACTIVE_PUBLICATION_STATUSES, PublicationStatus.PUBLISHED)),\n", "        publication: Publication | None = await self.session.scalar(\n            select(Publication)\n            .where(\n                Publication.content_item_id == item.id,\n                Publication.channel == plan_item.channel,\n                Publication.status.in_((*ACTIVE_PUBLICATION_STATUSES, PublicationStatus.PUBLISHED)),\n")
+          replace_once(service, "            .order_by(Publication.created_at.desc())\n            .with_for_update()\n        )\n\n    async def cancel_overdue_plan_content(\n", "            .order_by(Publication.created_at.desc())\n            .with_for_update()\n        )\n        return publication\n\n    async def cancel_overdue_plan_content(\n")
 
-          replace_once(
-              "frontend/tests/publications.test.tsx",
-              '    expect(within(section).getByText("Просроченный плановый пост")).toBeInTheDocument();\n',
-              '    expect(await within(section).findByText("Просроченный плановый пост")).toBeInTheDocument();\n',
-          )
-          replace_once(
-              "frontend/tests/publications.test.tsx",
-              '    fireEvent.click(within(section).getByRole("button", { name: "Отменить слот" }));\n',
-              '    fireEvent.click(await within(section).findByRole("button", { name: "Отменить слот" }));\n',
-          )
+          tests = "frontend/tests/publications.test.tsx"
+          replace_once(tests, "    expect(within(section).getByText(\"Просроченный плановый пост\")).toBeInTheDocument();\n", "    expect(await within(section).findByText(\"Просроченный плановый пост\")).toBeInTheDocument();\n")
+          replace_once(tests, "    fireEvent.click(within(section).getByRole(\"button\", { name: \"Отменить слот\" }));\n", "    fireEvent.click(await within(section).findByRole(\"button\", { name: \"Отменить слот\" }));\n")
           PY
           rm -f .github/workflows/fix-pr39-final-ci.yml
 
@@ -94,5 +54,3 @@ jobs:
           git diff --cached --quiet && { echo "No changes produced" >&2; exit 1; }
           git commit -m "Fix final PR39 CI findings"
           git push origin HEAD:fix/overdue-plan-content-decisions
-
-# Activation commit: workflow was already present before this push.
