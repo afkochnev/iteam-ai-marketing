@@ -407,3 +407,110 @@ async def test_concurrent_scheduling_creates_one_authorized_delivery(db_session:
     results = await asyncio.gather(schedule_once(), schedule_once(), return_exceptions=True)
     assert len([result for result in results if isinstance(result, AppError)]) == 1
     assert await db_session.scalar(select(func.count()).select_from(Publication)) == 1
+
+
+
+@pytest.mark.asyncio
+async def test_overdue_plan_slot_can_be_cancelled_without_provider_authorization(
+    db_session: AsyncSession,
+):
+    user, _, post, version, item = await plan_post(db_session)
+    item.scheduled_at = datetime.now(UTC) - timedelta(hours=2)
+    await db_session.commit()
+
+    service = PublicationService(db_session)
+    result = await service.cancel_overdue_plan_content(
+        post.id,
+        user,
+        reason="Слот больше не актуален",
+    )
+    assert result.status is PublicationStatus.CANCELLED
+    assert result.content_version_id == version.id
+    assert result.scheduled_at == item.scheduled_at
+    assert result.approved_for_publish_at is None
+    assert result.approved_for_publish_by is None
+
+    row = await db_session.get(Publication, result.id)
+    assert row is not None
+    assert row.execution_token is None
+    repeated = await service.cancel_overdue_plan_content(post.id, user, reason=None)
+    assert repeated.id == result.id
+
+
+@pytest.mark.asyncio
+async def test_overdue_plan_slot_reschedule_is_audited_and_claimable(
+    db_session: AsyncSession,
+    monkeypatch,
+):
+    from app.core.config import settings
+    from app.services import publication_service
+
+    user, _, post, version, item = await plan_post(db_session)
+    now = datetime.now(UTC)
+    item.scheduled_at = now - timedelta(hours=2)
+    future = now + timedelta(days=2)
+    await db_session.commit()
+
+    service = PublicationService(db_session)
+    result = await service.reschedule_overdue_plan_content(
+        post.id,
+        future,
+        user,
+        reason="Перенос после просроченного слота",
+    )
+    assert result.status is PublicationStatus.SCHEDULED
+    assert result.scheduled_at == future
+    assert result.content_version_id == version.id
+
+    event = await db_session.scalar(
+        select(ActivityLog).where(
+            ActivityLog.operation_key
+            == f"publication-plan-slot-rescheduled:{result.id}"
+        )
+    )
+    assert event is not None
+    assert event.metadata_["original_scheduled_at"] == item.scheduled_at.isoformat()
+    assert event.metadata_["effective_scheduled_at"] == future.isoformat()
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    monkeypatch.setattr(publication_service, "utc_now", lambda: future + timedelta(seconds=1))
+    claimed = await service.claim_for_publish(result.id, user)
+    assert claimed.status is PublicationStatus.PUBLISHING
+
+
+@pytest.mark.asyncio
+async def test_rescheduled_plan_slot_fails_closed_after_schedule_tampering(
+    db_session: AsyncSession,
+    monkeypatch,
+):
+    from app.core.config import settings
+    from app.services import publication_service
+
+    user, _, post, _, item = await plan_post(db_session)
+    now = datetime.now(UTC)
+    item.scheduled_at = now - timedelta(hours=2)
+    future = now + timedelta(days=2)
+    await db_session.commit()
+
+    service = PublicationService(db_session)
+    result = await service.reschedule_overdue_plan_content(
+        post.id,
+        future,
+        user,
+        reason=None,
+    )
+    row = await db_session.get(Publication, result.id)
+    assert row is not None
+    row.scheduled_at = future + timedelta(hours=1)
+    await db_session.commit()
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    monkeypatch.setattr(
+        publication_service,
+        "utc_now",
+        lambda: future + timedelta(hours=2),
+    )
+    with pytest.raises(AppError) as error:
+        await service.claim_for_publish(result.id, user)
+    assert error.value.code == "PUBLICATION_PLAN_SCHEDULE_MISMATCH"
+    assert row.execution_token is None

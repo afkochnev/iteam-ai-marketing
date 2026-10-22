@@ -161,8 +161,14 @@ function PublicationsWorkspace() {
             && item.status === "APPROVED"
             && item.approved_version_id
             && item.approved_version_id === item.current_version_id
-            && ![...all.values()].some((publication) => (
+            && !publications.some((publication) => (
               publication.content_item_id === item.id && publication.status !== "CANCELLED"
+            ))
+            && !publications.some((publication) => (
+              publication.content_item_id === item.id
+              && publication.content_version_id === item.approved_version_id
+              && publication.status === "CANCELLED"
+              && publication.scheduled_at === item.plan_scheduled_at
             ))
           )).map((item) => ({
             ...item,
@@ -324,6 +330,69 @@ function PublicationsWorkspace() {
     );
   }
 
+  async function performCandidateAction(
+    item: Candidate,
+    action: () => Promise<Publication>,
+    successMessage: string,
+  ) {
+    const key = `candidate:${item.id}`;
+    setBusyKey(key);
+    setActionNotice("");
+    setFeedback((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    try {
+      const publication = await action();
+      applyPublication(publication, { campaign: item.campaign, title: item.title });
+      setActionNotice(successMessage);
+      setFeedback((current) => ({
+        ...current,
+        [key]: { tone: "success", message: successMessage },
+      }));
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Не удалось выполнить действие.";
+      setFeedback((current) => ({
+        ...current,
+        [key]: { tone: "error", message },
+      }));
+    } finally {
+      setBusyKey(null);
+    }
+  }
+
+  function cancelOverdueCandidate(item: Candidate) {
+    if (!window.confirm("Отменить просроченный слот? Внешняя отправка выполняться не будет.")) return;
+    void performCandidateAction(
+      item,
+      () => publicationsApi.cancelPlanContent(item.id),
+      "Просроченный слот отменён. Внешняя отправка не выполнялась.",
+    );
+  }
+
+  function rescheduleOverdueCandidate(item: Candidate) {
+    const value = window.prompt("Новая дата и время публикации (ISO или локальное время браузера)");
+    if (!value) return;
+    const parsed = new Date(value);
+    const key = `candidate:${item.id}`;
+    if (Number.isNaN(parsed.getTime()) || parsed.getTime() <= Date.now()) {
+      setFeedback((current) => ({
+        ...current,
+        [key]: {
+          tone: "error",
+          message: "Укажите корректные будущие дату и время.",
+        },
+      }));
+      return;
+    }
+    void performCandidateAction(
+      item,
+      () => publicationsApi.reschedulePlanContent(item.id, parsed.toISOString()),
+      "Новое время сохранено отдельным решением оператора.",
+    );
+  }
+
   function publishNow(row: CalendarRow) {
     if (!window.confirm("Поставить точную согласованную версию в очередь для отправки сейчас?")) return;
     void performAction(
@@ -380,7 +449,13 @@ function PublicationsWorkspace() {
   const attention = rows.filter((item) => (
     item.status !== "CANCELLED" && (item.status === "FAILED" || item.failure_code)
   ));
-  const ready = candidates.filter((item) => item.planApproved);
+  const overdueCandidates = candidates.filter((item) => (
+    item.planApproved
+    && item.plan_scheduled_at
+    && Date.parse(item.plan_scheduled_at) <= Date.now()
+  ));
+  const overdueCandidateIds = new Set(overdueCandidates.map((item) => item.id));
+  const ready = candidates.filter((item) => item.planApproved && !overdueCandidateIds.has(item.id));
   const needsPlan = candidates.filter((item) => !item.planApproved);
   const readyIncomplete = failures.some((failure) => failure.kind !== "calendar");
   const rowsIncomplete = failures.some((failure) => (
@@ -395,6 +470,15 @@ function PublicationsWorkspace() {
   const delivery = (item: CalendarRow) => (
     <PublicationDeliveryNotice providerEnabled={item.provider_enabled} />
   );
+  const candidateFeedback = (item: Candidate) => {
+    const value = feedback[`candidate:${item.id}`];
+    if (!value) return null;
+    return (
+      <p role={value.tone === "error" ? "alert" : "status"} className={value.tone === "error" ? "error" : "notice"}>
+        {value.message}
+      </p>
+    );
+  };
   const actionFeedback = (item: CalendarRow) => {
     const value = feedback[`publication:${item.publication_id}`];
     if (!value) return null;
@@ -429,7 +513,7 @@ function PublicationsWorkspace() {
       <a className="metric-card" href="#ready"><strong>{readyIncomplete ? "—" : ready.length}</strong><span>Готовы к планированию</span></a>
       <a className="metric-card" href="#active"><strong>{rowsIncomplete ? "—" : active.length}</strong><span>Требуют действия / В процессе</span></a>
       <a className="metric-card" href="#upcoming"><strong>{rowsIncomplete ? "—" : upcoming.length}</strong><span>Предстоящие</span></a>
-      <a className="metric-card" href="#overdue"><strong>{rowsIncomplete ? "—" : overdue.length}</strong><span>Просрочено</span></a>
+      <a className="metric-card" href="#overdue"><strong>{rowsIncomplete || readyIncomplete ? "—" : overdue.length + overdueCandidates.length}</strong><span>Просрочено</span></a>
       <a className="metric-card" href="#published"><strong>{rowsIncomplete ? "—" : published.length}</strong><span>Опубликовано</span></a>
       <a className="metric-card" href="#attention"><strong>{rowsIncomplete ? "—" : attention.length}</strong><span>Требуют проверки</span></a>
     </div>
@@ -460,7 +544,20 @@ function PublicationsWorkspace() {
 
       <section className="section-block" id="overdue" aria-labelledby="overdue-heading">
         <h2 id="overdue-heading">Просрочены / Требуют решения</h2>
-        {overdue.length ? <div className="content-stack">{overdue.map((item) => <article className="content-card" id={`publication-${item.publication_id}`} tabIndex={-1} key={item.publication_id}>
+        {overdue.length || overdueCandidates.length ? <div className="content-stack">
+          {overdueCandidates.map((item) => <article className="content-card" id={`plan-content-${item.id}`} tabIndex={-1} key={`plan-content-${item.id}`}>
+            <h3><Link href={`/content/${item.id}`}>{item.title}</Link></h3>
+            <p><Link href={`/campaigns/${item.campaign.id}`}>{item.campaign.name}</Link> · {item.plan_channel ?? item.channel} · Плановое время: {item.plan_scheduled_at ? formatDateTime(item.plan_scheduled_at) : "—"}</p>
+            <p>Утверждённая версия v{item.approved_version_number ?? item.current_version_number}</p>
+            <p role="alert">Плановый слот прошёл до создания Publication. Требуется отдельное решение оператора.</p>
+            <div className="actions">
+              <button disabled={busyKey === `candidate:${item.id}`} onClick={() => rescheduleOverdueCandidate(item)}>Перенести</button>
+              <button className="secondary" disabled={busyKey === `candidate:${item.id}`} onClick={() => cancelOverdueCandidate(item)}>Отменить слот</button>
+            </div>
+            {candidateFeedback(item)}
+            <p className="subtle">Утверждённый медиаплан останется в истории с исходной датой; решение оператора будет записано отдельно.</p>
+          </article>)}
+          {overdue.map((item) => <article className="content-card" id={`publication-${item.publication_id}`} tabIndex={-1} key={item.publication_id}>
           <h3><Link href={`/content/${item.content_item_id}`}>{item.title}</Link></h3>
           <p><Link href={`/campaigns/${item.campaign.id}`}>{item.campaign.name}</Link> · {item.channel} · Плановое время: {item.scheduled_at ? formatDateTime(item.scheduled_at) : "—"}</p>
           {version(item)}
@@ -474,7 +571,8 @@ function PublicationsWorkspace() {
           {actionFeedback(item)}
           <p>Перенос публикации из утверждённого медиаплана требует отдельного изменения медиаплана.</p>
           <Link href={`/campaigns/${item.campaign.id}/plan`}>Проверить медиаплан и расписание</Link>
-        </article>)}</div> : rowsIncomplete || loading ? incomplete : <p>Просроченных публикаций нет.</p>}
+        </article>)}
+        </div> : rowsIncomplete || readyIncomplete || loading ? incomplete : <p>Просроченных публикаций нет.</p>}
       </section>
 
       <section className="section-block" id="active" aria-labelledby="active-heading">

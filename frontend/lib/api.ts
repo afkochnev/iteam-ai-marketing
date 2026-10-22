@@ -194,6 +194,8 @@ export const contentApi = {
 };
 export const publicationsApi = {
   scheduleContent: (contentId: string) => request<Publication>(`/publications/plan-content/${contentId}/schedule`, { method: "POST" }),
+  cancelPlanContent: (contentId: string, reason?: string) => request<Publication>(`/publications/plan-content/${contentId}/cancel`, { method: "POST", body: JSON.stringify({ reason: reason || null }) }),
+  reschedulePlanContent: (contentId: string, scheduled_at: string, reason?: string) => request<Publication>(`/publications/plan-content/${contentId}/reschedule`, { method: "POST", body: JSON.stringify({ scheduled_at, reason: reason || null }) }),
   listCampaign: (campaignId: string) => request<Publication[]>(`/publications/campaign/${campaignId}`),
   calendar: (campaignId: string, from: string, to: string) => request<PublicationCalendarItem[]>(`/publications/campaign/${campaignId}/calendar?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
   create: (payload: { content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK" }) => request<Publication>("/publications", { method: "POST", body: JSON.stringify(payload) }),

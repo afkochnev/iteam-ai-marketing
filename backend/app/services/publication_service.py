@@ -14,6 +14,7 @@ from app.integrations.telegram import (
     VKProvider,
     VKProviderError,
 )
+from app.models.activity import ActivityLog
 from app.models.approval import Approval, ApprovalObjectType, ApprovalStatus
 from app.models.content import (
     ContentDerivation,
@@ -132,16 +133,22 @@ class PublicationService:
 
     async def _ensure_plan_snapshot(self, publication: Publication, item: ContentItem) -> None:
         plan_item = await self._plan_item(item)
-        if plan_item is not None and (
-            publication.scheduled_at is None
-            or publication.scheduled_at != plan_item.scheduled_at
-            or publication.channel != plan_item.channel
-        ):
-            raise AppError(
-                "PUBLICATION_PLAN_SCHEDULE_MISMATCH",
-                "Публикация не соответствует утверждённому расписанию.",
-                409,
-            )
+        if plan_item is None:
+            return
+        matches_plan = (
+            publication.scheduled_at is not None
+            and publication.scheduled_at == plan_item.scheduled_at
+            and publication.channel == plan_item.channel
+        )
+        if matches_plan:
+            return
+        if await self._valid_plan_schedule_override(publication, plan_item):
+            return
+        raise AppError(
+            "PUBLICATION_PLAN_SCHEDULE_MISMATCH",
+            "Публикация не соответствует утверждённому расписанию.",
+            409,
+        )
 
     @staticmethod
     def _future_plan_schedule(plan_item: PublicationPlanItem) -> datetime:
@@ -160,6 +167,262 @@ class PublicationService:
                 409,
             )
         return scheduled.astimezone(UTC)
+
+
+    @staticmethod
+    def _plan_override_operation_key(publication_id: UUID) -> str:
+        return f"publication-plan-slot-rescheduled:{publication_id}"
+
+    @staticmethod
+    def _utc_iso(value: datetime) -> str:
+        return value.astimezone(UTC).isoformat()
+
+    async def _valid_plan_schedule_override(
+        self,
+        publication: Publication,
+        plan_item: PublicationPlanItem,
+    ) -> bool:
+        if publication.scheduled_at is None or publication.channel != plan_item.channel:
+            return False
+        event = await self.session.scalar(
+            select(ActivityLog).where(
+                ActivityLog.operation_key == self._plan_override_operation_key(publication.id)
+            )
+        )
+        if event is None or event.event_type != "PUBLICATION_PLAN_SLOT_RESCHEDULED":
+            return False
+        metadata = event.metadata_ or {}
+        expected = {
+            "publication_id": str(publication.id),
+            "publication_plan_item_id": str(plan_item.id),
+            "content_version_id": str(publication.content_version_id),
+            "channel": publication.channel.value,
+            "original_scheduled_at": self._utc_iso(plan_item.scheduled_at),
+            "effective_scheduled_at": self._utc_iso(publication.scheduled_at),
+        }
+        return all(str(metadata.get(key)) == value for key, value in expected.items())
+
+    async def _record_plan_schedule_override(
+        self,
+        publication: Publication,
+        plan_item: PublicationPlanItem,
+        user: User,
+        *,
+        reason: str | None,
+        source_publication_id: UUID | None = None,
+    ) -> None:
+        if publication.scheduled_at is None:
+            raise AppError(
+                "PUBLICATION_SCHEDULE_REQUIRED",
+                "Для переноса требуется новое время публикации.",
+                409,
+            )
+        metadata = {
+            "publication_id": str(publication.id),
+            "publication_plan_item_id": str(plan_item.id),
+            "content_version_id": str(publication.content_version_id),
+            "channel": publication.channel.value,
+            "original_scheduled_at": self._utc_iso(plan_item.scheduled_at),
+            "effective_scheduled_at": self._utc_iso(publication.scheduled_at),
+            "reason": reason,
+        }
+        if source_publication_id is not None:
+            metadata["source_publication_id"] = str(source_publication_id)
+        await ActivityLogService(self.session).record(
+            "PUBLICATION_PLAN_SLOT_RESCHEDULED",
+            operation_key=self._plan_override_operation_key(publication.id),
+            campaign_id=publication.campaign_id,
+            user_id=user.id,
+            content_item_id=publication.content_item_id,
+            metadata=metadata,
+        )
+
+    async def _overdue_plan_content(
+        self,
+        content_id: UUID,
+    ) -> tuple[ContentItem, PublicationPlanItem, UUID]:
+        item = await self.session.scalar(
+            select(ContentItem).where(ContentItem.id == content_id).with_for_update()
+        )
+        if item is None:
+            raise AppError("CONTENT_NOT_FOUND", "Материал не найден.", 404)
+        plan_item = await self._plan_item(item)
+        if plan_item is None:
+            raise AppError(
+                "PUBLICATION_PLAN_LINK_REQUIRED",
+                "Для решения по просроченному слоту требуется пункт плана.",
+                409,
+            )
+        if plan_item.scheduled_at.tzinfo is None or plan_item.scheduled_at.utcoffset() is None:
+            raise AppError(
+                "PUBLICATION_TIMEZONE_REQUIRED",
+                "Плановая дата должна содержать timezone.",
+                409,
+            )
+        if plan_item.scheduled_at > utc_now():
+            raise AppError(
+                "PUBLICATION_PLAN_ITEM_NOT_OVERDUE",
+                "Плановый слот ещё не просрочен.",
+                409,
+            )
+        if item.current_version_id is None:
+            raise AppError(
+                "PUBLICATION_APPROVAL_REQUIRED",
+                "Требуется точная согласованная версия.",
+                409,
+            )
+        await self._ensure_content_version_approved(
+            item.id,
+            item.current_version_id,
+            plan_item.channel,
+        )
+        return item, plan_item, item.current_version_id
+
+    async def _active_or_published_for_plan_content(
+        self,
+        item: ContentItem,
+        plan_item: PublicationPlanItem,
+    ) -> Publication | None:
+        return await self.session.scalar(
+            select(Publication)
+            .where(
+                Publication.content_item_id == item.id,
+                Publication.channel == plan_item.channel,
+                Publication.status.in_(
+                    (*ACTIVE_PUBLICATION_STATUSES, PublicationStatus.PUBLISHED)
+                ),
+            )
+            .order_by(Publication.created_at.desc())
+            .with_for_update()
+        )
+
+    async def cancel_overdue_plan_content(
+        self,
+        content_id: UUID,
+        user: User,
+        *,
+        reason: str | None,
+    ) -> PublicationResponse:
+        item, plan_item, version_id = await self._overdue_plan_content(content_id)
+        existing_active = await self._active_or_published_for_plan_content(item, plan_item)
+        if existing_active is not None:
+            raise AppError(
+                "PUBLICATION_ALREADY_EXISTS",
+                "Для материала уже существует активная или опубликованная публикация.",
+                409,
+            )
+        existing_cancelled = await self.session.scalar(
+            select(Publication)
+            .where(
+                Publication.content_item_id == item.id,
+                Publication.content_version_id == version_id,
+                Publication.channel == plan_item.channel,
+                Publication.status == PublicationStatus.CANCELLED,
+                Publication.scheduled_at == plan_item.scheduled_at,
+            )
+            .order_by(Publication.created_at.desc())
+            .with_for_update()
+        )
+        if existing_cancelled is not None:
+            return await self._response(existing_cancelled)
+        publication = Publication(
+            campaign_id=item.campaign_id,
+            content_item_id=item.id,
+            content_version_id=version_id,
+            channel=plan_item.channel,
+            status=PublicationStatus.CANCELLED,
+            scheduled_at=plan_item.scheduled_at.astimezone(UTC),
+        )
+        self.session.add(publication)
+        await self.session.flush()
+        await ActivityLogService(self.session).record(
+            "PUBLICATION_PLAN_SLOT_CANCELLED",
+            operation_key=f"publication-plan-slot-cancelled:{plan_item.id}:{version_id}",
+            campaign_id=item.campaign_id,
+            user_id=user.id,
+            content_item_id=item.id,
+            metadata={
+                "publication_id": str(publication.id),
+                "publication_plan_item_id": str(plan_item.id),
+                "content_version_id": str(version_id),
+                "channel": plan_item.channel.value,
+                "original_scheduled_at": self._utc_iso(plan_item.scheduled_at),
+                "reason": reason,
+            },
+        )
+        await self.session.commit()
+        await self.session.refresh(publication)
+        return await self._response(publication)
+
+    async def reschedule_overdue_plan_content(
+        self,
+        content_id: UUID,
+        scheduled_at: datetime,
+        user: User,
+        *,
+        reason: str | None,
+    ) -> PublicationResponse:
+        if scheduled_at.tzinfo is None or scheduled_at.utcoffset() is None:
+            raise AppError(
+                "PUBLICATION_TIMEZONE_REQUIRED",
+                "Время публикации должно содержать timezone.",
+                422,
+            )
+        scheduled_at = scheduled_at.astimezone(UTC)
+        if scheduled_at <= utc_now():
+            raise AppError(
+                "PUBLICATION_TIME_IN_PAST",
+                "Новое время публикации должно быть в будущем.",
+                422,
+            )
+        item, plan_item, version_id = await self._overdue_plan_content(content_id)
+        existing_active = await self._active_or_published_for_plan_content(item, plan_item)
+        if existing_active is not None:
+            raise AppError(
+                "PUBLICATION_ALREADY_EXISTS",
+                "Для материала уже существует активная или опубликованная публикация.",
+                409,
+            )
+        publication = Publication(
+            campaign_id=item.campaign_id,
+            content_item_id=item.id,
+            content_version_id=version_id,
+            channel=plan_item.channel,
+            status=PublicationStatus.SCHEDULED,
+            scheduled_at=scheduled_at,
+            approved_for_publish_at=utc_now(),
+            approved_for_publish_by=user.id,
+        )
+        self.session.add(publication)
+        await self.session.flush()
+        await ActivityLogService(self.session).record(
+            "PUBLICATION_CREATED",
+            operation_key=f"publication-created:{publication.id}",
+            campaign_id=item.campaign_id,
+            user_id=user.id,
+            content_item_id=item.id,
+            metadata={
+                "publication_id": str(publication.id),
+                "content_version_id": str(version_id),
+            },
+        )
+        await ActivityLogService(self.session).record(
+            "PUBLICATION_APPROVED",
+            operation_key=f"publication-approved:{publication.id}",
+            campaign_id=item.campaign_id,
+            user_id=user.id,
+            content_item_id=item.id,
+            metadata={"publication_id": str(publication.id)},
+        )
+        await self._record_plan_schedule_override(
+            publication,
+            plan_item,
+            user,
+            reason=reason,
+        )
+        await self.session.commit()
+        await self.session.refresh(publication)
+        return await self._response(publication)
 
     async def schedule_content(self, content_id: UUID, user: User) -> PublicationResponse:
         item = await self.session.scalar(
@@ -911,6 +1174,18 @@ class PublicationService:
         old.status = PublicationStatus.CANCELLED
         self.session.add(replacement)
         await self.session.flush()
+        plan_item = await self._plan_item(item)
+        if (
+            plan_item is not None
+            and replacement.scheduled_at != plan_item.scheduled_at
+        ):
+            await self._record_plan_schedule_override(
+                replacement,
+                plan_item,
+                user,
+                reason="Перенос унаследован при замене утверждённой версии.",
+                source_publication_id=old.id,
+            )
         await ActivityLogService(self.session).record(
             "PUBLICATION_VERSION_REPLACED",
             operation_key=f"publication-version-replaced:{old.id}:{replacement.id}",
