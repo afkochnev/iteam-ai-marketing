@@ -1,0 +1,29 @@
+name: Apply archived content operational read fix
+
+"on":
+  push:
+    branches:
+      - "fix/publication-workspace-followups"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/publication-workspace-followups
+          fetch-depth: 0
+      - name: Apply exact fixes
+        run: python scripts/apply_publication_archived_content_read.py
+      - name: Remove helpers and commit
+        run: |
+          rm .github/workflows/apply-publication-archived-content-read.yml
+          rm scripts/apply_publication_archived_content_read.py
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Include archived content in publication workspace reads"
+          git push origin HEAD:fix/publication-workspace-followups
