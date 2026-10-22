@@ -418,7 +418,7 @@ describe("publication operator actions", () => {
     const overdueSection = await screen.findByRole("region", { name: "Просрочены / Требуют решения" });
     expect(within(overdueSection).queryByText("Отменённый плановый пост")).not.toBeInTheDocument();
     const cancelledSection = screen.getByRole("region", { name: "Отменённые" });
-    expect(within(cancelledSection).getByText("Отменённый плановый пост")).toBeInTheDocument();
+    expect(await within(cancelledSection).findByText("Отменённый плановый пост")).toBeInTheDocument();
   });
 
   it("offers explicit publish-now only when the provider is enabled", async () => {
