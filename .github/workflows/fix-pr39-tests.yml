@@ -40,15 +40,17 @@ jobs:
               '    const postVersion = "post-version-1";\n',
               '    const postVersion = "post-version-1";\n    const plannedAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();\n',
           )
-          replace_once(
-              content_path,
-              'scheduled_at: "2026-10-03T10:00:00Z"',
-              'scheduled_at: plannedAt',
-          )
-          replace_once(
-              content_path,
-              'scheduled_at: "2026-10-03T10:00:00Z"',
-              'scheduled_at: plannedAt',
+          content_file = Path(content_path)
+          content_text = content_file.read_text(encoding="utf-8")
+          old_date = 'scheduled_at: "2026-10-03T10:00:00Z"'
+          if content_text.count(old_date) != 2:
+              raise SystemExit(
+                  f"Expected two scheduled_at fixtures in {content_path}; "
+                  f"found {content_text.count(old_date)}"
+              )
+          content_file.write_text(
+              content_text.replace(old_date, 'scheduled_at: plannedAt'),
+              encoding="utf-8",
           )
 
           publications_path = "frontend/tests/publications.test.tsx"
@@ -75,5 +77,3 @@ jobs:
           git diff --cached --quiet && { echo "No changes produced" >&2; exit 1; }
           git commit -m "Fix PR39 regression test structure"
           git push origin HEAD:fix/overdue-plan-content-decisions
-
-# Separate activation commit so GitHub discovers this workflow before execution.
