@@ -230,11 +230,35 @@ describe("publication operator actions", () => {
       scheduled_at: "2026-10-26T10:00:00Z",
       publication_plan_item_id: null,
     }));
-    vi.spyOn(window, "prompt").mockReturnValue("2026-10-26T10:00:00Z");
     render(<PublicationsPage />);
     const scheduleButton = await screen.findByRole("button", { name: "Назначить время" });
     fireEvent.click(scheduleButton);
-    await waitFor(() => expect(mocks.schedule).toHaveBeenCalledWith("active", "2026-10-26T10:00:00.000Z"));
+    const input = await screen.findByLabelText("Дата и время публикации");
+    fireEvent.change(input, { target: { value: "2026-10-26T10:00" } });
+    fireEvent.click(screen.getByRole("button", { name: "Запланировать" }));
+    await waitFor(() => expect(mocks.schedule).toHaveBeenCalledWith(
+      "active",
+      new Date("2026-10-26T10:00").toISOString(),
+    ));
+  });
+
+  it("makes an archived material publication explicitly cancellation-only", async () => {
+    mocks.content.mockResolvedValue([{
+      id: "post-archived",
+      title: "Архивный пост",
+      status: "ARCHIVED",
+    }]);
+    mocks.publications.mockResolvedValue([publication({
+      id: "archived-draft",
+      content_item_id: "post-archived",
+      status: "DRAFT",
+      scheduled_at: null,
+    })]);
+    render(<PublicationsPage />);
+    const section = await screen.findByRole("region", { name: "Требуют действия / В процессе" });
+    expect(within(section).getByRole("alert")).toHaveTextContent("можно только отменить");
+    expect(within(section).queryByRole("button", { name: "Согласовать публикацию" })).not.toBeInTheDocument();
+    expect(within(section).getByRole("button", { name: "Отменить публикацию" })).toBeInTheDocument();
   });
 
   it("keeps publishing read-only while delivery is in progress", async () => {
@@ -277,6 +301,9 @@ describe("publication operator actions", () => {
     await waitFor(() => expect(mocks.cancel).toHaveBeenCalledWith("overdue"));
     expect(await screen.findByRole("status")).toHaveTextContent("Публикация отменена");
     await waitFor(() => expect(within(section).queryByText("Просроченный пост")).not.toBeInTheDocument());
+    const cancelledSection = screen.getByRole("region", { name: "Отменённые" });
+    expect(within(cancelledSection).getByText("Просроченный пост")).toBeInTheDocument();
+    expect(within(cancelledSection).getByText(/Запись сохранена в истории/)).toBeInTheDocument();
     expect(mocks.publishNow).not.toHaveBeenCalled();
   });
 
@@ -306,15 +333,16 @@ describe("publication operator actions", () => {
       scheduled_at: "2026-10-30T09:00:00Z",
       publication_plan_item_id: "plan-item-overdue",
     }));
-    vi.spyOn(window, "prompt").mockReturnValue("2026-10-30T09:00:00Z");
-
     render(<PublicationsPage />);
     const section = await screen.findByRole("region", { name: "Просрочены / Требуют решения" });
     expect(await within(section).findByText("Просроченный плановый пост")).toBeInTheDocument();
     fireEvent.click(within(section).getByRole("button", { name: "Перенести" }));
+    const input = within(section).getByLabelText("Дата и время публикации");
+    fireEvent.change(input, { target: { value: "2026-10-30T09:00" } });
+    fireEvent.click(within(section).getByRole("button", { name: "Сохранить перенос" }));
     await waitFor(() => expect(mocks.reschedulePlanContent).toHaveBeenCalledWith(
       "post-overdue-plan",
-      "2026-10-30T09:00:00.000Z",
+      new Date("2026-10-30T09:00").toISOString(),
     ));
   });
 
@@ -358,6 +386,41 @@ describe("publication operator actions", () => {
     expect(mocks.publishNow).not.toHaveBeenCalled();
   });
 
+  it("keeps a cancelled exact plan slot in history without reopening it", async () => {
+    mocks.content.mockResolvedValue([{
+      id: "post-cancelled-plan",
+      campaign_id: "campaign-1",
+      title: "Отменённый плановый пост",
+      content_type: "SOCIAL_POST",
+      status: "APPROVED",
+      current_version_id: "exact-v3",
+      approved_version_id: "exact-v3",
+      approved_version_number: 3,
+      publication_plan_item_id: "plan-item-cancelled",
+      plan_channel: "TELEGRAM",
+      plan_scheduled_at: "2026-10-20T09:00:00Z",
+    }]);
+    mocks.plans.mockResolvedValue([{
+      status: "APPROVED",
+      items: [{ id: "plan-item-cancelled", status: "PLANNED" }],
+    }]);
+    mocks.publications.mockResolvedValue([publication({
+      id: "cancelled-reschedule",
+      content_item_id: "post-cancelled-plan",
+      content_version_id: "exact-v3",
+      channel: "TELEGRAM",
+      status: "CANCELLED",
+      scheduled_at: "2026-10-30T09:00:00Z",
+      publication_plan_item_id: "plan-item-cancelled",
+    })]);
+
+    render(<PublicationsPage />);
+    const overdueSection = await screen.findByRole("region", { name: "Просрочены / Требуют решения" });
+    expect(within(overdueSection).queryByText("Отменённый плановый пост")).not.toBeInTheDocument();
+    const cancelledSection = screen.getByRole("region", { name: "Отменённые" });
+    expect(within(cancelledSection).getByText("Отменённый плановый пост")).toBeInTheDocument();
+  });
+
   it("offers explicit publish-now only when the provider is enabled", async () => {
     mocks.content.mockResolvedValue([{ id: "post-1", title: "Просроченный пост" }]);
     mocks.publications.mockResolvedValue([publication({
@@ -393,11 +456,16 @@ describe("publication operator actions", () => {
       scheduled_at: "2026-10-27T10:00:00Z",
       publication_plan_item_id: null,
     }));
-    vi.spyOn(window, "prompt").mockReturnValue("2026-10-27T10:00:00Z");
     render(<PublicationsPage />);
     const section = await screen.findByRole("region", { name: "Предстоящие" });
     fireEvent.click(await within(section).findByRole("button", { name: "Перенести" }));
-    await waitFor(() => expect(mocks.schedule).toHaveBeenCalledWith("upcoming", "2026-10-27T10:00:00.000Z"));
+    const input = within(section).getByLabelText("Дата и время публикации");
+    fireEvent.change(input, { target: { value: "2026-10-27T10:00" } });
+    fireEvent.click(within(section).getByRole("button", { name: "Сохранить перенос" }));
+    await waitFor(() => expect(mocks.schedule).toHaveBeenCalledWith(
+      "upcoming",
+      new Date("2026-10-27T10:00").toISOString(),
+    ));
     expect(within(section).getByRole("button", { name: "Отменить" })).toBeInTheDocument();
   });
 

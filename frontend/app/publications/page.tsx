@@ -7,6 +7,7 @@ import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useAuth } from "@/components/auth-provider";
 import { PageBreadcrumbs } from "@/components/page-breadcrumbs";
 import { PublicationDeliveryNotice } from "@/components/publication-delivery-notice";
+import { PublicationScheduleEditor } from "@/components/publication-schedule-editor";
 import { StatusBadge } from "@/components/status-badge";
 import { useHashTarget } from "@/components/use-hash-target";
 import {
@@ -30,6 +31,7 @@ type CalendarRow = Omit<PublicationCalendarItem, "provider_enabled"> & {
   retry_allowed?: boolean;
   reconciliation_required?: boolean;
   failure_message?: string | null;
+  content_status?: ContentListItem["status"];
   operational_data_complete: boolean;
 };
 
@@ -78,6 +80,7 @@ function PublicationsWorkspace() {
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [snapshotTime, setSnapshotTime] = useState<number | null>(null);
   const [feedback, setFeedback] = useState<Record<string, ActionFeedback>>({});
+  const [scheduleEditorKey, setScheduleEditorKey] = useState<string | null>(null);
   const cache = useRef(new Map<string, Partial<ReadData>>());
   const [failures, setFailures] = useState<ReadFailure[]>([]);
 
@@ -126,6 +129,7 @@ function PublicationsWorkspace() {
           { ...item, campaign, operational_data_complete: false },
         ]));
         for (const publication of publications) {
+          const contentItem = content.find((item) => item.id === publication.content_item_id);
           if (
             settled[1].status === "rejected"
             && settled[0].status === "fulfilled"
@@ -135,9 +139,10 @@ function PublicationsWorkspace() {
             publication_id: publication.id,
             content_item_id: publication.content_item_id,
             content_version_id: publication.content_version_id,
-            title: content.find((item) => item.id === publication.content_item_id)?.title
+            title: contentItem?.title
               ?? all.get(publication.id)?.title
               ?? "Открыть материал",
+            content_status: contentItem?.status,
             channel: publication.channel,
             status: publication.status,
             scheduled_at: publication.scheduled_at,
@@ -170,7 +175,7 @@ function PublicationsWorkspace() {
               publication.content_item_id === item.id
               && publication.content_version_id === item.approved_version_id
               && publication.status === "CANCELLED"
-              && publication.scheduled_at === item.plan_scheduled_at
+              && publication.channel === (item.plan_channel ?? item.channel)
             ))
           )).map((item) => ({
             ...item,
@@ -207,7 +212,7 @@ function PublicationsWorkspace() {
 
   function applyPublication(
     publication: Publication,
-    context?: { campaign?: CampaignListItem; title?: string },
+    context?: { campaign?: CampaignListItem; title?: string; contentStatus?: ContentListItem["status"] },
   ) {
     setRows((current) => {
       const existing = current.find((row) => row.publication_id === publication.id);
@@ -218,6 +223,7 @@ function PublicationsWorkspace() {
         content_item_id: publication.content_item_id,
         content_version_id: publication.content_version_id,
         title: context?.title ?? existing?.title ?? "Открыть материал",
+        content_status: context?.contentStatus ?? existing?.content_status,
         channel: publication.channel,
         status: publication.status,
         scheduled_at: publication.scheduled_at,
@@ -267,7 +273,7 @@ function PublicationsWorkspace() {
     row: CalendarRow,
     action: () => Promise<Publication>,
     successMessage: string,
-  ) {
+  ): Promise<boolean> {
     const key = `publication:${row.publication_id}`;
     setBusyKey(key);
     setActionNotice("");
@@ -284,12 +290,14 @@ function PublicationsWorkspace() {
         ...current,
         [key]: { tone: "success", message: successMessage },
       }));
+      return true;
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Не удалось выполнить действие.";
       setFeedback((current) => ({
         ...current,
         [key]: { tone: "error", message },
       }));
+      return false;
     } finally {
       setBusyKey(null);
     }
@@ -304,24 +312,7 @@ function PublicationsWorkspace() {
   }
 
   function schedulePublication(row: CalendarRow) {
-    const value = window.prompt("Дата и время публикации (ISO или локальное время браузера)");
-    if (!value) return;
-    const parsed = new Date(value);
-    if (Number.isNaN(parsed.getTime())) {
-      setFeedback((current) => ({
-        ...current,
-        [`publication:${row.publication_id}`]: {
-          tone: "error",
-          message: "Укажите корректные дату и время.",
-        },
-      }));
-      return;
-    }
-    void performAction(
-      row,
-      () => publicationsApi.schedule(row.publication_id, parsed.toISOString()),
-      "Новое время публикации сохранено.",
-    );
+    setScheduleEditorKey(`publication:${row.publication_id}`);
   }
 
   function cancelPublication(row: CalendarRow) {
@@ -337,7 +328,7 @@ function PublicationsWorkspace() {
     item: Candidate,
     action: () => Promise<Publication>,
     successMessage: string,
-  ) {
+  ): Promise<boolean> {
     const key = `candidate:${item.id}`;
     setBusyKey(key);
     setActionNotice("");
@@ -348,18 +339,20 @@ function PublicationsWorkspace() {
     });
     try {
       const publication = await action();
-      applyPublication(publication, { campaign: item.campaign, title: item.title });
+      applyPublication(publication, { campaign: item.campaign, title: item.title, contentStatus: item.status });
       setActionNotice(successMessage);
       setFeedback((current) => ({
         ...current,
         [key]: { tone: "success", message: successMessage },
       }));
+      return true;
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Не удалось выполнить действие.";
       setFeedback((current) => ({
         ...current,
         [key]: { tone: "error", message },
       }));
+      return false;
     } finally {
       setBusyKey(null);
     }
@@ -375,25 +368,7 @@ function PublicationsWorkspace() {
   }
 
   function rescheduleOverdueCandidate(item: Candidate) {
-    const value = window.prompt("Новая дата и время публикации (ISO или локальное время браузера)");
-    if (!value) return;
-    const parsed = new Date(value);
-    const key = `candidate:${item.id}`;
-    if (Number.isNaN(parsed.getTime())) {
-      setFeedback((current) => ({
-        ...current,
-        [key]: {
-          tone: "error",
-          message: "Укажите корректные будущие дату и время.",
-        },
-      }));
-      return;
-    }
-    void performCandidateAction(
-      item,
-      () => publicationsApi.reschedulePlanContent(item.id, parsed.toISOString()),
-      "Новое время сохранено отдельным решением оператора.",
-    );
+    setScheduleEditorKey(`candidate:${item.id}`);
   }
 
   function publishNow(row: CalendarRow) {
@@ -449,6 +424,7 @@ function PublicationsWorkspace() {
     ["DRAFT", "WAITING_APPROVAL", "APPROVED", "PUBLISHING"].includes(item.status)
   ));
   const published = rows.filter((item) => item.status === "PUBLISHED");
+  const cancelled = rows.filter((item) => item.status === "CANCELLED");
   const attention = rows.filter((item) => (
     item.status !== "CANCELLED" && (item.status === "FAILED" || item.failure_code)
   ));
@@ -461,6 +437,9 @@ function PublicationsWorkspace() {
   const overdueCandidateIds = new Set(overdueCandidates.map((item) => item.id));
   const ready = candidates.filter((item) => item.planApproved && !overdueCandidateIds.has(item.id));
   const needsPlan = candidates.filter((item) => !item.planApproved);
+  const publicationSourceArchived = (item: CalendarRow) => (
+    item.content_status === "ARCHIVED" || item.campaign.status === "ARCHIVED"
+  );
   const readyIncomplete = failures.some((failure) => failure.kind !== "calendar");
   const rowsIncomplete = failures.some((failure) => (
     failure.kind === "publications" || failure.kind === "calendar"
@@ -495,6 +474,40 @@ function PublicationsWorkspace() {
   const actionUnavailable = (item: CalendarRow) => !item.operational_data_complete && (
     <p className="notice">Операционные действия временно недоступны: сведения о публикации загружены не полностью.</p>
   );
+  const publicationScheduleEditor = (item: CalendarRow) => {
+    const key = `publication:${item.publication_id}`;
+    if (scheduleEditorKey !== key) return null;
+    const rescheduling = item.status === "SCHEDULED";
+    return <PublicationScheduleEditor
+      editorKey={key}
+      title={rescheduling ? "Перенести публикацию" : "Назначить дату публикации"}
+      submitLabel={rescheduling ? "Сохранить перенос" : "Запланировать"}
+      initialScheduledAt={item.scheduled_at}
+      busy={busyKey === key}
+      onClose={() => setScheduleEditorKey(null)}
+      onSubmit={(scheduledAt) => performAction(
+        item,
+        () => publicationsApi.schedule(item.publication_id, scheduledAt),
+        rescheduling ? "Новое время публикации сохранено." : "Публикация запланирована.",
+      )}
+    />;
+  };
+  const candidateScheduleEditor = (item: Candidate) => {
+    const key = `candidate:${item.id}`;
+    if (scheduleEditorKey !== key) return null;
+    return <PublicationScheduleEditor
+      editorKey={key}
+      title="Перенести публикацию"
+      submitLabel="Сохранить перенос"
+      busy={busyKey === key}
+      onClose={() => setScheduleEditorKey(null)}
+      onSubmit={(scheduledAt) => performCandidateAction(
+        item,
+        () => publicationsApi.reschedulePlanContent(item.id, scheduledAt),
+        "Новое время сохранено отдельным решением оператора.",
+      )}
+    />;
+  };
 
   if (authLoading) return <LoadingState />;
 
@@ -519,6 +532,7 @@ function PublicationsWorkspace() {
       <a className="metric-card" href="#upcoming"><strong>{rowsIncomplete ? "—" : upcoming.length}</strong><span>Предстоящие</span></a>
       <a className="metric-card" href="#overdue"><strong>{rowsIncomplete || readyIncomplete ? "—" : overdue.length + overdueCandidates.length}</strong><span>Просрочено</span></a>
       <a className="metric-card" href="#published"><strong>{rowsIncomplete ? "—" : published.length}</strong><span>Опубликовано</span></a>
+      <a className="metric-card" href="#cancelled"><strong>{rowsIncomplete ? "—" : cancelled.length}</strong><span>Отменено</span></a>
       <a className="metric-card" href="#attention"><strong>{rowsIncomplete ? "—" : attention.length}</strong><span>Требуют проверки</span></a>
     </div>
     {loading && <p role="status">Загружаем календарь…</p>}
@@ -558,6 +572,7 @@ function PublicationsWorkspace() {
               <button disabled={busyKey === `candidate:${item.id}`} onClick={() => rescheduleOverdueCandidate(item)}>Перенести</button>
               <button className="secondary" disabled={busyKey === `candidate:${item.id}`} onClick={() => cancelOverdueCandidate(item)}>Отменить слот</button>
             </div>
+            {candidateScheduleEditor(item)}
             {candidateFeedback(item)}
             <p className="subtle">Утверждённый медиаплан останется в истории с исходной датой; решение оператора будет записано отдельно.</p>
           </article>)}
@@ -587,11 +602,13 @@ function PublicationsWorkspace() {
             <p className="row-meta"><Link href={`/campaigns/${item.campaign.id}`}>{item.campaign.name}</Link><span>{item.channel}{item.scheduled_at ? ` · ${formatDateTime(item.scheduled_at)}` : ""}</span>{version(item)}</p>
           </div><StatusBadge status={item.status} label={PUBLICATION_STATUS_LABELS[item.status]} /></div>
           {delivery(item)}
+          {publicationSourceArchived(item) && <p className="warning" role="alert">Материал или кампания находятся в архиве. Согласование и планирование недоступны; эту публикацию можно только отменить.</p>}
           {item.status === "PUBLISHING" ? <p role="status">Отправка выполняется / результат ещё не подтверждён. Повторная отправка недоступна.</p> : item.operational_data_complete ? <div className="actions">
-            {["DRAFT", "WAITING_APPROVAL"].includes(item.status) && <button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => approvePublication(item)}>Согласовать публикацию</button>}
-            {item.status === "APPROVED" && item.publication_plan_item_id === null && <button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => schedulePublication(item)}>Назначить время</button>}
-            <button className="secondary" disabled={busyKey === `publication:${item.publication_id}`} onClick={() => cancelPublication(item)}>Отменить</button>
+            {!publicationSourceArchived(item) && ["DRAFT", "WAITING_APPROVAL"].includes(item.status) && <button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => approvePublication(item)}>Согласовать публикацию</button>}
+            {!publicationSourceArchived(item) && item.status === "APPROVED" && item.publication_plan_item_id === null && <button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => schedulePublication(item)}>Назначить время</button>}
+            <button className="secondary" disabled={busyKey === `publication:${item.publication_id}`} onClick={() => cancelPublication(item)}>{publicationSourceArchived(item) ? "Отменить публикацию" : "Отменить"}</button>
           </div> : actionUnavailable(item)}
+          {publicationScheduleEditor(item)}
           {actionFeedback(item)}
         </article>)}</div> : rowsIncomplete || loading ? incomplete : <p className="empty-state">Публикаций, требующих действия или находящихся в процессе отправки, нет.</p>}
       </section>
@@ -608,6 +625,7 @@ function PublicationsWorkspace() {
             {item.publication_plan_item_id === null && <button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => schedulePublication(item)}>Перенести</button>}
             <button className="secondary" disabled={busyKey === `publication:${item.publication_id}`} onClick={() => cancelPublication(item)}>Отменить</button>
           </div> : actionUnavailable(item)}
+          {publicationScheduleEditor(item)}
           {item.publication_plan_item_id && <p className="muted">Перенос публикации из утверждённого медиаплана требует изменения медиаплана.</p>}
           {actionFeedback(item)}
           <Link href={`/content/${item.content_item_id}#publication`}>Проверить пост и запланированную версию</Link>
@@ -632,6 +650,18 @@ function PublicationsWorkspace() {
           </div> : actionUnavailable(item)}
           {actionFeedback(item)}
         </article>)}</div> : rowsIncomplete || loading ? incomplete : <p className="empty-state">Ошибок отправки нет.</p>}
+      </section>
+
+      <section className="section-block" id="cancelled" aria-label="Отменённые">
+        <h2>Отменённые</h2>
+        {cancelled.length ? <div className="content-stack">{cancelled.map((item) => <article className="content-card" id={`publication-${item.publication_id}`} tabIndex={-1} key={item.publication_id}>
+          <div className="card-heading"><div>
+            <h3><Link href={`/content/${item.content_item_id}`}>{item.title}</Link></h3>
+            <p className="row-meta"><Link href={`/campaigns/${item.campaign.id}`}>{item.campaign.name}</Link><span>{item.channel === "VK" ? "VK" : "Telegram"}{item.scheduled_at ? ` · ${formatDateTime(item.scheduled_at)}` : ""}</span>{version(item)}</p>
+          </div><StatusBadge status={item.status} label={PUBLICATION_STATUS_LABELS[item.status]} /></div>
+          <p>Внешняя отправка не выполняется. Запись сохранена в истории публикаций.</p>
+          {item.content_status === "ARCHIVED" && <p className="subtle">Связанный материал находится в архиве.</p>}
+        </article>)}</div> : rowsIncomplete || loading ? incomplete : <p className="empty-state">Отменённых публикаций нет.</p>}
       </section>
 
       <details className="disclosure" id="published">

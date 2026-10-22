@@ -477,6 +477,37 @@ async def test_overdue_plan_slot_reschedule_is_audited_and_claimable(
 
 
 @pytest.mark.asyncio
+async def test_cancelling_rescheduled_plan_slot_is_terminal(db_session: AsyncSession):
+    user, _, post, _, item = await plan_post(db_session)
+    now = datetime.now(UTC)
+    item.scheduled_at = now - timedelta(hours=2)
+    future = now + timedelta(days=2)
+    await db_session.commit()
+
+    service = PublicationService(db_session)
+    rescheduled = await service.reschedule_overdue_plan_content(
+        post.id,
+        future,
+        user,
+        reason="Перенос",
+    )
+    cancelled = await service.cancel(rescheduled.id, user)
+    assert cancelled.status is PublicationStatus.CANCELLED
+
+    repeated = await service.cancel_overdue_plan_content(post.id, user, reason=None)
+    assert repeated.id == cancelled.id
+    with pytest.raises(AppError) as error:
+        await service.reschedule_overdue_plan_content(
+            post.id,
+            future + timedelta(days=1),
+            user,
+            reason="Повторный перенос",
+        )
+    assert error.value.code == "PUBLICATION_PLAN_SLOT_CANCELLED"
+    assert await db_session.scalar(select(func.count()).select_from(Publication)) == 1
+
+
+@pytest.mark.asyncio
 async def test_rescheduled_plan_slot_fails_closed_after_schedule_tampering(
     db_session: AsyncSession,
     monkeypatch,
