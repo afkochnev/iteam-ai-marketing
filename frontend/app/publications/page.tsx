@@ -110,7 +110,7 @@ function PublicationsWorkspace() {
         const settled = await Promise.allSettled([
           publicationsApi.calendar(campaign.id, from.toISOString(), end.toISOString()),
           publicationsApi.listCampaign(campaign.id),
-          contentApi.list({ campaign_id: campaign.id, content_type: "SOCIAL_POST" }),
+          contentApi.list({ campaign_id: campaign.id, content_type: "SOCIAL_POST", include_archived: "true" }),
           publicationPlansApi.list(campaign.id),
         ]);
         const kinds: ReadKind[] = ["calendar", "publications", "content", "plans"];

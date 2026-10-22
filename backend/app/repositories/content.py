@@ -12,12 +12,13 @@ class ContentRepository:
         self.session = session
 
     async def list(self, **filters: object) -> list[ContentItem]:
+        include_archived = bool(filters.pop("include_archived", False))
         stmt = (
             select(ContentItem)
             .options(selectinload(ContentItem.versions).selectinload(ContentVersion.sources))
             .order_by(ContentItem.created_at.desc(), ContentItem.id.desc())
         )
-        if filters.get("status") is None:
+        if filters.get("status") is None and not include_archived:
             stmt = stmt.where(ContentItem.status != ContentStatus.ARCHIVED)
         for field, value in filters.items():
             if value is not None:

@@ -552,7 +552,7 @@ describe("partial read failures", () => {
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
     expect(mocks[kind]).toHaveBeenCalledTimes(2);
     expect(mocks.campaigns).toHaveBeenCalledTimes(2);
-    expect(mocks.content).toHaveBeenLastCalledWith({ campaign_id: "campaign-1", content_type: "SOCIAL_POST" });
+    expect(mocks.content).toHaveBeenLastCalledWith({ campaign_id: "campaign-1", content_type: "SOCIAL_POST", include_archived: "true" });
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
   });
