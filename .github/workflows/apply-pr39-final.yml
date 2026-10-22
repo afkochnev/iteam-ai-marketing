@@ -1,0 +1,40 @@
+name: Apply PR39 transformation
+
+on:
+  push:
+    branches:
+      - fix/overdue-plan-content-decisions
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/overdue-plan-content-decisions
+          fetch-depth: 0
+
+      - name: Decode and apply transformation
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode .pr39/transform.py.gz.b64 | gzip -d > /tmp/pr39_transform.py
+          python /tmp/pr39_transform.py
+          rm -rf .pr39
+          rm -f .github/workflows/apply-pr39-final.yml
+
+      - name: Commit source changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git diff --cached --quiet && { echo "No source changes were produced" >&2; exit 1; }
+          git commit -m "Handle overdue plan slots before Publication creation"
+          git push origin HEAD:fix/overdue-plan-content-decisions
