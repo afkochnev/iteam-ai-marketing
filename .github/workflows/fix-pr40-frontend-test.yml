@@ -1,0 +1,38 @@
+name: Fix PR40 frontend async assertion
+
+"on":
+  push:
+    branches:
+      - "fix/publication-workspace-followups"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/publication-workspace-followups
+          fetch-depth: 0
+      - name: Patch assertion
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          path = Path("frontend/tests/publications.test.tsx")
+          text = path.read_text()
+          old = '    expect(within(cancelledSection).getByText("Отменённый плановый пост")).toBeInTheDocument();'
+          new = '    expect(await within(cancelledSection).findByText("Отменённый плановый пост")).toBeInTheDocument();'
+          if text.count(old) != 1:
+              raise SystemExit(f"expected one assertion, found {text.count(old)}")
+          path.write_text(text.replace(old, new, 1))
+          PY
+      - name: Remove workflow and commit
+        run: |
+          rm .github/workflows/fix-pr40-frontend-test.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix PR40 calendar and history regression tests"
+          git push origin HEAD:fix/publication-workspace-followups
