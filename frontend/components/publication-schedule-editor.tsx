@@ -44,6 +44,7 @@ export function PublicationScheduleEditor({
   ));
   const [error, setError] = useState("");
   const inputId = `schedule-${editorKey.replaceAll(":", "-")}`;
+  const helpId = `${inputId}-help`;
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -66,10 +67,11 @@ export function PublicationScheduleEditor({
       step={STEP_MINUTES * 60}
       value={value}
       onChange={(event) => setValue(event.target.value)}
+      aria-describedby={helpId}
       required
       autoFocus
     />
-    <p className="subtle">Используется локальный часовой пояс браузера. Выберите дату в календаре и время с шагом пять минут.</p>
+    <p id={helpId} className="subtle">Используется локальный часовой пояс браузера. Выберите дату в календаре и время с шагом пять минут.</p>
     {error && <p className="error" role="alert">{error}</p>}
     <div className="actions">
       <button type="submit" disabled={busy}>{submitLabel}</button>
