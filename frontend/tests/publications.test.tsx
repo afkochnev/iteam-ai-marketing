@@ -256,7 +256,7 @@ describe("publication operator actions", () => {
     })]);
     render(<PublicationsPage />);
     const section = await screen.findByRole("region", { name: "Требуют действия / В процессе" });
-    expect(within(section).getByRole("alert")).toHaveTextContent("можно только отменить");
+    expect(await within(section).findByRole("alert")).toHaveTextContent("можно только отменить");
     expect(within(section).queryByRole("button", { name: "Согласовать публикацию" })).not.toBeInTheDocument();
     expect(within(section).getByRole("button", { name: "Отменить публикацию" })).toBeInTheDocument();
   });
