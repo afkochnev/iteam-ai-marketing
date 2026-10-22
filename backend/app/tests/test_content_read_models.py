@@ -206,7 +206,11 @@ async def test_content_list_can_include_archived_items_for_operational_reads(
     )
     db_session.add_all([user, agent])
     await db_session.flush()
-    campaign = Campaign(name="Archived read campaign", goal="Operational history", created_by=user.id)
+    campaign = Campaign(
+        name="Archived read campaign",
+        goal="Operational history",
+        created_by=user.id,
+    )
     db_session.add(campaign)
     await db_session.flush()
     task = Task(
