@@ -280,7 +280,6 @@ describe("publication operator actions", () => {
     expect(mocks.publishNow).not.toHaveBeenCalled();
   });
 
-  it("offers explicit publish-now only when the provider is enabled", async () => {
   it("reschedules an overdue approved plan slot before a Publication exists", async () => {
     mocks.content.mockResolvedValue([{
       id: "post-overdue-plan",
@@ -359,6 +358,7 @@ describe("publication operator actions", () => {
     expect(mocks.publishNow).not.toHaveBeenCalled();
   });
 
+  it("offers explicit publish-now only when the provider is enabled", async () => {
     mocks.content.mockResolvedValue([{ id: "post-1", title: "Просроченный пост" }]);
     mocks.publications.mockResolvedValue([publication({
       id: "overdue",
