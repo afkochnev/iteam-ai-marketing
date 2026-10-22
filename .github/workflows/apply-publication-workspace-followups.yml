@@ -1,0 +1,608 @@
+name: Apply publication workspace follow-ups
+
+on:
+  push:
+    branches: [fix/publication-workspace-followups]
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/publication-workspace-followups
+          fetch-depth: 0
+      - name: Apply exact fixes
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text: str, old: str, new: str, label: str) -> str:
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{label}: expected one match, found {count}")
+              return text.replace(old, new, 1)
+
+          def replace_count(text: str, old: str, new: str, expected: int, label: str) -> str:
+              count = text.count(old)
+              if count != expected:
+                  raise SystemExit(f"{label}: expected {expected} matches, found {count}")
+              return text.replace(old, new)
+
+          page_path = Path("frontend/app/publications/page.tsx")
+          page = page_path.read_text()
+          page = replace_once(
+              page,
+              'import { PublicationDeliveryNotice } from "@/components/publication-delivery-notice";\n',
+              'import { PublicationDeliveryNotice } from "@/components/publication-delivery-notice";\nimport { PublicationScheduleEditor } from "@/components/publication-schedule-editor";\n',
+              "schedule editor import",
+          )
+          page = replace_once(
+              page,
+              '  failure_message?: string | null;\n  operational_data_complete: boolean;\n};',
+              '  failure_message?: string | null;\n  content_status?: ContentListItem["status"];\n  operational_data_complete: boolean;\n};',
+              "content status type",
+          )
+          page = replace_once(
+              page,
+              '  const [feedback, setFeedback] = useState<Record<string, ActionFeedback>>({});\n  const cache = useRef(new Map<string, Partial<ReadData>>());',
+              '  const [feedback, setFeedback] = useState<Record<string, ActionFeedback>>({});\n  const [scheduleEditorKey, setScheduleEditorKey] = useState<string | null>(null);\n  const cache = useRef(new Map<string, Partial<ReadData>>());',
+              "schedule editor state",
+          )
+          page = replace_once(
+              page,
+              '        for (const publication of publications) {\n          if (',
+              '        for (const publication of publications) {\n          const contentItem = content.find((item) => item.id === publication.content_item_id);\n          if (',
+              "content lookup",
+          )
+          page = replace_once(
+              page,
+              '            title: content.find((item) => item.id === publication.content_item_id)?.title\n              ?? all.get(publication.id)?.title\n              ?? "Открыть материал",\n            channel: publication.channel,',
+              '            title: contentItem?.title\n              ?? all.get(publication.id)?.title\n              ?? "Открыть материал",\n            content_status: contentItem?.status,\n            channel: publication.channel,',
+              "row content status",
+          )
+          page = replace_once(
+              page,
+              '              && publication.status === "CANCELLED"\n              && publication.scheduled_at === item.plan_scheduled_at\n            ))',
+              '              && publication.status === "CANCELLED"\n              && publication.channel === (item.plan_channel ?? item.channel)\n            ))',
+              "terminal cancelled plan slot",
+          )
+          page = replace_once(
+              page,
+              '    context?: { campaign?: CampaignListItem; title?: string },',
+              '    context?: { campaign?: CampaignListItem; title?: string; contentStatus?: ContentListItem["status"] },',
+              "apply context",
+          )
+          page = replace_once(
+              page,
+              '        title: context?.title ?? existing?.title ?? "Открыть материал",\n        channel: publication.channel,',
+              '        title: context?.title ?? existing?.title ?? "Открыть материал",\n        content_status: context?.contentStatus ?? existing?.content_status,\n        channel: publication.channel,',
+              "apply content status",
+          )
+          page = replace_count(
+              page,
+              '    successMessage: string,\n  ) {',
+              '    successMessage: string,\n  ): Promise<boolean> {',
+              2,
+              "action return types",
+          )
+          page = replace_count(
+              page,
+              '      setFeedback((current) => ({\n        ...current,\n        [key]: { tone: "success", message: successMessage },\n      }));\n    } catch (reason) {',
+              '      setFeedback((current) => ({\n        ...current,\n        [key]: { tone: "success", message: successMessage },\n      }));\n      return true;\n    } catch (reason) {',
+              2,
+              "action success returns",
+          )
+          page = replace_count(
+              page,
+              '      setFeedback((current) => ({\n        ...current,\n        [key]: { tone: "error", message },\n      }));\n    } finally {',
+              '      setFeedback((current) => ({\n        ...current,\n        [key]: { tone: "error", message },\n      }));\n      return false;\n    } finally {',
+              2,
+              "action failure returns",
+          )
+          page = replace_once(
+              page,
+              '      applyPublication(publication, { campaign: item.campaign, title: item.title });',
+              '      applyPublication(publication, { campaign: item.campaign, title: item.title, contentStatus: item.status });',
+              "candidate content status",
+          )
+          page = replace_once(
+              page,
+              '''  function schedulePublication(row: CalendarRow) {
+    const value = window.prompt("Дата и время публикации (ISO или локальное время браузера)");
+    if (!value) return;
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      setFeedback((current) => ({
+        ...current,
+        [`publication:${row.publication_id}`]: {
+          tone: "error",
+          message: "Укажите корректные дату и время.",
+        },
+      }));
+      return;
+    }
+    void performAction(
+      row,
+      () => publicationsApi.schedule(row.publication_id, parsed.toISOString()),
+      "Новое время публикации сохранено.",
+    );
+  }
+''',
+              '''  function schedulePublication(row: CalendarRow) {
+    setScheduleEditorKey(`publication:${row.publication_id}`);
+  }
+''',
+              "publication calendar opener",
+          )
+          page = replace_once(
+              page,
+              '''  function rescheduleOverdueCandidate(item: Candidate) {
+    const value = window.prompt("Новая дата и время публикации (ISO или локальное время браузера)");
+    if (!value) return;
+    const parsed = new Date(value);
+    const key = `candidate:${item.id}`;
+    if (Number.isNaN(parsed.getTime())) {
+      setFeedback((current) => ({
+        ...current,
+        [key]: {
+          tone: "error",
+          message: "Укажите корректные будущие дату и время.",
+        },
+      }));
+      return;
+    }
+    void performCandidateAction(
+      item,
+      () => publicationsApi.reschedulePlanContent(item.id, parsed.toISOString()),
+      "Новое время сохранено отдельным решением оператора.",
+    );
+  }
+''',
+              '''  function rescheduleOverdueCandidate(item: Candidate) {
+    setScheduleEditorKey(`candidate:${item.id}`);
+  }
+''',
+              "overdue calendar opener",
+          )
+          page = replace_once(
+              page,
+              '  const published = rows.filter((item) => item.status === "PUBLISHED");\n  const attention = rows.filter((item) => (',
+              '  const published = rows.filter((item) => item.status === "PUBLISHED");\n  const cancelled = rows.filter((item) => item.status === "CANCELLED");\n  const attention = rows.filter((item) => (',
+              "cancelled rows",
+          )
+          page = replace_once(
+              page,
+              '  const needsPlan = candidates.filter((item) => !item.planApproved);\n  const readyIncomplete = failures.some((failure) => failure.kind !== "calendar");',
+              '  const needsPlan = candidates.filter((item) => !item.planApproved);\n  const publicationSourceArchived = (item: CalendarRow) => (\n    item.content_status === "ARCHIVED" || item.campaign.status === "ARCHIVED"\n  );\n  const readyIncomplete = failures.some((failure) => failure.kind !== "calendar");',
+              "archived source helper",
+          )
+          page = replace_once(
+              page,
+              '''  const actionUnavailable = (item: CalendarRow) => !item.operational_data_complete && (
+    <p className="notice">Операционные действия временно недоступны: сведения о публикации загружены не полностью.</p>
+  );
+
+  if (authLoading) return <LoadingState />;
+''',
+              '''  const actionUnavailable = (item: CalendarRow) => !item.operational_data_complete && (
+    <p className="notice">Операционные действия временно недоступны: сведения о публикации загружены не полностью.</p>
+  );
+  const publicationScheduleEditor = (item: CalendarRow) => {
+    const key = `publication:${item.publication_id}`;
+    if (scheduleEditorKey !== key) return null;
+    const rescheduling = item.status === "SCHEDULED";
+    return <PublicationScheduleEditor
+      editorKey={key}
+      title={rescheduling ? "Перенести публикацию" : "Назначить дату публикации"}
+      submitLabel={rescheduling ? "Сохранить перенос" : "Запланировать"}
+      initialScheduledAt={item.scheduled_at}
+      busy={busyKey === key}
+      onClose={() => setScheduleEditorKey(null)}
+      onSubmit={(scheduledAt) => performAction(
+        item,
+        () => publicationsApi.schedule(item.publication_id, scheduledAt),
+        rescheduling ? "Новое время публикации сохранено." : "Публикация запланирована.",
+      )}
+    />;
+  };
+  const candidateScheduleEditor = (item: Candidate) => {
+    const key = `candidate:${item.id}`;
+    if (scheduleEditorKey !== key) return null;
+    return <PublicationScheduleEditor
+      editorKey={key}
+      title="Перенести публикацию"
+      submitLabel="Сохранить перенос"
+      busy={busyKey === key}
+      onClose={() => setScheduleEditorKey(null)}
+      onSubmit={(scheduledAt) => performCandidateAction(
+        item,
+        () => publicationsApi.reschedulePlanContent(item.id, scheduledAt),
+        "Новое время сохранено отдельным решением оператора.",
+      )}
+    />;
+  };
+
+  if (authLoading) return <LoadingState />;
+''',
+              "schedule editor renderers",
+          )
+          page = replace_once(
+              page,
+              '      <a className="metric-card" href="#published"><strong>{rowsIncomplete ? "—" : published.length}</strong><span>Опубликовано</span></a>\n      <a className="metric-card" href="#attention"><strong>{rowsIncomplete ? "—" : attention.length}</strong><span>Требуют проверки</span></a>',
+              '      <a className="metric-card" href="#published"><strong>{rowsIncomplete ? "—" : published.length}</strong><span>Опубликовано</span></a>\n      <a className="metric-card" href="#cancelled"><strong>{rowsIncomplete ? "—" : cancelled.length}</strong><span>Отменено</span></a>\n      <a className="metric-card" href="#attention"><strong>{rowsIncomplete ? "—" : attention.length}</strong><span>Требуют проверки</span></a>',
+              "cancelled metric",
+          )
+          page = replace_once(
+              page,
+              '            </div>\n            {candidateFeedback(item)}',
+              '            </div>\n            {candidateScheduleEditor(item)}\n            {candidateFeedback(item)}',
+              "candidate schedule form",
+          )
+          page = replace_once(
+              page,
+              '''          {delivery(item)}
+          {item.status === "PUBLISHING" ? <p role="status">Отправка выполняется / результат ещё не подтверждён. Повторная отправка недоступна.</p> : item.operational_data_complete ? <div className="actions">
+            {["DRAFT", "WAITING_APPROVAL"].includes(item.status) && <button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => approvePublication(item)}>Согласовать публикацию</button>}
+            {item.status === "APPROVED" && item.publication_plan_item_id === null && <button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => schedulePublication(item)}>Назначить время</button>}
+            <button className="secondary" disabled={busyKey === `publication:${item.publication_id}`} onClick={() => cancelPublication(item)}>Отменить</button>
+          </div> : actionUnavailable(item)}
+          {actionFeedback(item)}
+''',
+              '''          {delivery(item)}
+          {publicationSourceArchived(item) && <p className="warning" role="alert">Материал или кампания находятся в архиве. Согласование и планирование недоступны; эту публикацию можно только отменить.</p>}
+          {item.status === "PUBLISHING" ? <p role="status">Отправка выполняется / результат ещё не подтверждён. Повторная отправка недоступна.</p> : item.operational_data_complete ? <div className="actions">
+            {!publicationSourceArchived(item) && ["DRAFT", "WAITING_APPROVAL"].includes(item.status) && <button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => approvePublication(item)}>Согласовать публикацию</button>}
+            {!publicationSourceArchived(item) && item.status === "APPROVED" && item.publication_plan_item_id === null && <button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => schedulePublication(item)}>Назначить время</button>}
+            <button className="secondary" disabled={busyKey === `publication:${item.publication_id}`} onClick={() => cancelPublication(item)}>{publicationSourceArchived(item) ? "Отменить публикацию" : "Отменить"}</button>
+          </div> : actionUnavailable(item)}
+          {publicationScheduleEditor(item)}
+          {actionFeedback(item)}
+''',
+              "archived publication actions",
+          )
+          page = replace_once(
+              page,
+              '          </div> : actionUnavailable(item)}\n          {item.publication_plan_item_id && <p className="muted">Перенос публикации из утверждённого медиаплана требует изменения медиаплана.</p>}',
+              '          </div> : actionUnavailable(item)}\n          {publicationScheduleEditor(item)}\n          {item.publication_plan_item_id && <p className="muted">Перенос публикации из утверждённого медиаплана требует изменения медиаплана.</p>}',
+              "upcoming schedule form",
+          )
+          page = replace_once(
+              page,
+              '''      <details className="disclosure" id="published">
+        <summary>Опубликованные · {rowsIncomplete ? "неполные данные" : published.length}</summary>
+''',
+              '''      <section className="section-block" id="cancelled" aria-label="Отменённые">
+        <h2>Отменённые</h2>
+        {cancelled.length ? <div className="content-stack">{cancelled.map((item) => <article className="content-card" id={`publication-${item.publication_id}`} tabIndex={-1} key={item.publication_id}>
+          <div className="card-heading"><div>
+            <h3><Link href={`/content/${item.content_item_id}`}>{item.title}</Link></h3>
+            <p className="row-meta"><Link href={`/campaigns/${item.campaign.id}`}>{item.campaign.name}</Link><span>{item.channel === "VK" ? "VK" : "Telegram"}{item.scheduled_at ? ` · ${formatDateTime(item.scheduled_at)}` : ""}</span>{version(item)}</p>
+          </div><StatusBadge status={item.status} label={PUBLICATION_STATUS_LABELS[item.status]} /></div>
+          <p>Внешняя отправка не выполняется. Запись сохранена в истории публикаций.</p>
+          {item.content_status === "ARCHIVED" && <p className="subtle">Связанный материал находится в архиве.</p>}
+        </article>)}</div> : rowsIncomplete || loading ? incomplete : <p className="empty-state">Отменённых публикаций нет.</p>}
+      </section>
+
+      <details className="disclosure" id="published">
+        <summary>Опубликованные · {rowsIncomplete ? "неполные данные" : published.length}</summary>
+''',
+              "cancelled section",
+          )
+          page_path.write_text(page)
+
+          service_path = Path("backend/app/services/publication_service.py")
+          service = service_path.read_text()
+          service = replace_once(
+              service,
+              '''        return publication
+
+    async def cancel_overdue_plan_content(
+''',
+              '''        return publication
+
+    async def _cancelled_for_plan_content(
+        self,
+        item: ContentItem,
+        plan_item: PublicationPlanItem,
+        version_id: UUID,
+    ) -> Publication | None:
+        publication: Publication | None = await self.session.scalar(
+            select(Publication)
+            .where(
+                Publication.content_item_id == item.id,
+                Publication.content_version_id == version_id,
+                Publication.channel == plan_item.channel,
+                Publication.status == PublicationStatus.CANCELLED,
+            )
+            .order_by(Publication.created_at.desc())
+            .with_for_update()
+        )
+        return publication
+
+    async def cancel_overdue_plan_content(
+''',
+              "cancelled plan helper",
+          )
+          service = replace_once(
+              service,
+              '''        existing_cancelled = await self.session.scalar(
+            select(Publication)
+            .where(
+                Publication.content_item_id == item.id,
+                Publication.content_version_id == version_id,
+                Publication.channel == plan_item.channel,
+                Publication.status == PublicationStatus.CANCELLED,
+                Publication.scheduled_at == plan_item.scheduled_at,
+            )
+            .order_by(Publication.created_at.desc())
+            .with_for_update()
+        )
+''',
+              '''        existing_cancelled = await self._cancelled_for_plan_content(
+            item,
+            plan_item,
+            version_id,
+        )
+''',
+              "cancel idempotency",
+          )
+          service = replace_once(
+              service,
+              '''        if existing_active is not None:
+            raise AppError(
+                "PUBLICATION_ALREADY_EXISTS",
+                "Для материала уже существует активная или опубликованная публикация.",
+                409,
+            )
+        publication = Publication(
+''',
+              '''        if existing_active is not None:
+            raise AppError(
+                "PUBLICATION_ALREADY_EXISTS",
+                "Для материала уже существует активная или опубликованная публикация.",
+                409,
+            )
+        existing_cancelled = await self._cancelled_for_plan_content(
+            item,
+            plan_item,
+            version_id,
+        )
+        if existing_cancelled is not None:
+            raise AppError(
+                "PUBLICATION_PLAN_SLOT_CANCELLED",
+                "Просроченный слот уже отменён.",
+                409,
+            )
+        publication = Publication(
+''',
+              "block reschedule after cancellation",
+          )
+          service_path.write_text(service)
+
+          backend_test_path = Path("backend/app/tests/test_plan_publication_scheduling.py")
+          backend_test = backend_test_path.read_text()
+          backend_test = replace_once(
+              backend_test,
+              '''
+
+@pytest.mark.asyncio
+async def test_rescheduled_plan_slot_fails_closed_after_schedule_tampering(
+''',
+              '''
+
+@pytest.mark.asyncio
+async def test_cancelling_rescheduled_plan_slot_is_terminal(db_session: AsyncSession):
+    user, _, post, _, item = await plan_post(db_session)
+    now = datetime.now(UTC)
+    item.scheduled_at = now - timedelta(hours=2)
+    future = now + timedelta(days=2)
+    await db_session.commit()
+
+    service = PublicationService(db_session)
+    rescheduled = await service.reschedule_overdue_plan_content(
+        post.id,
+        future,
+        user,
+        reason="Перенос",
+    )
+    cancelled = await service.cancel(rescheduled.id, user)
+    assert cancelled.status is PublicationStatus.CANCELLED
+
+    repeated = await service.cancel_overdue_plan_content(post.id, user, reason=None)
+    assert repeated.id == cancelled.id
+    with pytest.raises(AppError) as error:
+        await service.reschedule_overdue_plan_content(
+            post.id,
+            future + timedelta(days=1),
+            user,
+            reason="Повторный перенос",
+        )
+    assert error.value.code == "PUBLICATION_PLAN_SLOT_CANCELLED"
+    assert await db_session.scalar(select(func.count()).select_from(Publication)) == 1
+
+
+@pytest.mark.asyncio
+async def test_rescheduled_plan_slot_fails_closed_after_schedule_tampering(
+''',
+              "terminal cancellation test",
+          )
+          backend_test_path.write_text(backend_test)
+
+          frontend_test_path = Path("frontend/tests/publications.test.tsx")
+          frontend_test = frontend_test_path.read_text()
+          frontend_test = replace_once(
+              frontend_test,
+              '''    vi.spyOn(window, "prompt").mockReturnValue("2026-10-26T10:00:00Z");
+    render(<PublicationsPage />);
+    const scheduleButton = await screen.findByRole("button", { name: "Назначить время" });
+    fireEvent.click(scheduleButton);
+    await waitFor(() => expect(mocks.schedule).toHaveBeenCalledWith("active", "2026-10-26T10:00:00.000Z"));
+''',
+              '''    render(<PublicationsPage />);
+    const scheduleButton = await screen.findByRole("button", { name: "Назначить время" });
+    fireEvent.click(scheduleButton);
+    const input = await screen.findByLabelText("Дата и время публикации");
+    fireEvent.change(input, { target: { value: "2026-10-26T10:00" } });
+    fireEvent.click(screen.getByRole("button", { name: "Запланировать" }));
+    await waitFor(() => expect(mocks.schedule).toHaveBeenCalledWith(
+      "active",
+      new Date("2026-10-26T10:00").toISOString(),
+    ));
+''',
+              "approved calendar test",
+          )
+          frontend_test = replace_once(
+              frontend_test,
+              '''    expect(await screen.findByRole("status")).toHaveTextContent("Публикация отменена");
+    await waitFor(() => expect(within(section).queryByText("Просроченный пост")).not.toBeInTheDocument());
+    expect(mocks.publishNow).not.toHaveBeenCalled();
+''',
+              '''    expect(await screen.findByRole("status")).toHaveTextContent("Публикация отменена");
+    await waitFor(() => expect(within(section).queryByText("Просроченный пост")).not.toBeInTheDocument());
+    const cancelledSection = screen.getByRole("region", { name: "Отменённые" });
+    expect(within(cancelledSection).getByText("Просроченный пост")).toBeInTheDocument();
+    expect(within(cancelledSection).getByText(/Запись сохранена в истории/)).toBeInTheDocument();
+    expect(mocks.publishNow).not.toHaveBeenCalled();
+''',
+              "cancelled history test",
+          )
+          frontend_test = replace_once(
+              frontend_test,
+              '''    vi.spyOn(window, "prompt").mockReturnValue("2026-10-30T09:00:00Z");
+
+    render(<PublicationsPage />);
+    const section = await screen.findByRole("region", { name: "Просрочены / Требуют решения" });
+    expect(await within(section).findByText("Просроченный плановый пост")).toBeInTheDocument();
+    fireEvent.click(within(section).getByRole("button", { name: "Перенести" }));
+    await waitFor(() => expect(mocks.reschedulePlanContent).toHaveBeenCalledWith(
+      "post-overdue-plan",
+      "2026-10-30T09:00:00.000Z",
+    ));
+''',
+              '''    render(<PublicationsPage />);
+    const section = await screen.findByRole("region", { name: "Просрочены / Требуют решения" });
+    expect(await within(section).findByText("Просроченный плановый пост")).toBeInTheDocument();
+    fireEvent.click(within(section).getByRole("button", { name: "Перенести" }));
+    const input = within(section).getByLabelText("Дата и время публикации");
+    fireEvent.change(input, { target: { value: "2026-10-30T09:00" } });
+    fireEvent.click(within(section).getByRole("button", { name: "Сохранить перенос" }));
+    await waitFor(() => expect(mocks.reschedulePlanContent).toHaveBeenCalledWith(
+      "post-overdue-plan",
+      new Date("2026-10-30T09:00").toISOString(),
+    ));
+''',
+              "overdue calendar test",
+          )
+          frontend_test = replace_once(
+              frontend_test,
+              '''    vi.spyOn(window, "prompt").mockReturnValue("2026-10-27T10:00:00Z");
+    render(<PublicationsPage />);
+    const section = await screen.findByRole("region", { name: "Предстоящие" });
+    fireEvent.click(await within(section).findByRole("button", { name: "Перенести" }));
+    await waitFor(() => expect(mocks.schedule).toHaveBeenCalledWith("upcoming", "2026-10-27T10:00:00.000Z"));
+    expect(within(section).getByRole("button", { name: "Отменить" })).toBeInTheDocument();
+''',
+              '''    render(<PublicationsPage />);
+    const section = await screen.findByRole("region", { name: "Предстоящие" });
+    fireEvent.click(await within(section).findByRole("button", { name: "Перенести" }));
+    const input = within(section).getByLabelText("Дата и время публикации");
+    fireEvent.change(input, { target: { value: "2026-10-27T10:00" } });
+    fireEvent.click(within(section).getByRole("button", { name: "Сохранить перенос" }));
+    await waitFor(() => expect(mocks.schedule).toHaveBeenCalledWith(
+      "upcoming",
+      new Date("2026-10-27T10:00").toISOString(),
+    ));
+    expect(within(section).getByRole("button", { name: "Отменить" })).toBeInTheDocument();
+''',
+              "upcoming calendar test",
+          )
+          frontend_test = replace_once(
+              frontend_test,
+              '''  it("keeps publishing read-only while delivery is in progress", async () => {
+''',
+              '''  it("makes an archived material publication explicitly cancellation-only", async () => {
+    mocks.content.mockResolvedValue([{
+      id: "post-archived",
+      title: "Архивный пост",
+      status: "ARCHIVED",
+    }]);
+    mocks.publications.mockResolvedValue([publication({
+      id: "archived-draft",
+      content_item_id: "post-archived",
+      status: "DRAFT",
+      scheduled_at: null,
+    })]);
+    render(<PublicationsPage />);
+    const section = await screen.findByRole("region", { name: "Требуют действия / В процессе" });
+    expect(within(section).getByRole("alert")).toHaveTextContent("можно только отменить");
+    expect(within(section).queryByRole("button", { name: "Согласовать публикацию" })).not.toBeInTheDocument();
+    expect(within(section).getByRole("button", { name: "Отменить публикацию" })).toBeInTheDocument();
+  });
+
+  it("keeps publishing read-only while delivery is in progress", async () => {
+''',
+              "archived publication test",
+          )
+          frontend_test = replace_once(
+              frontend_test,
+              '''  it("offers explicit publish-now only when the provider is enabled", async () => {
+''',
+              '''  it("keeps a cancelled exact plan slot in history without reopening it", async () => {
+    mocks.content.mockResolvedValue([{
+      id: "post-cancelled-plan",
+      campaign_id: "campaign-1",
+      title: "Отменённый плановый пост",
+      content_type: "SOCIAL_POST",
+      status: "APPROVED",
+      current_version_id: "exact-v3",
+      approved_version_id: "exact-v3",
+      approved_version_number: 3,
+      publication_plan_item_id: "plan-item-cancelled",
+      plan_channel: "TELEGRAM",
+      plan_scheduled_at: "2026-10-20T09:00:00Z",
+    }]);
+    mocks.plans.mockResolvedValue([{
+      status: "APPROVED",
+      items: [{ id: "plan-item-cancelled", status: "PLANNED" }],
+    }]);
+    mocks.publications.mockResolvedValue([publication({
+      id: "cancelled-reschedule",
+      content_item_id: "post-cancelled-plan",
+      content_version_id: "exact-v3",
+      channel: "TELEGRAM",
+      status: "CANCELLED",
+      scheduled_at: "2026-10-30T09:00:00Z",
+      publication_plan_item_id: "plan-item-cancelled",
+    })]);
+
+    render(<PublicationsPage />);
+    const overdueSection = await screen.findByRole("region", { name: "Просрочены / Требуют решения" });
+    expect(within(overdueSection).queryByText("Отменённый плановый пост")).not.toBeInTheDocument();
+    const cancelledSection = screen.getByRole("region", { name: "Отменённые" });
+    expect(within(cancelledSection).getByText("Отменённый плановый пост")).toBeInTheDocument();
+  });
+
+  it("offers explicit publish-now only when the provider is enabled", async () => {
+''',
+              "terminal cancelled UI test",
+          )
+          frontend_test_path.write_text(frontend_test)
+          PY
+      - name: Remove temporary workflow and commit
+        run: |
+          rm .github/workflows/apply-publication-workspace-followups.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add backend/app/services/publication_service.py \
+            backend/app/tests/test_plan_publication_scheduling.py \
+            frontend/app/publications/page.tsx \
+            frontend/components/publication-schedule-editor.tsx \
+            frontend/tests/publications.test.tsx \
+            .github/workflows/apply-publication-workspace-followups.yml
+          git commit -m "Fix publication workspace cancellation and scheduling UX"
+          git push origin HEAD:fix/publication-workspace-followups
