@@ -94,3 +94,5 @@ jobs:
           git diff --cached --quiet && { echo "No changes produced" >&2; exit 1; }
           git commit -m "Fix final PR39 CI findings"
           git push origin HEAD:fix/overdue-plan-content-decisions
+
+# Activation commit: workflow was already present before this push.
