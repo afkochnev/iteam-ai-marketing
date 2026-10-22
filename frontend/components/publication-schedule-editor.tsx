@@ -2,16 +2,21 @@
 
 import { type FormEvent, useState } from "react";
 
+const STEP_MINUTES = 5;
+const STEP_MILLISECONDS = STEP_MINUTES * 60 * 1000;
+
 function toLocalDateTimeInput(value: Date): string {
   const local = new Date(value.getTime() - value.getTimezoneOffset() * 60_000);
   return local.toISOString().slice(0, 16);
 }
 
+function roundUpToStep(value: Date): Date {
+  return new Date(Math.ceil(value.getTime() / STEP_MILLISECONDS) * STEP_MILLISECONDS);
+}
+
 function initialDateTime(value?: string | null): string {
   if (value) return toLocalDateTimeInput(new Date(value));
-  const future = new Date(Date.now() + 60 * 60 * 1000);
-  future.setMinutes(0, 0, 0);
-  return toLocalDateTimeInput(future);
+  return toLocalDateTimeInput(roundUpToStep(new Date(Date.now() + 60 * 60 * 1000)));
 }
 
 interface PublicationScheduleEditorProps {
@@ -34,7 +39,9 @@ export function PublicationScheduleEditor({
   onSubmit,
 }: PublicationScheduleEditorProps) {
   const [value, setValue] = useState(() => initialDateTime(initialScheduledAt));
-  const [minimum] = useState(() => toLocalDateTimeInput(new Date(Date.now() + 60_000)));
+  const [minimum] = useState(() => (
+    toLocalDateTimeInput(roundUpToStep(new Date(Date.now() + 60_000)))
+  ));
   const [error, setError] = useState("");
   const inputId = `schedule-${editorKey.replaceAll(":", "-")}`;
 
@@ -56,7 +63,7 @@ export function PublicationScheduleEditor({
       id={inputId}
       type="datetime-local"
       min={minimum}
-      step="300"
+      step={STEP_MINUTES * 60}
       value={value}
       onChange={(event) => setValue(event.target.value)}
       required
