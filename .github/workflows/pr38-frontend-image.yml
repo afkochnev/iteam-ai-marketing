@@ -1,0 +1,61 @@
+name: PR38 frontend image artifact
+
+on:
+  push:
+    branches:
+      - fix/publications-operator-console
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out accepted release
+        uses: actions/checkout@v4
+        with:
+          ref: c7d72a071f383fccf2b4cab6c08ceb37c92f4c1d
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build exact frontend runtime image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          load: true
+          tags: iteam-ai-marketing-frontend:latest
+          build-args: |
+            NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+          labels: |
+            org.opencontainers.image.revision=c7d72a071f383fccf2b4cab6c08ceb37c92f4c1d
+            org.opencontainers.image.source=https://github.com/afkochnev/iteam-ai-marketing
+          provenance: false
+          sbom: false
+
+      - name: Export and attest image archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          archive=iteam-ai-marketing-frontend-c7d72a071f38.tar.gz
+          docker image inspect iteam-ai-marketing-frontend:latest \
+            --format 'image_id={{.Id}} revision={{index .Config.Labels "org.opencontainers.image.revision"}}' \
+            > image-manifest.txt
+          docker save iteam-ai-marketing-frontend:latest | gzip -9 > "$archive"
+          sha256sum "$archive" > "$archive.sha256"
+          cat image-manifest.txt
+          cat "$archive.sha256"
+
+      - name: Upload runtime image
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr38-frontend-image-c7d72a071f38
+          path: |
+            iteam-ai-marketing-frontend-c7d72a071f38.tar.gz
+            iteam-ai-marketing-frontend-c7d72a071f38.tar.gz.sha256
+            image-manifest.txt
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
