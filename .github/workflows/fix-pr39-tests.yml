@@ -75,3 +75,5 @@ jobs:
           git diff --cached --quiet && { echo "No changes produced" >&2; exit 1; }
           git commit -m "Fix PR39 regression test structure"
           git push origin HEAD:fix/overdue-plan-content-decisions
+
+# Separate activation commit so GitHub discovers this workflow before execution.
