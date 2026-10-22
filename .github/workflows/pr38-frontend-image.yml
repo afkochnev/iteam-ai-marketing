@@ -12,11 +12,22 @@ permissions:
 jobs:
   build-image:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: arm64
+            platform: linux/arm64
     steps:
       - name: Check out accepted release
         uses: actions/checkout@v4
         with:
           ref: c7d72a071f383fccf2b4cab6c08ceb37c92f4c1d
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
@@ -25,37 +36,43 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
-          load: true
+          platforms: ${{ matrix.platform }}
+          outputs: type=docker,dest=/tmp/iteam-ai-marketing-frontend-${{ matrix.arch }}.tar
           tags: iteam-ai-marketing-frontend:latest
           build-args: |
             NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
           labels: |
             org.opencontainers.image.revision=c7d72a071f383fccf2b4cab6c08ceb37c92f4c1d
             org.opencontainers.image.source=https://github.com/afkochnev/iteam-ai-marketing
+            org.opencontainers.image.architecture=${{ matrix.arch }}
           provenance: false
           sbom: false
 
-      - name: Export and attest image archive
+      - name: Verify, compress and attest image archive
         shell: bash
         run: |
           set -euo pipefail
-          archive=iteam-ai-marketing-frontend-c7d72a071f38.tar.gz
+          raw=/tmp/iteam-ai-marketing-frontend-${{ matrix.arch }}.tar
+          archive=iteam-ai-marketing-frontend-c7d72a071f38-${{ matrix.arch }}.tar.gz
+          docker load -i "$raw"
           docker image inspect iteam-ai-marketing-frontend:latest \
-            --format 'image_id={{.Id}} revision={{index .Config.Labels "org.opencontainers.image.revision"}}' \
-            > image-manifest.txt
-          docker save iteam-ai-marketing-frontend:latest | gzip -9 > "$archive"
+            --format 'image_id={{.Id}} revision={{index .Config.Labels "org.opencontainers.image.revision"}} architecture={{.Architecture}}' \
+            > image-manifest-${{ matrix.arch }}.txt
+          grep -q 'revision=c7d72a071f383fccf2b4cab6c08ceb37c92f4c1d' image-manifest-${{ matrix.arch }}.txt
+          grep -q 'architecture=${{ matrix.arch }}' image-manifest-${{ matrix.arch }}.txt
+          gzip -9 -c "$raw" > "$archive"
           sha256sum "$archive" > "$archive.sha256"
-          cat image-manifest.txt
+          cat image-manifest-${{ matrix.arch }}.txt
           cat "$archive.sha256"
 
       - name: Upload runtime image
         uses: actions/upload-artifact@v4
         with:
-          name: pr38-frontend-image-c7d72a071f38
+          name: pr38-frontend-image-c7d72a071f38-${{ matrix.arch }}
           path: |
-            iteam-ai-marketing-frontend-c7d72a071f38.tar.gz
-            iteam-ai-marketing-frontend-c7d72a071f38.tar.gz.sha256
-            image-manifest.txt
+            iteam-ai-marketing-frontend-c7d72a071f38-${{ matrix.arch }}.tar.gz
+            iteam-ai-marketing-frontend-c7d72a071f38-${{ matrix.arch }}.tar.gz.sha256
+            image-manifest-${{ matrix.arch }}.txt
           if-no-files-found: error
           retention-days: 7
           compression-level: 0
