@@ -282,7 +282,7 @@ class PublicationService:
         item: ContentItem,
         plan_item: PublicationPlanItem,
     ) -> Publication | None:
-        return await self.session.scalar(
+        publication: Publication | None = await self.session.scalar(
             select(Publication)
             .where(
                 Publication.content_item_id == item.id,
@@ -292,6 +292,7 @@ class PublicationService:
             .order_by(Publication.created_at.desc())
             .with_for_update()
         )
+        return publication
 
     async def cancel_overdue_plan_content(
         self,

@@ -310,7 +310,7 @@ describe("publication operator actions", () => {
 
     render(<PublicationsPage />);
     const section = await screen.findByRole("region", { name: "Просрочены / Требуют решения" });
-    expect(within(section).getByText("Просроченный плановый пост")).toBeInTheDocument();
+    expect(await within(section).findByText("Просроченный плановый пост")).toBeInTheDocument();
     fireEvent.click(within(section).getByRole("button", { name: "Перенести" }));
     await waitFor(() => expect(mocks.reschedulePlanContent).toHaveBeenCalledWith(
       "post-overdue-plan",
@@ -348,7 +348,7 @@ describe("publication operator actions", () => {
 
     render(<PublicationsPage />);
     const section = await screen.findByRole("region", { name: "Просрочены / Требуют решения" });
-    fireEvent.click(within(section).getByRole("button", { name: "Отменить слот" }));
+    fireEvent.click(await within(section).findByRole("button", { name: "Отменить слот" }));
     await waitFor(() => expect(mocks.cancelPlanContent).toHaveBeenCalledWith(
       "post-overdue-plan",
     ));
