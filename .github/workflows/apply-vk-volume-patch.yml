@@ -1,0 +1,181 @@
+name: Apply VK credential volume patch
+
+on:
+  push:
+    branches:
+      - fix/vk-refreshable-publishing
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: fix/vk-refreshable-publishing
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Patch named-volume provisioning
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path: str, old: str, new: str) -> None:
+              target = Path(path)
+              text = target.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}")
+              target.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "docker-compose.yml",
+              "      - ${VK_PUBLISHING_STATE_DIR:-./.runtime-secrets/vk}:/run/iteam-vk\n",
+              "      - vk_publishing_state:/run/iteam-vk\n",
+          )
+          replace_once(
+              "docker-compose.yml",
+              "volumes:\n  postgres_data:\n  redis_data:\n",
+              "volumes:\n  postgres_data:\n  redis_data:\n  vk_publishing_state:\n",
+          )
+          replace_once(
+              ".env.example",
+              "VK_PUBLISHING_STATE_DIR=./.runtime-secrets/vk\n",
+              "",
+          )
+
+          script_path = Path("scripts/vk_user_token_preflight.py")
+          script = script_path.read_text()
+          script = script.replace("import stat\n", "")
+          script = script.replace("import tempfile\n", "")
+          script = script.replace("import sys\n", "import subprocess\nimport sys\n")
+          script = script.replace(
+              'DEFAULT_CREDENTIALS_FILE = Path(".runtime-secrets/vk/credentials.json")\n',
+              "",
+          )
+          start = script.index("def atomic_write_credentials(")
+          end = script.index("\ndef required_token_fields", start)
+          replacement = r'''def provision_docker_volume(repository_dir: Path, payload: dict[str, Any]) -> None:
+              writer = r"""
+          import json
+          import os
+          import sys
+          import tempfile
+          from pathlib import Path
+
+          target = Path("/run/iteam-vk")
+          credentials = target / "credentials.json"
+          data = sys.stdin.read()
+          parsed = json.loads(data)
+          if not isinstance(parsed, dict):
+              raise SystemExit("invalid credential payload")
+          target.mkdir(parents=True, exist_ok=True)
+          os.chown(target, 10001, 10001)
+          os.chmod(target, 0o700)
+          descriptor, temporary_name = tempfile.mkstemp(prefix=".credentials.", dir=target)
+          temporary = Path(temporary_name)
+          try:
+              os.fchown(descriptor, 10001, 10001)
+              os.fchmod(descriptor, 0o600)
+              with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+                  handle.write(json.dumps(parsed, ensure_ascii=False, sort_keys=True) + "\n")
+                  handle.flush()
+                  os.fsync(handle.fileno())
+              os.replace(temporary, credentials)
+              os.chown(credentials, 10001, 10001)
+              os.chmod(credentials, 0o600)
+          finally:
+              if temporary.exists():
+                  temporary.unlink()
+          """
+              verifier = r"""
+          import json
+          import os
+          import stat
+          from pathlib import Path
+
+          path = Path("/run/iteam-vk/credentials.json")
+          payload = json.loads(path.read_text(encoding="utf-8"))
+          mode = stat.S_IMODE(path.stat().st_mode)
+          if mode != 0o600 or os.geteuid() != 10001:
+              raise SystemExit("credential ownership or mode check failed")
+          if int(payload.get("owner_id", 0)) >= 0 or not payload.get("refresh_token"):
+              raise SystemExit("credential payload verification failed")
+          with path.open("a", encoding="utf-8"):
+              pass
+          """
+              base = [
+                  "docker",
+                  "compose",
+                  "run",
+                  "--rm",
+                  "-T",
+                  "--no-deps",
+              ]
+              try:
+                  subprocess.run(
+                      [*base, "--user", "0:0", "--entrypoint", "python", "publication_worker", "-c", writer],
+                      cwd=repository_dir,
+                      input=json.dumps(payload, ensure_ascii=False),
+                      text=True,
+                      stdout=subprocess.DEVNULL,
+                      stderr=subprocess.PIPE,
+                      check=True,
+                  )
+                  subprocess.run(
+                      [*base, "--user", "10001:10001", "--entrypoint", "python", "publication_worker", "-c", verifier],
+                      cwd=repository_dir,
+                      text=True,
+                      stdout=subprocess.DEVNULL,
+                      stderr=subprocess.PIPE,
+                      check=True,
+                  )
+              except (OSError, subprocess.CalledProcessError) as exc:
+                  raise PreflightError(
+                      "Не удалось сохранить VK credentials в изолированный Docker volume."
+                  ) from exc
+          '''
+          # Remove workflow indentation introduced by this heredoc.
+          replacement = "\n".join(line[10:] if line.startswith("          ") else line for line in replacement.splitlines())
+          script = script[:start] + replacement + script[end:]
+          script = script.replace(
+              '    parser.add_argument("--credentials-file", type=Path, default=DEFAULT_CREDENTIALS_FILE)\n',
+              '    parser.add_argument("--repository-dir", type=Path, default=Path.cwd())\n',
+          )
+          script = script.replace(
+              "            atomic_write_credentials(args.credentials_file, credentials)\n"
+              "            print(f\"- Credentials provisioned: {args.credentials_file}\")\n"
+              "            print(\"- File mode: 0600\")\n",
+              "            provision_docker_volume(args.repository_dir.resolve(), credentials)\n"
+              "            print(\"- Credentials provisioned: isolated Docker volume\")\n"
+              "            print(\"- Runtime owner/mode: uid=10001 / 0600\")\n",
+          )
+          script_path.write_text(script)
+
+          docs = Path("docs/vk-publishing.md")
+          text = docs.read_text()
+          text = text.replace(
+              "Production stores the rotating credential state\nin `.runtime-secrets/vk/credentials.json` with mode `0600`; the directory is\nmounted only into `publication_worker`.",
+              "Production stores the rotating credential state in a dedicated Docker named\nvolume with mode `0600`; that volume is mounted only into `publication_worker`.",
+          )
+          docs.write_text(text)
+          PY
+      - name: Format and validate
+        run: |
+          pip install ruff==0.12.10
+          ruff check --fix backend/app/integrations/vk_credentials.py scripts/vk_user_token_preflight.py
+          ruff format backend/app/integrations/vk_credentials.py scripts/vk_user_token_preflight.py backend/app/tests/test_vk_credentials.py
+          python -m py_compile scripts/vk_user_token_preflight.py backend/app/integrations/vk_credentials.py
+          docker compose config >/dev/null
+      - name: Remove workflow and commit
+        run: |
+          rm .github/workflows/apply-vk-volume-patch.yml
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Store rotating VK credentials in an isolated volume"
+          git push origin HEAD:fix/vk-refreshable-publishing
