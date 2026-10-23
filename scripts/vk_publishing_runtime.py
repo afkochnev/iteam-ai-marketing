@@ -387,7 +387,7 @@ def arm_canary(publication_id: UUID) -> None:
     print("- other VK publications remain blocked before provider call")
 
 
-def arm_retry_canary(publication_id: UUID) -> None:
+def arm_retry_canary(publication_id: UUID, *, new_authorization: bool = False) -> None:
     """Arm the exact failed canary without editing any Publication business state."""
     expected = UUID("1142723f-4c25-4334-8f22-7e3ceb1f55f4")
     if publication_id != expected:
@@ -408,13 +408,31 @@ def arm_retry_canary(publication_id: UUID) -> None:
         or not approved_by
     ):
         raise RuntimeErrorSafe("Retry canary delivery state is not eligible.")
+    authorization_key = (
+        f"publication-canary-retry-v2:{publication_id}"
+        if new_authorization
+        else f"publication-canary-retry:{publication_id}"
+    )
+    prior_evidence = (
+        (
+            " AND EXISTS (SELECT 1 FROM activity_logs WHERE operation_key="
+            f"'publication-canary-retry:{publication_id}:consumed' AND event_type='PUBLICATION_CANARY_RETRY_CONSUMED')"
+            " AND EXISTS (SELECT 1 FROM activity_logs WHERE operation_key="
+            f"'publication-canary-retry:{publication_id}' AND event_type='PUBLICATION_CANARY_RETRY_REQUESTED')"
+            " AND EXISTS (SELECT 1 FROM activity_logs WHERE operation_key="
+            f"'publication-failed:{publication_id}:1' AND event_type='PUBLICATION_FAILED' "
+            "AND metadata->>'vk_error_code'='15')"
+        )
+        if new_authorization
+        else ""
+    )
     eligible = count(
         "SELECT count(*) FROM publications WHERE "
         f"id='{publication_id}'::uuid AND "
         "content_version_id='6a4685cd-128b-4a76-ae4b-4595fb8a3238'::uuid "
-        "AND retry_count=0 AND published_at IS NULL AND NOT EXISTS "
+        f"AND retry_count={1 if new_authorization else 0} AND published_at IS NULL AND NOT EXISTS "
         "(SELECT 1 FROM activity_logs WHERE operation_key="
-        f"'publication-canary-retry:{publication_id}');"
+        f"'{authorization_key}')" + prior_evidence + ";"
     )
     if eligible != 1:
         raise RuntimeErrorSafe(
@@ -427,9 +445,12 @@ def arm_retry_canary(publication_id: UUID) -> None:
             "VK_ACCESS_TOKEN": "",
         }
     )
-    print(f"VK RETRY CANARY: ARMED; release={release}; publication_id={publication_id}")
+    endpoint = "canary-retry-v2" if new_authorization else "canary-retry"
     print(
-        "No publication was sent. Use the authenticated canary-retry endpoint once, then disable VK."
+        f"VK RETRY CANARY: ARMED; release={release}; publication_id={publication_id}; endpoint={endpoint}"
+    )
+    print(
+        f"No publication was sent. Use the authenticated {endpoint} endpoint once, then disable VK."
     )
 
 
@@ -506,6 +527,8 @@ def main() -> None:
     canary.add_argument("publication_id", type=UUID)
     retry = sub.add_parser("retry-canary")
     retry.add_argument("publication_id", type=UUID)
+    retry_v2 = sub.add_parser("retry-canary-v2")
+    retry_v2.add_argument("publication_id", type=UUID)
     sub.add_parser("promote")
     sub.add_parser("disable")
     args = parser.parse_args()
@@ -519,6 +542,8 @@ def main() -> None:
             arm_canary(args.publication_id)
         elif args.command == "retry-canary":
             arm_retry_canary(args.publication_id)
+        elif args.command == "retry-canary-v2":
+            arm_retry_canary(args.publication_id, new_authorization=True)
         elif args.command == "promote":
             promote()
         else:

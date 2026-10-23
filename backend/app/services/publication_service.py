@@ -12,8 +12,12 @@ from app.core.vk_canary_retry import (
     CANARY_OWNER_ID,
     CANARY_VERSION_ID,
     CONSUMED_KEY,
+    CONSUMED_V2_KEY,
     RETRY_EVENT,
     RETRY_KEY,
+    RETRY_V2_EVENT,
+    RETRY_V2_ID,
+    RETRY_V2_KEY,
 )
 from app.integrations.telegram import (
     PublicationProvider,
@@ -1279,13 +1283,45 @@ class PublicationService:
         return (
             publication_id == CANARY_ID
             and await self.session.scalar(
-                select(ActivityLog.id).where(ActivityLog.operation_key == RETRY_KEY)
+                select(ActivityLog.id)
+                .where(ActivityLog.operation_key.in_([RETRY_KEY, RETRY_V2_KEY]))
+                .limit(1)
             )
             is not None
         )
 
-    async def claim_canary_retry(self, publication_id: UUID, user: User) -> PublicationResponse:
+    async def claim_canary_retry(
+        self, publication_id: UUID, user: User, *, new_authorization: bool = False
+    ) -> PublicationResponse:
         publication = await self._locked(publication_id)
+        request_key = RETRY_V2_KEY if new_authorization else RETRY_KEY
+        used = await self.session.scalar(
+            select(ActivityLog.id).where(ActivityLog.operation_key == request_key)
+        )
+        if new_authorization:
+            # Require intact evidence of the consumed first authorization. Do not reset it.
+            consumed = await self.session.scalar(
+                select(ActivityLog).where(ActivityLog.operation_key == CONSUMED_KEY)
+            )
+            failure = await self.session.scalar(
+                select(ActivityLog).where(
+                    ActivityLog.operation_key == f"publication-failed:{publication.id}:1"
+                )
+            )
+            if (
+                not await self._valid_canary_retry(publication)
+                or publication.retry_count != 1
+                or consumed is None
+                or consumed.event_type != "PUBLICATION_CANARY_RETRY_CONSUMED"
+                or consumed.metadata_ != self._early_canary_snapshot(publication)
+                or failure is None
+                or failure.event_type != "PUBLICATION_FAILED"
+                or failure.metadata_.get("failure_code") != "VK_PERMISSION_ERROR"
+                or failure.metadata_.get("vk_error_code") != 15
+            ):
+                raise AppError(
+                    "VK_CANARY_RETRY_BLOCKED", "Аудит предыдущей canary не подтверждён.", 409
+                )
         if (
             publication.id != CANARY_ID
             or publication.content_version_id != CANARY_VERSION_ID
@@ -1298,10 +1334,11 @@ class PublicationService:
             or publication.provider_target_id != str(CANARY_OWNER_ID)
             or publication.external_id is not None
             or publication.published_at is not None
-            or publication.retry_count != 0
+            or publication.retry_count != (1 if new_authorization else 0)
             or publication.approved_for_publish_at is None
             or publication.approved_for_publish_by is None
-            or await self.has_canary_retry(publication_id)
+            or used is not None
+            or (not new_authorization and await self.has_canary_retry(publication_id))
         ):
             raise AppError(
                 "VK_CANARY_RETRY_BLOCKED", "Условия однократной canary не выполнены.", 409
@@ -1319,16 +1356,21 @@ class PublicationService:
         publication.failure_code = None
         publication.failure_message = None
         # This consumes the one manual retry even when delivery later fails or is ambiguous.
-        publication.retry_count = 1
+        publication.retry_count = 2 if new_authorization else 1
         await ActivityLogService(self.session).record(
-            RETRY_EVENT,
-            operation_key=RETRY_KEY,
+            RETRY_V2_EVENT if new_authorization else RETRY_EVENT,
+            operation_key=request_key,
             campaign_id=publication.campaign_id,
             content_item_id=publication.content_item_id,
             user_id=user.id,
             metadata={
                 **self._early_canary_snapshot(publication),
                 "previous_failure_code": previous_failure,
+                **(
+                    {"authorization_id": RETRY_V2_ID, "previous_authorization_key": RETRY_KEY}
+                    if new_authorization
+                    else {}
+                ),
             },
         )
         await self.session.commit()
@@ -1336,12 +1378,15 @@ class PublicationService:
         return await self._response(publication)
 
     async def _valid_canary_retry(self, publication: Publication) -> bool:
+        new_authorization = publication.retry_count == 2
         event = await self.session.scalar(
-            select(ActivityLog).where(ActivityLog.operation_key == RETRY_KEY)
+            select(ActivityLog).where(
+                ActivityLog.operation_key == (RETRY_V2_KEY if new_authorization else RETRY_KEY)
+            )
         )
         return (
             event is not None
-            and event.event_type == RETRY_EVENT
+            and event.event_type == (RETRY_V2_EVENT if new_authorization else RETRY_EVENT)
             and event.user_id is not None
             and publication.id == CANARY_ID
             and publication.content_version_id == CANARY_VERSION_ID
@@ -1350,12 +1395,17 @@ class PublicationService:
             and settings.vk_canary_publication_id == CANARY_ID
             and settings.vk_owner_id == CANARY_OWNER_ID
             and publication.provider_target_id == str(CANARY_OWNER_ID)
-            and publication.retry_count == 1
+            and publication.retry_count == (2 if new_authorization else 1)
             and publication.execution_token is not None
             and event.metadata_
             == {
                 **self._early_canary_snapshot(publication),
                 "previous_failure_code": "VK_PERMISSION_ERROR",
+                **(
+                    {"authorization_id": RETRY_V2_ID, "previous_authorization_key": RETRY_KEY}
+                    if new_authorization
+                    else {}
+                ),
             }
         )
 
@@ -1513,10 +1563,12 @@ class PublicationService:
             await self.session.refresh(publication)
             return await self._response(publication)
         diagnostic_retry = await self.has_canary_retry(publication.id)
+        new_authorization = diagnostic_retry and publication.retry_count == 2
+        consumed_key = CONSUMED_V2_KEY if new_authorization else CONSUMED_KEY
         if diagnostic_retry and (
             not await self._valid_canary_retry(publication)
             or await self.session.scalar(
-                select(ActivityLog.id).where(ActivityLog.operation_key == CONSUMED_KEY)
+                select(ActivityLog.id).where(ActivityLog.operation_key == consumed_key)
             )
             is not None
         ):
@@ -1571,15 +1623,19 @@ class PublicationService:
             # Commit a durable one-use execution marker before contacting VK. Redelivery
             # after a crash or a concurrent task must never repeat the provider request.
             await ActivityLogService(self.session).record(
-                "PUBLICATION_CANARY_RETRY_CONSUMED",
-                operation_key=CONSUMED_KEY,
+                "PUBLICATION_CANARY_RETRY_V2_CONSUMED"
+                if new_authorization
+                else "PUBLICATION_CANARY_RETRY_CONSUMED",
+                operation_key=consumed_key,
                 campaign_id=publication.campaign_id,
                 content_item_id=publication.content_item_id,
                 metadata=self._early_canary_snapshot(publication),
             )
         await ActivityLogService(self.session).record(
             "PUBLICATION_STARTED",
-            operation_key=f"publication-started:{publication.id}:canary-retry"
+            operation_key=f"publication-started:{publication.id}:canary-retry-v2"
+            if new_authorization
+            else f"publication-started:{publication.id}:canary-retry"
             if diagnostic_retry
             else f"publication-started:{publication.id}",
             campaign_id=publication.campaign_id,

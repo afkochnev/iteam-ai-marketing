@@ -277,3 +277,32 @@ def test_retry_canary_runtime_arms_only_exact_gate_without_business_writes(monke
     assert all(query.startswith("SELECT") for query in queries)
     assert "6a4685cd-128b-4a76-ae4b-4595fb8a3238" in queries[0]
     assert "activity_logs" in queries[0]
+
+
+@pytest.mark.parametrize("eligible", [0, 1])
+def test_new_canary_gate_requires_prior_audit_without_reset(monkeypatch, eligible):
+    runtime = runtime_module()
+    monkeypatch.setattr(runtime, "ensure_release", lambda: "release")
+    for name in ["inventory", "credential_status", "no_inflight"]:
+        monkeypatch.setattr(runtime, name, lambda: None)
+    monkeypatch.setattr(
+        runtime,
+        "publication",
+        lambda _: ["VK", "FAILED", "", "date", "user", "VK_PERMISSION_ERROR", "-150574411", ""],
+    )
+    queries, changes = [], []
+    monkeypatch.setattr(runtime, "count", lambda query: queries.append(query) or eligible)
+    monkeypatch.setattr(runtime, "apply_runtime", lambda values: changes.append(values))
+    publication_id = runtime.UUID("1142723f-4c25-4334-8f22-7e3ceb1f55f4")
+    if eligible:
+        runtime.arm_retry_canary(publication_id, new_authorization=True)
+        assert changes[0]["VK_CANARY_PUBLICATION_ID"] == str(publication_id)
+    else:
+        with pytest.raises(runtime.RuntimeErrorSafe):
+            runtime.arm_retry_canary(publication_id, new_authorization=True)
+        assert not changes
+    assert queries[0].startswith("SELECT")
+    assert "retry_count=1" in queries[0]
+    assert "publication-canary-retry-v2:" in queries[0]
+    assert "PUBLICATION_CANARY_RETRY_CONSUMED" in queries[0]
+    assert "PUBLICATION_FAILED" in queries[0]

@@ -194,6 +194,31 @@ async def retry_exact_vk_canary(
 
 
 @router.post(
+    "/{publication_id}/canary-retry-v2",
+    response_model=PublicationResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_exact_vk_canary_v2(
+    publication_id: UUID, user: CurrentUser, session: SessionDependency
+) -> PublicationResponse:
+    publication = await PublicationService(session).claim_canary_retry(
+        publication_id, user, new_authorization=True
+    )
+    row = await session.get(Publication, publication.id)
+    if row is None or row.execution_token is None:
+        raise AppError(
+            "PUBLICATION_CLAIM_INVALID", "Не удалось подтвердить владение попыткой.", 409
+        )
+    from app.workers.vk_worker import publish_vk_publication
+
+    # A queue failure leaves the durable claim consumed; never resubmit blindly.
+    publish_vk_publication.apply_async(
+        args=[str(publication.id), row.execution_token], queue="publication"
+    )
+    return publication
+
+
+@router.post(
     "/{publication_id}/retry",
     response_model=PublicationResponse,
     status_code=status.HTTP_202_ACCEPTED,

@@ -233,3 +233,28 @@ adapter may use the refreshed token.
 This fix does not reset a consumed canary retry, clear its audit, change publishing
 gates, or authorize another publication attempt. Keep VK disabled during rollout
 and validate refresh separately from any future publishing approval.
+
+### Distinct authorization after the credential-store fix
+
+A second, separately audited one-use authorization is available only for the same
+Publication/version/owner listed above, following the failed first retry. It does
+not reset, rename or delete the first request, consumed marker or failure audit.
+The authenticated endpoint is `POST /api/v1/publications/{id}/canary-retry-v2`;
+the operator command is `retry-canary-v2 {id}`. Installation alone sends nothing
+and does not change the runtime gates. Human approval to execute is separate from
+approval to prepare or deploy this change.
+
+The app requires retry_count=1, the intact first intent and consumed snapshot,
+the prior audited VK error 15, current FAILED/VK_PERMISSION_ERROR, no delivery
+evidence, exact version/target, the active exact gate, approval hash and valid plan.
+A new claim advances retry_count to 2 and binds a new execution token to
+`PUBLICATION_CANARY_RETRY_V2_REQUESTED`, with operation key
+`publication-canary-retry-v2:{id}` and authorization ID `credential-store-fixed-v1`.
+The worker commits its separate `PUBLICATION_CANARY_RETRY_V2_CONSUMED` marker
+before the single provider request. The first audit stays immutable.
+
+Old queue messages, old endpoints, duplicate requests, concurrent redelivery,
+auth errors, rate limits and uncertain outcomes cannot reuse either consumed
+authorization. After the inspected outcome, disable VK without promote. A crash
+after consumption requires reconciliation, never a blind resubmission. Any further
+permission would require another explicit code change and human approval.
