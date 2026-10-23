@@ -184,3 +184,83 @@ async def test_content_list_exposes_approved_snapshot_and_article_provenance(
             "section_key": "problem",
         }
     ]
+
+
+async def test_content_list_can_include_archived_items_for_operational_reads(
+    client: AsyncClient, db_session: AsyncSession
+) -> None:
+    user = User(
+        email=f"archived-read-{uuid4()}@example.com",
+        password_hash=hash_password("valid-password"),
+        full_name="Archived Read User",
+        role=UserRole.ADMIN,
+    )
+    agent = Agent(
+        name="Writer",
+        slug=f"archived-writer-{uuid4().hex[:8]}",
+        role="content_writer",
+        system_prompt="Write content.",
+        status=AgentStatus.ACTIVE,
+        autonomy_level=1,
+        settings={},
+    )
+    db_session.add_all([user, agent])
+    await db_session.flush()
+    campaign = Campaign(
+        name="Archived read campaign",
+        goal="Operational history",
+        created_by=user.id,
+    )
+    db_session.add(campaign)
+    await db_session.flush()
+    task = Task(
+        campaign_id=campaign.id,
+        task_type=TaskType.CREATE_SOCIAL_POSTS,
+        title="Archived post task",
+        assigned_agent_id=agent.id,
+        priority=TaskPriority.NORMAL,
+        status=TaskStatus.COMPLETED,
+        input_data={},
+        output_data={},
+        requires_approval=False,
+        retry_count=0,
+    )
+    db_session.add(task)
+    await db_session.flush()
+    post = ContentItem(
+        campaign_id=campaign.id,
+        source_task_id=task.id,
+        content_type=ContentType.SOCIAL_POST,
+        title="Архивный пост",
+        status=ContentStatus.ARCHIVED,
+        author_agent_id=agent.id,
+        metadata_={},
+    )
+    db_session.add(post)
+    await db_session.commit()
+
+    login = await client.post(
+        "/api/v1/auth/login",
+        json={"email": user.email, "password": "valid-password"},
+    )
+    assert login.status_code == 200
+
+    default = await client.get(
+        "/api/v1/content",
+        params={"campaign_id": str(campaign.id), "content_type": "SOCIAL_POST"},
+    )
+    assert default.status_code == 200
+    assert all(row["id"] != str(post.id) for row in default.json())
+
+    operational = await client.get(
+        "/api/v1/content",
+        params={
+            "campaign_id": str(campaign.id),
+            "content_type": "SOCIAL_POST",
+            "include_archived": "true",
+        },
+    )
+    assert operational.status_code == 200
+    archived = next(row for row in operational.json() if row["id"] == str(post.id))
+    assert archived["title"] == "Архивный пост"
+    assert archived["status"] == "ARCHIVED"

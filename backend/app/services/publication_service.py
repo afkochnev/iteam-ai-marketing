@@ -294,6 +294,25 @@ class PublicationService:
         )
         return publication
 
+    async def _cancelled_for_plan_content(
+        self,
+        item: ContentItem,
+        plan_item: PublicationPlanItem,
+        version_id: UUID,
+    ) -> Publication | None:
+        publication: Publication | None = await self.session.scalar(
+            select(Publication)
+            .where(
+                Publication.content_item_id == item.id,
+                Publication.content_version_id == version_id,
+                Publication.channel == plan_item.channel,
+                Publication.status == PublicationStatus.CANCELLED,
+            )
+            .order_by(Publication.created_at.desc())
+            .with_for_update()
+        )
+        return publication
+
     async def cancel_overdue_plan_content(
         self,
         content_id: UUID,
@@ -309,17 +328,10 @@ class PublicationService:
                 "Для материала уже существует активная или опубликованная публикация.",
                 409,
             )
-        existing_cancelled = await self.session.scalar(
-            select(Publication)
-            .where(
-                Publication.content_item_id == item.id,
-                Publication.content_version_id == version_id,
-                Publication.channel == plan_item.channel,
-                Publication.status == PublicationStatus.CANCELLED,
-                Publication.scheduled_at == plan_item.scheduled_at,
-            )
-            .order_by(Publication.created_at.desc())
-            .with_for_update()
+        existing_cancelled = await self._cancelled_for_plan_content(
+            item,
+            plan_item,
+            version_id,
         )
         if existing_cancelled is not None:
             return await self._response(existing_cancelled)
@@ -379,6 +391,17 @@ class PublicationService:
             raise AppError(
                 "PUBLICATION_ALREADY_EXISTS",
                 "Для материала уже существует активная или опубликованная публикация.",
+                409,
+            )
+        existing_cancelled = await self._cancelled_for_plan_content(
+            item,
+            plan_item,
+            version_id,
+        )
+        if existing_cancelled is not None:
+            raise AppError(
+                "PUBLICATION_PLAN_SLOT_CANCELLED",
+                "Просроченный слот уже отменён.",
                 409,
             )
         publication = Publication(

@@ -160,12 +160,14 @@ async def list_content(
     content_type: ContentType | None = None,
     status: ContentStatus | None = None,
     author_agent_id: UUID | None = None,
+    include_archived: bool = False,
 ) -> list[ContentListItem]:
     items = await ContentService(session).list(
         campaign_id=campaign_id,
         content_type=content_type,
         status=status,
         author_agent_id=author_agent_id,
+        include_archived=include_archived,
     )
     content_ids = {item.id for item in items}
     parent_ids = {item.parent_content_item_id for item in items if item.parent_content_item_id}
