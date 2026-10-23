@@ -1,0 +1,63 @@
+name: Build PR40 arm64 deploy bundle native
+
+on:
+  push:
+    branches:
+      - ops/pr40-deploy
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_SHA: 7cb279b2f682c390dcdb2a6898f11ed042feb867
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - name: Check out exact release
+        uses: actions/checkout@v4
+        with:
+          ref: 7cb279b2f682c390dcdb2a6898f11ed042feb867
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build arm64 frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          platforms: linux/arm64
+          build-args: |
+            NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+          outputs: type=docker,dest=/tmp/iteam-ai-marketing-frontend-pr40-arm64.tar
+          tags: iteam-ai-marketing-frontend:latest
+          labels: |
+            org.opencontainers.image.revision=7cb279b2f682c390dcdb2a6898f11ed042feb867
+            com.iteam.frontend.api-url=http://localhost:8000/api/v1
+          provenance: false
+
+      - name: Package and checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          gzip -9 /tmp/iteam-ai-marketing-frontend-pr40-arm64.tar
+          cd /tmp
+          sha256sum iteam-ai-marketing-frontend-pr40-arm64.tar.gz > iteam-ai-marketing-frontend-pr40-arm64.tar.gz.sha256
+          cat > image-manifest-arm64.txt <<'EOF'
+          revision=7cb279b2f682c390dcdb2a6898f11ed042feb867
+          architecture=arm64
+          api_url=http://localhost:8000/api/v1
+          image=iteam-ai-marketing-frontend:latest
+          EOF
+
+      - name: Upload deploy image
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr40-frontend-arm64-native
+          path: |
+            /tmp/iteam-ai-marketing-frontend-pr40-arm64.tar.gz
+            /tmp/iteam-ai-marketing-frontend-pr40-arm64.tar.gz.sha256
+            /tmp/image-manifest-arm64.txt
+          if-no-files-found: error
+          retention-days: 7
