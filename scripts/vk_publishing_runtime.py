@@ -181,11 +181,28 @@ def ensure_release() -> str:
         "http://localhost:8000/health/ready", timeout=10
     ) as response:
         payload = json.load(response)
-    build_sha = str(payload.get("build_sha") or "")
-    if build_sha != head:
-        raise RuntimeErrorSafe(
-            f"Runtime BUILD_SHA {build_sha or 'missing'} does not match HEAD {head}."
+    if not isinstance(payload, dict) or any(
+        payload.get(key) != "ok" for key in ("status", "database", "redis", "schema")
+    ):
+        raise RuntimeErrorSafe("Backend readiness checks did not pass.")
+    # Readiness deliberately contains no release identity. Verify the actual
+    # runtime settings for every process affected by activation instead.
+    for service in RUNTIME_SERVICES:
+        build_sha = run(
+            "docker",
+            "compose",
+            "exec",
+            "-T",
+            service,
+            "python",
+            "-c",
+            "from app.core.config import settings; print(settings.build_sha)",
+            capture=True,
         )
+        if build_sha != head:
+            raise RuntimeErrorSafe(
+                f"{service} BUILD_SHA {build_sha or 'missing'} does not match HEAD {head}."
+            )
     return head
 
 

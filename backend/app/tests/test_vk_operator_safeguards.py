@@ -155,3 +155,65 @@ async def test_preflight_refreshes_before_provision(monkeypatch, token_patch):
     else:
         await operator._authorize()
         assert calls == ["refresh"]
+
+
+@pytest.mark.parametrize(
+    "mismatch_service",
+    [None, "backend", "publication_worker", "publication_control_worker", "publication_scheduler"],
+)
+def test_release_verification_uses_runtime_sha_not_readiness(monkeypatch, mismatch_service):
+    import io
+    import json
+
+    runtime = runtime_module()
+    sha = "bff48ad1f37cdbe899c146b696758782cb7c9e90"
+    checked = []
+
+    def fake_run(*args, **kwargs):
+        if args[:2] == ("git", "rev-parse"):
+            return sha
+        if args[:2] == ("git", "status"):
+            return ""
+        assert args[:4] == ("docker", "compose", "exec", "-T")
+        service = args[4]
+        checked.append(service)
+        return "" if service == mismatch_service else sha
+
+    monkeypatch.setattr(runtime, "run", fake_run)
+
+    def readiness(*args, **kwargs):
+        # Actual production response contract: no build_sha field.
+        return io.BytesIO(
+            json.dumps({"status": "ok", "database": "ok", "redis": "ok", "schema": "ok"}).encode()
+        )
+
+    monkeypatch.setattr(runtime.urllib.request, "urlopen", readiness)
+    if mismatch_service:
+        with pytest.raises(runtime.RuntimeErrorSafe, match=mismatch_service + " BUILD_SHA"):
+            runtime.ensure_release()
+    else:
+        assert runtime.ensure_release() == sha
+        assert checked == list(runtime.RUNTIME_SERVICES)
+
+
+@pytest.mark.parametrize("failure", ["status", "database", "redis", "schema"])
+def test_release_verification_rejects_degraded_readiness(monkeypatch, failure):
+    import io
+    import json
+
+    runtime = runtime_module()
+
+    def fake_run(*args, **kwargs):
+        assert args[0] == "git", "degraded readiness must not proceed to runtime operations"
+        return "" if args[1] == "status" else "sha"
+
+    monkeypatch.setattr(runtime, "run", fake_run)
+    payload = {key: "ok" for key in ["status", "database", "redis", "schema"]}
+    payload[failure] = "unavailable"
+    monkeypatch.setattr(
+        runtime.urllib.request,
+        "urlopen",
+        lambda *args, **kwargs: io.BytesIO(json.dumps(payload).encode()),
+    )
+    with pytest.raises(runtime.RuntimeErrorSafe, match="readiness"):
+        runtime.ensure_release()
