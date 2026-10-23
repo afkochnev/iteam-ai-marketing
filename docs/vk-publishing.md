@@ -220,3 +220,16 @@ If an HTTP/queue outcome is ambiguous, inspect durable state without resubmittin
 A crash after the consumed marker may leave delivery uncertain and must follow
 normal reconciliation; there is no automatic recovery send. Neither `/retry` nor
 `/publish-now` can reuse this authorization, even after reconciliation.
+
+### Empty static-token configuration
+
+Compose intentionally supplies `VK_ACCESS_TOKEN=""`. The adapter treats missing,
+empty and whitespace-only static-token values as absent and selects the isolated
+refreshable credential store. A nonempty static token remains forbidden in
+production. Missing credentials or an empty token returned by a store fail before
+`wall.post`. Expired credentials must refresh and persist successfully before the
+adapter may use the refreshed token.
+
+This fix does not reset a consumed canary retry, clear its audit, change publishing
+gates, or authorize another publication attempt. Keep VK disabled during rollout
+and validate refresh separately from any future publishing approval.

@@ -343,3 +343,171 @@ def test_vk_error_diagnostics_reject_non_integer_or_unbounded_values(invalid):
     assert code == 0
     assert error.code == "VK_BAD_REQUEST"
     assert error.safe_diagnostics() == {}
+
+
+@pytest.mark.parametrize("blank", [None, "", " \t "])
+@pytest.mark.parametrize("expired", [False, True])
+async def test_production_blank_static_token_selects_store_and_refreshes(
+    tmp_path, monkeypatch, blank, expired
+):
+    from urllib.parse import parse_qs
+
+    import httpx
+
+    from app.core.config import settings
+    from app.integrations.telegram import VKProvider
+
+    path = tmp_path / "credentials.json"
+    write(path, snapshot(expires_at=datetime.now(UTC) + timedelta(hours=-1 if expired else 1)))
+    original_inode = path.stat().st_ino
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "vk_access_token", blank)
+    monkeypatch.setattr(settings, "vk_owner_id", -150574411)
+    monkeypatch.setattr(settings, "vk_client_id", 54815172)
+    monkeypatch.setattr(settings, "vk_expected_user_id", 176199961)
+    monkeypatch.setattr(settings, "vk_credentials_file", str(path))
+    methods = []
+
+    def handler(request):
+        data = {k: v[0] for k, v in parse_qs(request.content.decode()).items()}
+        method = request.url.path.rsplit("/", 1)[-1]
+        methods.append(method)
+        if method == "auth":
+            assert expired and data["refresh_token"] == "old-refresh-token"
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "new-access-token",
+                    "refresh_token": "new-refresh-token",
+                    "expires_in": 3600,
+                    "scope": "wall groups",
+                    "state": data["state"],
+                    "user_id": 176199961,
+                },
+            )
+        expected = "new-access-token" if expired else "old-access-token"
+        assert data["access_token"] == expected
+        if method == "account.getAppPermissions":
+            return httpx.Response(200, json={"response": 270336})
+        if method == "users.get":
+            return httpx.Response(200, json={"response": [{"id": 176199961}]})
+        if method == "wall.get":
+            return httpx.Response(200, json={"response": {"count": 0, "items": []}})
+        assert method == "wall.post"
+        assert data["owner_id"] == "-150574411"
+        # Rotation must be durable before the adapter uses the refreshed token.
+        saved = json.loads(path.read_text())
+        assert saved["access_token"] == expected
+        if expired:
+            assert saved["refresh_token"] == "new-refresh-token"
+            assert path.stat().st_ino != original_inode
+        return httpx.Response(200, json={"response": {"post_id": 123}})
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.integrations.telegram.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    provider = VKProvider(token=blank, single_attempt=True)
+    assert isinstance(provider._credential_store, VKCredentialStore)
+    assert provider._token is None
+    result = await provider.publish(text="mocked only", chat_id="-150574411")
+    assert result.external_id == "123"
+    assert methods == (
+        ["auth", "account.getAppPermissions", "users.get", "wall.get", "wall.post"]
+        if expired
+        else ["wall.post"]
+    )
+    assert path.stat().st_mode & 0o077 == 0
+
+
+@pytest.mark.parametrize("blank", [None, "", " \t "])
+def test_blank_token_without_store_fails_closed(monkeypatch, blank):
+    from app.core.config import settings
+    from app.integrations.telegram import VKProvider, VKProviderError
+
+    monkeypatch.setattr(settings, "app_env", "production")
+    monkeypatch.setattr(settings, "vk_access_token", blank)
+    monkeypatch.setattr(settings, "vk_credentials_file", None)
+    monkeypatch.setattr(settings, "vk_owner_id", -150574411)
+    with pytest.raises(VKProviderError, match="not configured"):
+        VKProvider(token=blank)
+
+
+@pytest.mark.parametrize("value", ["", " \t "])
+async def test_empty_store_result_blocks_provider_request(monkeypatch, value):
+    from app.core.config import settings
+    from app.integrations.telegram import VKProvider, VKProviderError
+
+    monkeypatch.setattr(settings, "vk_access_token", "")
+    monkeypatch.setattr(settings, "vk_owner_id", -150574411)
+
+    class Store:
+        async def access_token(self, **kwargs):
+            return value
+
+    provider = VKProvider(credential_store=Store())
+
+    async def never_send(**kwargs):
+        pytest.fail("empty credential must not reach wall.post")
+
+    monkeypatch.setattr(provider, "_send", never_send)
+    with pytest.raises(VKProviderError) as error:
+        await provider.publish(text="mocked only", chat_id="-150574411")
+    assert error.value.code == "VK_AUTH_ERROR"
+
+
+@pytest.mark.parametrize("source", ["explicit", "configured"])
+@pytest.mark.parametrize("environment", ["prod", "production"])
+def test_nonblank_static_token_stays_forbidden(monkeypatch, source, environment):
+    from app.core.config import settings
+    from app.integrations.telegram import VKProvider, VKProviderError
+
+    monkeypatch.setattr(settings, "app_env", environment)
+    monkeypatch.setattr(settings, "vk_owner_id", -150574411)
+    monkeypatch.setattr(
+        settings, "vk_access_token", "sentinel-secret" if source == "configured" else ""
+    )
+    with pytest.raises(VKProviderError) as error:
+        VKProvider(token="sentinel-secret" if source == "explicit" else "")
+    assert error.value.code == "VK_AUTH_ERROR"
+    assert "sentinel-secret" not in str(error.value)
+
+
+async def test_blank_production_token_refresh_rejection_never_posts(tmp_path, monkeypatch):
+    import httpx
+
+    from app.core.config import settings
+    from app.integrations.telegram import VKProvider, VKProviderError
+
+    path = tmp_path / "credentials.json"
+    write(path, snapshot(expires_at=datetime.now(UTC) - timedelta(hours=1)))
+    original = path.read_bytes()
+    for name, value in {
+        "app_env": "production",
+        "vk_access_token": "",
+        "vk_owner_id": -150574411,
+        "vk_client_id": 54815172,
+        "vk_expected_user_id": 176199961,
+        "vk_credentials_file": str(path),
+    }.items():
+        monkeypatch.setattr(settings, name, value)
+    calls = []
+
+    def handler(request):
+        calls.append(request.url.path)
+        assert request.url.path.endswith("/oauth2/auth")
+        return httpx.Response(
+            400, json={"error": "invalid_grant", "error_description": "sentinel-secret"}
+        )
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.integrations.telegram.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    with pytest.raises(VKProviderError) as error:
+        await VKProvider(single_attempt=True).publish(text="mocked only", chat_id="-150574411")
+    assert error.value.code == "VK_AUTH_ERROR"
+    assert "sentinel-secret" not in str(error.value)
+    assert len(calls) == 1 and path.read_bytes() == original
