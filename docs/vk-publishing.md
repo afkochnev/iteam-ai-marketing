@@ -24,8 +24,11 @@ If refresh or persistence fails, no wall request is made.
 
 ## Read-only authorization and preflight
 
-Keep `VK_PUBLISHING_ENABLED=false`. The first invocation is strictly read-only
-and discards all returned credentials after verification:
+Keep `VK_PUBLISHING_ENABLED=false`. Before opening VK ID, the script reads the
+working `.env` and fails closed unless VK is disabled, `VK_ACCESS_TOKEN` is
+empty, and any configured `VK_OWNER_ID` exactly matches the selected community.
+The first invocation is strictly read-only and discards all returned credentials
+after verification:
 
 ```bash
 python3 scripts/vk_user_token_preflight.py
