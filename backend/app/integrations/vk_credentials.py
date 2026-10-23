@@ -85,7 +85,7 @@ class VKCredentialSnapshot:
             raise VKCredentialError(
                 "VK_CREDENTIALS_INVALID", "VK credential values are missing."
             )
-        snapshot.expires_at_datetime
+        _ = snapshot.expires_at_datetime
         return snapshot
 
 
@@ -261,12 +261,14 @@ class VKCredentialStore:
                 permissions = await self._app_permissions(client, access_token)
                 if permissions & VK_REQUIRED_PERMISSIONS != VK_REQUIRED_PERMISSIONS:
                     raise VKCredentialError(
-                        "VK_CREDENTIALS_SCOPE_MISSING", "Refreshed VK token lacks wall/groups access."
+                        "VK_CREDENTIALS_SCOPE_MISSING",
+                        "Refreshed VK token lacks wall/groups access.",
                     )
                 user_id = await self._user_id(client, access_token)
                 if user_id != self.expected_user_id:
                     raise VKCredentialError(
-                        "VK_CREDENTIALS_USER_MISMATCH", "Refreshed VK token belongs to another user."
+                        "VK_CREDENTIALS_USER_MISMATCH",
+                        "Refreshed VK token belongs to another user.",
                     )
                 await self._read_wall(client, access_token)
         except VKCredentialError:

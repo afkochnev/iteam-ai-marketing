@@ -188,7 +188,10 @@ async def _authorize() -> tuple[VKCredentialSnapshot, dict[str, Any]]:
             user = users[0]
             user_id = int(user["id"])
             if user_id != store.expected_user_id:
-                raise ProvisioningError("identity", "Authorized VK user does not match expected user.")
+                raise ProvisioningError(
+                    "identity",
+                    "Authorized VK user does not match expected user.",
+                )
 
             permissions_mask = int(
                 await _vk_method(client, "account.getAppPermissions", access_token)
@@ -281,7 +284,12 @@ async def _authorize() -> tuple[VKCredentialSnapshot, dict[str, Any]]:
     safe = {
         "user_id": user_id,
         "user_name": " ".join(
-            part for part in (str(user.get("first_name", "")), str(user.get("last_name", ""))) if part
+            part
+            for part in (
+                str(user.get("first_name", "")),
+                str(user.get("last_name", "")),
+            )
+            if part
         ),
         "permissions_mask": permissions_mask,
         "community_id": group_id,
@@ -353,7 +361,10 @@ async def _run(command: str) -> int:
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "command", choices=("preflight", "provision", "status", "refresh"), nargs="?", default="status"
+        "command",
+        choices=("preflight", "provision", "status", "refresh"),
+        nargs="?",
+        default="status",
     )
     args = parser.parse_args()
     try:
