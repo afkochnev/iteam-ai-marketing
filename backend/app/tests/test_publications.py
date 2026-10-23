@@ -2037,3 +2037,73 @@ async def test_vk_canary_scope_blocks_stale_claim_before_provider_call(
     assert result.status is PublicationStatus.FAILED
     assert result.failure_code == "VK_CANARY_SCOPE_MISMATCH"
     assert provider.calls == 0
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("vk_code,subcode", [(7, None), (15, 1133), (15, 1134)])
+async def test_vk_failure_audit_persists_only_safe_provider_diagnostics(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, vk_code: int, subcode: int | None
+) -> None:
+    import json
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.channel = ContentChannel.VK
+    await db_session.commit()
+    service = PublicationService(db_session)
+    publication = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.approve(publication.id, user)
+    await service.claim_for_publish(publication.id, user)
+    secret = "sentinel-token-refresh-callback-password"
+
+    class DeniedProvider:
+        calls = 0
+
+        async def publish(self, **_kwargs):
+            self.calls += 1
+            parsed = VKProvider._error(
+                {
+                    "error": {
+                        "error_code": vk_code,
+                        "error_subcode": subcode,
+                        "error_msg": secret,
+                        "request_params": [{"key": "access_token", "value": secret}],
+                        "refresh_token": secret,
+                    }
+                }
+            )
+            assert parsed is not None
+            raise parsed[1]
+
+    provider = DeniedProvider()
+    result = await service.execute_vk(publication.id, provider)
+    assert result is not None and result.status is PublicationStatus.FAILED
+    assert result.failure_code == "VK_PERMISSION_ERROR"
+    assert result.retry_count == 0
+    assert result.external_id is None
+    assert provider.calls == 1
+    audit = (
+        await db_session.scalars(
+            select(ActivityLog).where(
+                ActivityLog.event_type == "PUBLICATION_FAILED",
+                ActivityLog.metadata_["publication_id"].as_string() == str(publication.id),
+            )
+        )
+    ).one()
+    expected = {
+        "publication_id": str(publication.id),
+        "failure_code": "VK_PERMISSION_ERROR",
+        "vk_error_code": vk_code,
+    }
+    if subcode is not None:
+        expected["vk_error_subcode"] = subcode
+    assert audit.metadata_ == expected
+    assert secret not in json.dumps(audit.metadata_)
+    assert secret not in result.model_dump_json()

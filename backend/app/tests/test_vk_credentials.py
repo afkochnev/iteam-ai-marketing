@@ -302,3 +302,44 @@ def test_production_provider_rejects_static_token(monkeypatch, environment):
     monkeypatch.setattr(settings, "vk_owner_id", -150574411)
     with pytest.raises(VKProviderError, match="Static"):
         VKProvider(token="synthetic-static-token")
+
+
+@pytest.mark.parametrize("code,subcode", [(7, None), (15, 1133), (15, 1134), (100, 999)])
+def test_vk_error_diagnostics_allow_only_numeric_codes(code, subcode):
+    from app.integrations.telegram import VKProvider
+
+    secret = "sentinel-access-refresh-callback-password"
+    raw = {
+        "error_code": code,
+        "error_subcode": subcode,
+        "error_msg": secret,
+        "request_params": [{"key": "access_token", "value": secret}],
+        "access_token": secret,
+        "refresh_token": secret,
+        "redirect_uri": secret,
+    }
+    result = VKProvider._error({"error": raw})
+    assert result is not None
+    numeric_code, error = result
+    assert numeric_code == code
+    expected = {"vk_error_code": code}
+    if subcode is not None:
+        expected["vk_error_subcode"] = subcode
+    assert error.safe_diagnostics() == expected
+    assert secret not in str(error)
+    assert secret not in repr(error)
+    assert secret not in json.dumps(vars(error))
+    if code in {7, 15}:
+        assert not error.retryable and not error.ambiguous
+
+
+@pytest.mark.parametrize("invalid", ["sentinel-secret", "15", True, -1, 2**80, {}, [], None])
+def test_vk_error_diagnostics_reject_non_integer_or_unbounded_values(invalid):
+    from app.integrations.telegram import VKProvider
+
+    result = VKProvider._error({"error": {"error_code": invalid, "error_subcode": invalid}})
+    assert result is not None
+    code, error = result
+    assert code == 0
+    assert error.code == "VK_BAD_REQUEST"
+    assert error.safe_diagnostics() == {}
