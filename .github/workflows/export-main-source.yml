@@ -1,0 +1,35 @@
+name: Export accepted main source
+
+on:
+  push:
+    branches:
+      - ops/export-main-source
+
+permissions:
+  contents: read
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out exact accepted release
+        uses: actions/checkout@v4
+        with:
+          ref: 7cb279b2f682c390dcdb2a6898f11ed042feb867
+
+      - name: Package source without Git metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          tar --exclude=.git -czf /tmp/iteam-main-source.tar.gz .
+          sha256sum /tmp/iteam-main-source.tar.gz > /tmp/iteam-main-source.tar.gz.sha256
+
+      - name: Upload source package
+        uses: actions/upload-artifact@v4
+        with:
+          name: iteam-main-source
+          path: |
+            /tmp/iteam-main-source.tar.gz
+            /tmp/iteam-main-source.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
