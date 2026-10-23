@@ -1,4 +1,6 @@
 from functools import lru_cache
+from pathlib import Path
+from urllib.parse import urlparse
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -66,9 +68,12 @@ class Settings(BaseSettings):
     publication_publishing_stale_seconds: int = 600
     vk_publishing_enabled: bool = False
     vk_access_token: str | None = None
+    vk_credentials_file: str | None = None
     vk_owner_id: int | None = None
     vk_api_version: str = "5.199"
     vk_request_timeout_seconds: int = 30
+    vk_id_token_endpoint: str = "https://id.vk.ru/oauth2/auth"
+    vk_refresh_skew_seconds: int = Field(default=120, ge=30, le=1800)
     telegram_metrics_enabled: bool = False
     telegram_metrics_api_id: int | None = None
     telegram_metrics_api_hash: str | None = None
@@ -118,6 +123,11 @@ class Settings(BaseSettings):
         # Compose clears this optional integer along with the publication tokens.
         return None if isinstance(value, str) and not value.strip() else value
 
+    @field_validator("vk_credentials_file", mode="before")
+    @classmethod
+    def normalize_empty_optional_path(cls, value: object) -> object:
+        return None if isinstance(value, str) and not value.strip() else value
+
     @field_validator("worker_role", "scheduler_role", mode="before")
     @classmethod
     def normalize_empty_runtime_role(cls, value: object) -> object:
@@ -147,9 +157,34 @@ class Settings(BaseSettings):
             "metrics",
         }:
             raise RuntimeError("WORKER_ROLE is invalid")
+        if self.worker_role == "publication":
+            self._validate_publication_execution_capabilities()
+            return
         if self.worker_role not in {"ai", "ai_control"}:
             return
         self._validate_ai_publication_capabilities("AI worker")
+
+    def _validate_publication_execution_capabilities(self) -> None:
+        errors: list[str] = []
+        if self.telegram_publishing_enabled:
+            if not self.telegram_bot_token:
+                errors.append("TELEGRAM_BOT_TOKEN")
+            if not self.telegram_target_chat_id:
+                errors.append("TELEGRAM_TARGET_CHAT_ID")
+        if self.vk_publishing_enabled:
+            if self.vk_owner_id is None or self.vk_owner_id >= 0:
+                errors.append("VK_OWNER_ID")
+            if not self.vk_credentials_file:
+                errors.append("VK_CREDENTIALS_FILE")
+            elif not Path(self.vk_credentials_file).is_file():
+                errors.append("VK_CREDENTIALS_FILE")
+            if self.vk_access_token:
+                errors.append("VK_ACCESS_TOKEN_MUST_BE_EMPTY")
+        if errors:
+            raise RuntimeError(
+                "Publication worker configuration is invalid; fix: "
+                + ", ".join(sorted(set(errors)))
+            )
 
     def _validate_ai_publication_capabilities(self, process: str) -> None:
         publication_capabilities = {
@@ -158,6 +193,7 @@ class Settings(BaseSettings):
             "TELEGRAM_BOT_TOKEN": bool(self.telegram_bot_token),
             "TELEGRAM_TARGET_CHAT_ID": bool(self.telegram_target_chat_id),
             "VK_ACCESS_TOKEN": bool(self.vk_access_token),
+            "VK_CREDENTIALS_FILE": bool(self.vk_credentials_file),
             "VK_OWNER_ID": self.vk_owner_id is not None,
         }
         errors = [name for name, present in publication_capabilities.items() if present]
@@ -236,6 +272,7 @@ class Settings(BaseSettings):
             "TASK_DISPATCH_INTERVAL_SECONDS": self.task_dispatch_interval_seconds,
             "TELEGRAM_REQUEST_TIMEOUT_SECONDS": self.telegram_request_timeout_seconds,
             "VK_REQUEST_TIMEOUT_SECONDS": self.vk_request_timeout_seconds,
+            "VK_REFRESH_SKEW_SECONDS": self.vk_refresh_skew_seconds,
             "METRICS_SYNC_INTERVAL_SECONDS": self.metrics_sync_interval_seconds,
             "METRICS_LOOKBACK_DAYS": self.metrics_lookback_days,
             "PUBLICATION_PUBLISHING_STALE_SECONDS": self.publication_publishing_stale_seconds,
@@ -247,6 +284,12 @@ class Settings(BaseSettings):
             numeric_errors.append("AGENT_MAX_RETRIES")
         if self.smm_agent_output_repair_attempts != 1:
             numeric_errors.append("SMM_AGENT_OUTPUT_REPAIR_ATTEMPTS")
+        token_endpoint = urlparse(self.vk_id_token_endpoint)
+        if (
+            token_endpoint.scheme != "https"
+            or token_endpoint.hostname not in {"id.vk.ru", "id.vk.com"}
+        ):
+            numeric_errors.append("VK_ID_TOKEN_ENDPOINT")
         if numeric_errors:
             raise RuntimeError(
                 "Configuration contains invalid numeric values: "
@@ -278,9 +321,7 @@ class Settings(BaseSettings):
             if not self.telegram_target_chat_id:
                 errors.append("TELEGRAM_TARGET_CHAT_ID")
         if self.vk_publishing_enabled:
-            if not self.vk_access_token:
-                errors.append("VK_ACCESS_TOKEN")
-            if self.vk_owner_id is None:
+            if self.vk_owner_id is None or self.vk_owner_id >= 0:
                 errors.append("VK_OWNER_ID")
         if not self.cookie_secure:
             errors.append("COOKIE_SECURE")

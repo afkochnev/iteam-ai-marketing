@@ -22,3 +22,4 @@ frontend/coverage/
 frontend/.vitest/
 frontend/tsconfig.tsbuildinfo
 *.log
+.runtime-secrets/

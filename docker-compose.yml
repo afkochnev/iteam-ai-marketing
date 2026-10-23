@@ -59,6 +59,8 @@ services:
       VK_METRICS_ENABLED: "false"
       VK_METRICS_ACCESS_TOKEN: ""
       VK_METRICS_OWNER_ID: ""
+      VK_ACCESS_TOKEN: ""
+      VK_CREDENTIALS_FILE: ""
     ports:
       - "8000:8000"
     depends_on:
@@ -118,11 +120,14 @@ services:
     <<: *worker
     command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --queues=publication
     profiles: [publishing]
+    volumes:
+      - ${VK_PUBLISHING_STATE_DIR:-./.runtime-secrets/vk}:/run/iteam-vk
     environment:
       <<: *no-metrics-environment
       WORKER_ROLE: publication
       SCHEDULER_ROLE: ""
       OPENAI_API_KEY: ""
+      VK_CREDENTIALS_FILE: /run/iteam-vk/credentials.json
 
   publication_control_worker:
     <<: *worker
@@ -145,6 +150,7 @@ services:
       TELEGRAM_TARGET_CHAT_ID: ""
       VK_PUBLISHING_ENABLED: "false"
       VK_ACCESS_TOKEN: ""
+      VK_CREDENTIALS_FILE: ""
       VK_OWNER_ID: ""
       SCHEDULER_ROLE: ""
       OPENAI_API_KEY: ""
