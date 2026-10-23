@@ -1,0 +1,49 @@
+name: Apply VK refreshable publishing patch
+
+on:
+  push:
+    branches:
+      - feat/vk-refreshable-publishing
+
+permissions:
+  contents: write
+
+concurrency:
+  group: apply-vk-refreshable-publishing
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: github.event.head_commit.message == 'Stage VK refreshable publishing workflow'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/vk-refreshable-publishing
+          fetch-depth: 0
+
+      - name: Verify exact accepted base
+        shell: bash
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor 7cb279b2f682c390dcdb2a6898f11ed042feb867 HEAD
+
+      - name: Decode and apply reviewed patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 --decode .github/patches/vk-refreshable-publishing.patch.gz.b64 > /tmp/vk.patch.gz
+          gzip --decompress /tmp/vk.patch.gz
+          git apply --check /tmp/vk.patch
+          git apply --index /tmp/vk.patch
+          git rm .github/patches/vk-refreshable-publishing.patch.gz.b64
+          git rm .github/workflows/apply-vk-refreshable-publishing.yml
+
+      - name: Commit branch changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Alexander'
+          git config user.email 'afkochnev@gmail.com'
+          git commit -m 'Add refreshable VK publishing credentials and canary gate'
+          git push origin HEAD:feat/vk-refreshable-publishing
