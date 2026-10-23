@@ -10,6 +10,7 @@ import pytest
 from app.core.config import Settings
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+VK_RUNTIME_CREDENTIAL_PATH = "/run/iteam-vk/credentials.json"
 WORKER_QUEUES = {
     "ai_worker": "ai",
     "ai_control_worker": "ai_control",
@@ -22,9 +23,25 @@ PUBLICATION_FIELDS = {
     "VK_PUBLISHING_ENABLED": "true",
     "TELEGRAM_BOT_TOKEN": "synthetic-telegram-token",
     "TELEGRAM_TARGET_CHAT_ID": "synthetic-chat-id",
-    "VK_ACCESS_TOKEN": "synthetic-vk-token",
+    "VK_ACCESS_TOKEN": "synthetic-static-vk-token",
+    "VK_CREDENTIALS_FILE": "/host/path-that-must-not-leak.json",
     "VK_OWNER_ID": "-123456789",
 }
+METRICS_FIELDS = {
+    "TELEGRAM_METRICS_ENABLED": "true",
+    "TELEGRAM_METRICS_API_ID": "123",
+    "TEGRAM_METRICS_API_HASH": "private-metrics-secret",
+    "TELEGRAM_METRICS_SESSION": "private-metrics-secret",
+    "TELEGRAM_METRICS_PEER": "@synthetic",
+    "TELEGRAM_METRICS_CHAT_ID": "-100123",
+    "VK_METRICS_ENABLED": "true",
+    "VK_METRICS_ACCESS_TOKEN": "private-metrics-secret",
+    "VK_METRICS_OWNER_ID": "-123",
+}
+# Correct the key while keeping the dictionary declaration visually grouped.
+METRICS_FIELDS["TELEGRAM_METRICS_API_HASH"] = METRICS_FIELDS.pop(
+    "TEGRAM_METRICS_API_HASH"
+)
 
 
 @pytest.fixture(scope="module")
@@ -81,6 +98,14 @@ def worker_command(service):
     return split(command) if isinstance(command, str) else command
 
 
+def volume_targets(service) -> set[str]:
+    return {
+        volume["target"]
+        for volume in service.get("volumes", [])
+        if isinstance(volume, dict) and "target" in volume
+    }
+
+
 @pytest.mark.parametrize(("service_name", "queue"), WORKER_QUEUES.items())
 def test_worker_consumes_only_owned_queue(compose_config, service_name, queue):
     command = worker_command(compose_config["services"][service_name])
@@ -122,24 +147,82 @@ def test_ai_workers_always_available_with_no_publishing_capability(compose_confi
     config.validate_worker_capabilities()
 
 
-@pytest.mark.parametrize(
-    "service_name", ["publication_worker", "publication_control_worker", "metrics_worker"]
-)
-def test_publication_workers_opt_in_and_without_openai_credential(compose_config, service_name):
-    service = compose_config["services"][service_name]
-    assert service["profiles"] == ["publishing"]
-    environment = service["environment"]
-    assert environment["WORKER_ROLE"] == WORKER_QUEUES[service_name]
+def test_only_publication_worker_receives_rotating_vk_credentials(compose_config):
+    services = compose_config["services"]
+    worker = services["publication_worker"]
+    environment = worker["environment"]
+    assert worker["profiles"] == ["publishing"]
+    assert environment["WORKER_ROLE"] == "publication"
     assert environment["OPENAI_API_KEY"] == ""
-    # Publishing workers retain their own synthetic provider capabilities.
-    for field, value in PUBLICATION_FIELDS.items():
-        assert environment[field] == (
-            ("false" if field.endswith("_ENABLED") else "")
-            if service_name == "metrics_worker"
-            else value
-        )
-    config = Settings(_env_file=None, **{key.lower(): value for key, value in environment.items()})
+    assert environment["VK_PUBLISHING_ENABLED"] == "true"
+    assert environment["VK_OWNER_ID"] == PUBLICATION_FIELDS["VK_OWNER_ID"]
+    assert environment["VK_ACCESS_TOKEN"] == ""
+    assert environment["VK_CREDENTIALS_FILE"] == VK_RUNTIME_CREDENTIAL_PATH
+    assert VK_RUNTIME_CREDENTIAL_PATH.rpartition("/")[0] in volume_targets(worker)
+
+    for service_name, service in services.items():
+        if service_name == "publication_worker":
+            continue
+        assert service["environment"].get("VK_CREDENTIALS_FILE", "") == ""
+        assert service["environment"].get("VK_ACCESS_TOKEN", "") == ""
+        assert VK_RUNTIME_CREDENTIAL_PATH.rpartition("/")[0] not in volume_targets(service)
+
+
+def test_publication_control_worker_has_no_vk_secret(compose_config):
+    environment = compose_config["services"]["publication_control_worker"]["environment"]
+    assert environment["WORKER_ROLE"] == "publication_control"
+    assert environment["OPENAI_API_KEY"] == ""
+    assert environment["VK_PUBLISHING_ENABLED"] == "true"
+    assert environment["VK_OWNER_ID"] == PUBLICATION_FIELDS["VK_OWNER_ID"]
+    assert environment["VK_ACCESS_TOKEN"] == ""
+    assert environment["VK_CREDENTIALS_FILE"] == ""
+    Settings(
+        _env_file=None, **{key.lower(): value for key, value in environment.items()}
+    ).validate_worker_capabilities()
+
+
+def test_publication_worker_accepts_refreshable_credentials(tmp_path: Path) -> None:
+    credentials = tmp_path / "credentials.json"
+    credentials.write_text("{}")
+    config = Settings(
+        _env_file=None,
+        worker_role="publication",
+        telegram_publishing_enabled=True,
+        telegram_bot_token="synthetic-telegram-token",
+        telegram_target_chat_id="synthetic-chat-id",
+        vk_publishing_enabled=True,
+        vk_access_token=None,
+        vk_credentials_file=str(credentials),
+        vk_owner_id=-123456789,
+    )
     config.validate_worker_capabilities()
+
+
+def test_publication_worker_rejects_static_vk_token(tmp_path: Path) -> None:
+    credentials = tmp_path / "credentials.json"
+    credentials.write_text("{}")
+    config = Settings(
+        _env_file=None,
+        worker_role="publication",
+        vk_publishing_enabled=True,
+        vk_access_token="must-not-be-used",
+        vk_credentials_file=str(credentials),
+        vk_owner_id=-123456789,
+    )
+    with pytest.raises(RuntimeError, match="VK_ACCESS_TOKEN_MUST_BE_EMPTY"):
+        config.validate_worker_capabilities()
+
+
+def test_publication_worker_rejects_missing_refreshable_credentials(tmp_path: Path) -> None:
+    config = Settings(
+        _env_file=None,
+        worker_role="publication",
+        vk_publishing_enabled=True,
+        vk_credentials_file=str(tmp_path / "missing.json"),
+        vk_owner_id=-123456789,
+    )
+    with pytest.raises(RuntimeError, match="VK_CREDENTIALS_FILE"):
+        config.validate_worker_capabilities()
 
 
 @pytest.mark.parametrize("role", ["ai", "ai_control"])
@@ -170,7 +253,7 @@ def test_ai_role_rejects_working_publication_capability_even_when_disabled(role,
     capability = (
         {"telegram_bot_token": "synthetic-token", "telegram_target_chat_id": "synthetic-chat"}
         if provider == "telegram"
-        else {"vk_access_token": "synthetic-token", "vk_owner_id": -123}
+        else {"vk_credentials_file": "/synthetic/credentials", "vk_owner_id": -123}
     )
     config = Settings(
         _env_file=None,
@@ -204,6 +287,7 @@ def import_worker_app(role, capabilities=None):
             "TELEGRAM_BOT_TOKEN": "",
             "TELEGRAM_TARGET_CHAT_ID": "",
             "VK_ACCESS_TOKEN": "",
+            "VK_CREDENTIALS_FILE": "",
             "VK_OWNER_ID": "",
         }
     )
@@ -241,9 +325,38 @@ def test_ai_startup_fails_before_worker_import_with_publishing_capability(role):
     assert "synthetic-id" not in started.stderr
 
 
-@pytest.mark.parametrize("role", ["publication", "publication_control", "metrics"])
-def test_publication_worker_startup_without_openai_execution_capability(role):
-    started = import_worker_app(role, {} if role == "metrics" else PUBLICATION_FIELDS)
+def test_publication_worker_startup_with_refreshable_credentials(tmp_path: Path):
+    credentials = tmp_path / "credentials.json"
+    credentials.write_text("{}")
+    started = import_worker_app(
+        "publication",
+        {
+            "TELEGRAM_PUBLISHING_ENABLED": "true",
+            "TELEGRAM_BOT_TOKEN": "synthetic-telegram-token",
+            "TELEGRAM_TARGET_CHAT_ID": "synthetic-chat-id",
+            "VK_PUBLISHING_ENABLED": "true",
+            "VK_ACCESS_TOKEN": "",
+            "VK_CREDENTIALS_FILE": str(credentials),
+            "VK_OWNER_ID": "-123456789",
+        },
+    )
+    assert started.returncode == 0, started.stderr
+
+
+@pytest.mark.parametrize("role", ["publication_control", "metrics"])
+def test_non_execution_publication_workers_start_without_openai(role):
+    capabilities = (
+        {
+            "TELEGRAM_PUBLISHING_ENABLED": "true",
+            "TELEGRAM_BOT_TOKEN": "synthetic-telegram-token",
+            "TELEGRAM_TARGET_CHAT_ID": "synthetic-chat-id",
+            "VK_PUBLISHING_ENABLED": "true",
+            "VK_OWNER_ID": "-123456789",
+        }
+        if role == "publication_control"
+        else {}
+    )
+    started = import_worker_app(role, capabilities)
     assert started.returncode == 0, started.stderr
 
 
@@ -258,19 +371,6 @@ def test_default_compose_only_enables_ai_workers(compose_config):
 def test_ai_worker_startup_with_cleared_publication_capability(role):
     started = import_worker_app(role)
     assert started.returncode == 0, started.stderr
-
-
-METRICS_FIELDS = {
-    "TELEGRAM_METRICS_ENABLED": "true",
-    "TELEGRAM_METRICS_API_ID": "123",
-    "TELEGRAM_METRICS_API_HASH": "private-metrics-secret",
-    "TELEGRAM_METRICS_SESSION": "private-metrics-secret",
-    "TELEGRAM_METRICS_PEER": "@synthetic",
-    "TELEGRAM_METRICS_CHAT_ID": "-100123",
-    "VK_METRICS_ENABLED": "true",
-    "VK_METRICS_ACCESS_TOKEN": "private-metrics-secret",
-    "VK_METRICS_OWNER_ID": "-123",
-}
 
 
 @pytest.mark.parametrize(
@@ -299,5 +399,5 @@ def test_metrics_worker_receives_only_read_credentials(compose_config):
     for field in PUBLICATION_FIELDS:
         assert environment[field] == ("false" if field.endswith("_ENABLED") else "")
     Settings(
-        _env_file=None, **{k.lower(): v for k, v in environment.items()}
+        _env_file=None, **{key.lower(): value for key, value in environment.items()}
     ).validate_worker_capabilities()
