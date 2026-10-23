@@ -4,8 +4,8 @@ MVP цепочка: Campaign → Strategy Approval → Knowledge → Article →
 Pack, human approvals, revisions, automatic dispatch and resilience controls.
 
 Production references: [deployment](docs/deployment.md), [security](docs/security.md),
-[backup/restore](docs/backup-and-restore.md), [release checklist](docs/release-checklist.md)
-и [architecture](docs/architecture.md).
+[backup/restore](docs/backup-and-restore.md), [release checklist](docs/release-checklist.md),
+[VK publishing](docs/vk-publishing.md) и [architecture](docs/architecture.md).
 
 Основа web-приложения для управляемого AI-отдела маркетинга iTeam. Репозиторий развивается последовательно по master specification. Текущий scope: **Итерация 6 — Marketing Director и согласование стратегии**.
 

@@ -85,6 +85,7 @@ services:
       TELEGRAM_BOT_TOKEN: ""
       TELEGRAM_TARGET_CHAT_ID: ""
       VK_ACCESS_TOKEN: ""
+      VK_CREDENTIALS_FILE: ""
       VK_OWNER_ID: ""
 
   ai_control_worker:
@@ -113,6 +114,8 @@ services:
       WORKER_ROLE: ""
       SCHEDULER_ROLE: publication
       OPENAI_API_KEY: ""
+      VK_ACCESS_TOKEN: ""
+      VK_CREDENTIALS_FILE: ""
 
   publication_worker:
     <<: *worker
@@ -123,6 +126,10 @@ services:
       WORKER_ROLE: publication
       SCHEDULER_ROLE: ""
       OPENAI_API_KEY: ""
+      VK_ACCESS_TOKEN: ""
+      VK_CREDENTIALS_FILE: /run/iteam-secrets/vk/credentials.json
+    volumes:
+      - vk_publishing_credentials:/run/iteam-secrets/vk
 
   publication_control_worker:
     <<: *worker
@@ -133,6 +140,8 @@ services:
       WORKER_ROLE: publication_control
       SCHEDULER_ROLE: ""
       OPENAI_API_KEY: ""
+      VK_ACCESS_TOKEN: ""
+      VK_CREDENTIALS_FILE: ""
 
   metrics_worker:
     <<: *worker
@@ -145,9 +154,32 @@ services:
       TELEGRAM_TARGET_CHAT_ID: ""
       VK_PUBLISHING_ENABLED: "false"
       VK_ACCESS_TOKEN: ""
+      VK_CREDENTIALS_FILE: ""
       VK_OWNER_ID: ""
       SCHEDULER_ROLE: ""
       OPENAI_API_KEY: ""
+
+
+  vk_credentials_admin:
+    image: iteam-ai-marketing-backend:latest
+    profiles: [vk-admin]
+    user: "0:0"
+    entrypoint: ["python", "-m", "app.maintenance.vk_publishing_credentials"]
+    command: ["status"]
+    environment:
+      APP_ENV: maintenance
+      VK_PUBLISHING_ENABLED: "false"
+      VK_ACCESS_TOKEN: ""
+      VK_CREDENTIALS_FILE: /run/iteam-secrets/vk/credentials.json
+      VK_CREDENTIALS_OWNER_UID: "10001"
+      VK_CLIENT_ID: ${VK_CLIENT_ID:-}
+      VK_EXPECTED_USER_ID: ${VK_EXPECTED_USER_ID:-}
+      VK_OWNER_ID: ${VK_OWNER_ID:-}
+      VK_API_VERSION: ${VK_API_VERSION:-5.199}
+      VK_REQUEST_TIMEOUT_SECONDS: ${VK_REQUEST_TIMEOUT_SECONDS:-30}
+      VK_TOKEN_REFRESH_LEEWAY_SECONDS: ${VK_TOKEN_REFRESH_LEEWAY_SECONDS:-300}
+    volumes:
+      - vk_publishing_credentials:/run/iteam-secrets/vk
 
   frontend:
     restart: unless-stopped
@@ -166,3 +198,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  vk_publishing_credentials:
