@@ -154,3 +154,16 @@ then checks BUILD_SHA from application settings inside backend, publication
 worker, control worker and scheduler against the clean checkout HEAD. It does
 not expect release metadata in the readiness response. A missing or different
 SHA in any role blocks the command before activation.
+
+### Explicit early canary
+
+The existing publish-now action can send a future SCHEDULED VK publication early
+only when invoked by an authenticated human and VK_CANARY_PUBLICATION_ID equals
+that exact UUID. Delivery approval, approved content integrity and the existing
+plan snapshot must still pass. The claim writes a durable
+PUBLICATION_CANARY_EARLY_REQUESTED audit event bound to the publication, exact
+content version, original schedule, target and one-use execution token. The
+worker requires the same exact event and active canary gate before an early
+provider call. Scheduled time and approved plan remain unchanged. Schedulers,
+other UUIDs, ordinary unrestricted VK mode and Telegram retain their existing
+time checks. Never promote while a canary is in flight.

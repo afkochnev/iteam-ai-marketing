@@ -1223,22 +1223,71 @@ class PublicationService:
         await self.session.refresh(replacement)
         return await self._response(replacement)
 
+    @staticmethod
+    def _early_canary_snapshot(publication: Publication) -> dict[str, str | None]:
+        return {
+            "publication_id": str(publication.id),
+            "content_version_id": str(publication.content_version_id),
+            "channel": publication.channel.value,
+            "scheduled_at": (
+                publication.scheduled_at.isoformat() if publication.scheduled_at else None
+            ),
+            "provider_target_id": publication.provider_target_id,
+            "execution_token": publication.execution_token,
+        }
+
+    async def _has_early_canary_request(self, publication: Publication) -> bool:
+        if (
+            not settings.vk_publishing_enabled
+            or publication.channel.value != "VK"
+            or settings.vk_canary_publication_id != publication.id
+            or not publication.execution_token
+            or settings.vk_owner_id is None
+            or settings.vk_owner_id >= 0
+            or publication.provider_target_id != str(settings.vk_owner_id)
+        ):
+            return False
+        event = await self.session.scalar(
+            select(ActivityLog).where(
+                ActivityLog.operation_key == f"publication-canary-early:{publication.id}"
+            )
+        )
+        return (
+            event is not None
+            and event.event_type == "PUBLICATION_CANARY_EARLY_REQUESTED"
+            and event.user_id is not None
+            and event.metadata_ == self._early_canary_snapshot(publication)
+        )
+
     async def claim_for_publish(
         self, publication_id: UUID, user: User | None = None
     ) -> PublicationResponse:
         """Atomically claim an approved/due publication before Celery execution."""
         publication = await self._locked(publication_id)
         now = utc_now()
+        early_canary = (
+            user is not None
+            and settings.vk_publishing_enabled
+            and publication.channel.value == "VK"
+            and settings.vk_canary_publication_id == publication.id
+            and publication.status is PublicationStatus.SCHEDULED
+            and publication.scheduled_at is not None
+            and publication.scheduled_at > now
+        )
         # Revalidate after the row lock: another dispatcher may have committed earlier rows.
         if user is None and publication.status is PublicationStatus.SCHEDULED:
             if operational_fields(publication, now)["is_overdue"]:
                 raise AppError(
                     "PUBLICATION_OVERDUE", "Плановое время прошло; нужно решение оператора.", 409
                 )
-        eligible = publication.status is PublicationStatus.APPROVED or (
-            publication.status is PublicationStatus.SCHEDULED
-            and publication.scheduled_at is not None
-            and publication.scheduled_at <= now
+        eligible = (
+            early_canary
+            or publication.status is PublicationStatus.APPROVED
+            or (
+                publication.status is PublicationStatus.SCHEDULED
+                and publication.scheduled_at is not None
+                and publication.scheduled_at <= now
+            )
         )
         eligible = (
             eligible
@@ -1246,7 +1295,7 @@ class PublicationService:
             and publication.approved_for_publish_by is not None
         )
         eligible = eligible and (
-            publication.scheduled_at is None or publication.scheduled_at <= now
+            early_canary or publication.scheduled_at is None or publication.scheduled_at <= now
         )
         eligible = (
             eligible
@@ -1295,6 +1344,16 @@ class PublicationService:
         # Workers must present this token; an old message carrying only the
         # publication id can no longer authorize a later retry.
         publication.execution_token = str(uuid4())
+        if early_canary:
+            assert user is not None
+            await ActivityLogService(self.session).record(
+                "PUBLICATION_CANARY_EARLY_REQUESTED",
+                operation_key=f"publication-canary-early:{publication.id}",
+                campaign_id=publication.campaign_id,
+                user_id=user.id,
+                content_item_id=publication.content_item_id,
+                metadata=self._early_canary_snapshot(publication),
+            )
         await ActivityLogService(self.session).record(
             "PUBLICATION_QUEUED",
             operation_key=f"publication-queued:{publication.id}",
@@ -1354,7 +1413,11 @@ class PublicationService:
         if (
             publication.approved_for_publish_at is None
             or publication.approved_for_publish_by is None
-            or (publication.scheduled_at is not None and publication.scheduled_at > utc_now())
+            or (
+                publication.scheduled_at is not None
+                and publication.scheduled_at > utc_now()
+                and not await self._has_early_canary_request(publication)
+            )
         ):
             return None
         item = await self.session.scalar(
