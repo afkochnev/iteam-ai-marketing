@@ -24,10 +24,11 @@ If refresh or persistence fails, no wall request is made.
 
 ## Read-only authorization and preflight
 
-Keep `VK_PUBLISHING_ENABLED=false`. Run from the repository root:
+Keep `VK_PUBLISHING_ENABLED=false`. The first invocation is strictly read-only
+and discards all returned credentials after verification:
 
 ```bash
-python3 scripts/vk_user_token_preflight.py --provision
+python3 scripts/vk_user_token_preflight.py
 ```
 
 The script asks for the VK ID application ID and the exact registered redirect
@@ -42,8 +43,21 @@ redirect URL through a hidden prompt. It then performs only:
 - one VK ID refresh-token exchange.
 
 It never calls `wall.post`, never changes PostgreSQL, and never prints token
-values. Credentials are written only after the full preflight and refresh
-lifecycle pass.
+values. A successful first run ends with `Credentials provisioned: NO; tokens
+discarded`.
+
+## Separate provisioning decision
+
+Only after the read-only result has been reviewed and explicitly accepted,
+repeat the same authorization with provisioning enabled:
+
+```bash
+python3 scripts/vk_user_token_preflight.py --provision
+```
+
+The full read-only preflight and refresh lifecycle run again. Credentials are
+written to the isolated Docker volume only after every check passes. Provisioning
+does not enable VK publishing and does not call `wall.post`.
 
 ## Read-only publication inventory
 
