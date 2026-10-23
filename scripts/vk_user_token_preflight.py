@@ -383,6 +383,47 @@ def required_token_fields(payload: dict[str, Any]) -> tuple[str, str, int, int, 
     return access_token, refresh_token_value, expires_in, user_id, scope
 
 
+def dotenv_values(path: Path) -> dict[str, str]:
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError as exc:
+        raise PreflightError("Рабочий .env не найден или недоступен.") from exc
+    values: dict[str, str] = {}
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip("'\"")
+    return values
+
+
+def validate_local_runtime(repository_dir: Path, *, group_id: int) -> None:
+    compose_file = repository_dir / "docker-compose.yml"
+    if not repository_dir.is_dir() or not compose_file.is_file():
+        raise PreflightError("Не найден рабочий каталог iTeam AI Marketing.")
+    values = dotenv_values(repository_dir / ".env")
+    enabled = values.get("VK_PUBLISHING_ENABLED", "false").strip().lower()
+    if enabled not in {"false", "0", "no", "off"}:
+        raise PreflightError(
+            "VK_PUBLISHING_ENABLED должен оставаться false во время preflight."
+        )
+    if values.get("VK_ACCESS_TOKEN", "").strip():
+        raise PreflightError(
+            "Удалите статический VK_ACCESS_TOKEN из .env до preflight."
+        )
+    configured_owner = values.get("VK_OWNER_ID", "").strip()
+    if configured_owner:
+        try:
+            owner_id = int(configured_owner)
+        except ValueError as exc:
+            raise PreflightError("VK_OWNER_ID в .env имеет неверный формат.") from exc
+        if owner_id != -group_id:
+            raise PreflightError(
+                "VK_OWNER_ID в .env не совпадает с целевым сообществом."
+            )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--client-id", type=int)
@@ -393,6 +434,12 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
+        group_id = args.group_id
+        if group_id <= 0:
+            raise PreflightError("Group ID должен быть положительным.")
+        repository_dir = args.repository_dir.resolve()
+        validate_local_runtime(repository_dir, group_id=group_id)
+
         client_id = args.client_id or int(input("VK ID application ID: ").strip())
         redirect_uri = (
             args.redirect_uri
@@ -400,10 +447,6 @@ def main() -> int:
         )
         if client_id <= 0 or not redirect_uri:
             raise PreflightError("Application ID или redirect URI не заданы.")
-        group_id = args.group_id
-        if group_id <= 0:
-            raise PreflightError("Group ID должен быть положительным.")
-
         code_verifier = secrets.token_urlsafe(64)
         code_challenge = (
             base64.urlsafe_b64encode(
@@ -505,7 +548,7 @@ def main() -> int:
                     datetime.now(UTC) + timedelta(seconds=expires_in)
                 ).isoformat(),
             }
-            provision_docker_volume(args.repository_dir.resolve(), credentials)
+            provision_docker_volume(repository_dir, credentials)
             print("- Credentials provisioned: isolated Docker volume")
             print("- Runtime owner/mode: uid=10001 / 0600")
         else:

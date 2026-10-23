@@ -172,3 +172,34 @@ def test_provisioning_passes_credentials_only_through_stdin(
     assert calls[0]["stderr"] is subprocess.PIPE
     assert calls[1]["stdout"] is subprocess.DEVNULL
     assert calls[1]["stderr"] is subprocess.PIPE
+
+
+def test_local_runtime_gate_requires_vk_disabled_and_no_static_token(
+    tmp_path: Path,
+) -> None:
+    script = load_script()
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    env = tmp_path / ".env"
+
+    env.write_text("VK_PUBLISHING_ENABLED=true\nVK_ACCESS_TOKEN=\nVK_OWNER_ID=-150574411\n")
+    with pytest.raises(script.PreflightError, match="должен оставаться false"):
+        script.validate_local_runtime(tmp_path, group_id=150574411)
+
+    env.write_text(
+        "VK_PUBLISHING_ENABLED=false\nVK_ACCESS_TOKEN=must-not-be-used\nVK_OWNER_ID=-150574411\n"
+    )
+    with pytest.raises(script.PreflightError, match="статический VK_ACCESS_TOKEN"):
+        script.validate_local_runtime(tmp_path, group_id=150574411)
+
+
+def test_local_runtime_gate_binds_exact_owner(tmp_path: Path) -> None:
+    script = load_script()
+    (tmp_path / "docker-compose.yml").write_text("services: {}\n")
+    env = tmp_path / ".env"
+    env.write_text("VK_PUBLISHING_ENABLED=false\nVK_ACCESS_TOKEN=\nVK_OWNER_ID=-999\n")
+
+    with pytest.raises(script.PreflightError, match="не совпадает"):
+        script.validate_local_runtime(tmp_path, group_id=150574411)
+
+    env.write_text("VK_PUBLISHING_ENABLED=false\nVK_ACCESS_TOKEN=\nVK_OWNER_ID=-150574411\n")
+    script.validate_local_runtime(tmp_path, group_id=150574411)
