@@ -183,3 +183,40 @@ Raw provider messages, request parameters, credentials, and callback URLs are
 never copied into this diagnostic metadata. Previously recorded failures cannot
 be enriched retroactively: the original VK response was not retained. Installing
 this change does not authorize a new publishing attempt or enable VK.
+
+### One-off diagnostic retry of the failed canary
+
+This release adds a deliberately bounded operation, not a general permission-error
+retry policy. It authorizes at most one additional provider request for:
+
+- Publication: `1142723f-4c25-4334-8f22-7e3ceb1f55f4`
+- Approved content version: `6a4685cd-128b-4a76-ae4b-4595fb8a3238`
+- Owner: `-150574411`
+
+Installing the release does not arm or send anything. After a separate human
+approval to execute, perform the normal disabled inventory/preflight, then use
+`./scripts/vk-publishing-runtime.sh retry-canary 1142723f-4c25-4334-8f22-7e3ceb1f55f4`.
+This command only arms the exact runtime gate. It does not edit Publication state
+or publish. Other rows remain outside the exact canary gate.
+
+An authenticated human then invokes exactly once:
+`POST /api/v1/publications/1142723f-4c25-4334-8f22-7e3ceb1f55f4/canary-retry`.
+No request body or credentials belong in chat. The app requires FAILED with
+VK_PERMISSION_ERROR, zero prior retries, no external ID/published timestamp,
+the expected prior target, delivery approval, an approved content hash, and a
+valid plan snapshot. It preserves the version and scheduled/plan times.
+
+The row lock and unique `PUBLICATION_CANARY_RETRY_REQUESTED` audit event consume
+the single manual authorization and bind a fresh execution token. The worker
+revalidates that snapshot and commits `PUBLICATION_CANARY_RETRY_CONSUMED` before
+calling VK. Queue redelivery and concurrent execution cannot send again, including
+following a crash. Even definitive auth errors do not trigger the adapter's usual
+refresh-and-resend path in this operation. Credential refresh before the single
+provider request remains supported. Permission/error subcodes use the safe audit
+diagnostics described above. Existing failure history is retained.
+
+After the outcome is checked, use the normal `disable` command; do not promote.
+If an HTTP/queue outcome is ambiguous, inspect durable state without resubmitting.
+A crash after the consumed marker may leave delivery uncertain and must follow
+normal reconciliation; there is no automatic recovery send. Neither `/retry` nor
+`/publish-now` can reuse this authorization, even after reconciliation.

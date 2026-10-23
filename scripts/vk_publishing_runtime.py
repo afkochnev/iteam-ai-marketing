@@ -152,17 +152,24 @@ def sql(query: str) -> str:
 
 def publication(publication_id: UUID) -> list[str]:
     value = sql(
-        "SELECT channel::text, status::text, "
+        "SELECT json_build_array(channel::text, status::text, "
         "COALESCE(scheduled_at::text,''), "
         "COALESCE(approved_for_publish_at::text,''), "
         "COALESCE(approved_for_publish_by::text,''), "
         "COALESCE(failure_code,''), COALESCE(provider_target_id,''), "
-        "COALESCE(external_id,'') "
+        "COALESCE(external_id,'')) "
         f"FROM publications WHERE id = '{publication_id}'::uuid;"
     )
     if not value:
         raise RuntimeErrorSafe("Publication not found.")
-    return value.split("\t")
+    fields = json.loads(value)
+    if (
+        not isinstance(fields, list)
+        or len(fields) != 8
+        or not all(isinstance(v, str) for v in fields)
+    ):
+        raise RuntimeErrorSafe("Unexpected publication read model.")
+    return fields
 
 
 def count(query: str) -> int:
@@ -380,6 +387,52 @@ def arm_canary(publication_id: UUID) -> None:
     print("- other VK publications remain blocked before provider call")
 
 
+def arm_retry_canary(publication_id: UUID) -> None:
+    """Arm the exact failed canary without editing any Publication business state."""
+    expected = UUID("1142723f-4c25-4334-8f22-7e3ceb1f55f4")
+    if publication_id != expected:
+        raise RuntimeErrorSafe("Retry canary UUID is not authorized.")
+    release = ensure_release()
+    inventory()
+    credential_status()
+    no_inflight()
+    row = publication(publication_id)
+    channel, state, _, approved_at, approved_by, failure, target, external_id = row
+    if (
+        channel != "VK"
+        or state != "FAILED"
+        or failure != "VK_PERMISSION_ERROR"
+        or target != str(OWNER_ID)
+        or external_id
+        or not approved_at
+        or not approved_by
+    ):
+        raise RuntimeErrorSafe("Retry canary delivery state is not eligible.")
+    eligible = count(
+        "SELECT count(*) FROM publications WHERE "
+        f"id='{publication_id}'::uuid AND "
+        "content_version_id='6a4685cd-128b-4a76-ae4b-4595fb8a3238'::uuid "
+        "AND retry_count=0 AND published_at IS NULL AND NOT EXISTS "
+        "(SELECT 1 FROM activity_logs WHERE operation_key="
+        f"'publication-canary-retry:{publication_id}');"
+    )
+    if eligible != 1:
+        raise RuntimeErrorSafe(
+            "Retry canary version changed or attempt already consumed."
+        )
+    apply_runtime(
+        {
+            "VK_PUBLISHING_ENABLED": "true",
+            "VK_CANARY_PUBLICATION_ID": str(publication_id),
+            "VK_ACCESS_TOKEN": "",
+        }
+    )
+    print(f"VK RETRY CANARY: ARMED; release={release}; publication_id={publication_id}")
+    print(
+        "No publication was sent. Use the authenticated canary-retry endpoint once, then disable VK."
+    )
+
+
 def promote() -> None:
     release = ensure_release()
     values = validate_base_config()
@@ -451,6 +504,8 @@ def main() -> None:
     sub.add_parser("inventory")
     canary = sub.add_parser("canary")
     canary.add_argument("publication_id", type=UUID)
+    retry = sub.add_parser("retry-canary")
+    retry.add_argument("publication_id", type=UUID)
     sub.add_parser("promote")
     sub.add_parser("disable")
     args = parser.parse_args()
@@ -462,6 +517,8 @@ def main() -> None:
             inventory()
         elif args.command == "canary":
             arm_canary(args.publication_id)
+        elif args.command == "retry-canary":
+            arm_retry_canary(args.publication_id)
         elif args.command == "promote":
             promote()
         else:

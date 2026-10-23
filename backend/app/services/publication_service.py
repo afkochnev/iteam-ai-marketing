@@ -7,6 +7,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import AppError
+from app.core.vk_canary_retry import (
+    CANARY_ID,
+    CANARY_OWNER_ID,
+    CANARY_VERSION_ID,
+    CONSUMED_KEY,
+    RETRY_EVENT,
+    RETRY_KEY,
+)
 from app.integrations.telegram import (
     PublicationProvider,
     TelegramProvider,
@@ -534,7 +542,12 @@ class PublicationService:
         ]
 
     async def _ensure_content_version_approved(
-        self, content_item_id: UUID, content_version_id: UUID, channel: object
+        self,
+        content_item_id: UUID,
+        content_version_id: UUID,
+        channel: object,
+        *,
+        require_integrity_hash: bool = False,
     ) -> ContentItem:
         item = (
             await self.session.execute(
@@ -622,7 +635,9 @@ class PublicationService:
                 ),
                 None,
             )
-        if expected_hash and expected_hash != hashlib.sha256(version.content.encode()).hexdigest():
+        if (require_integrity_hash and not expected_hash) or (
+            expected_hash and expected_hash != hashlib.sha256(version.content.encode()).hexdigest()
+        ):
             raise AppError(
                 "PUBLICATION_VERSION_INTEGRITY_INVALID",
                 "Содержимое версии изменилось после согласования.",
@@ -663,6 +678,7 @@ class PublicationService:
             and provider_enabled
             and publication.retry_count < settings.publication_max_retries
         )
+        retry_allowed = retry_allowed and not await self.has_canary_retry(publication.id)
         content_item = await self.session.get(ContentItem, publication.content_item_id)
         raw_plan_item = (
             (content_item.metadata_ or {}).get("publication_plan_item_id") if content_item else None
@@ -1259,11 +1275,97 @@ class PublicationService:
             and event.metadata_ == self._early_canary_snapshot(publication)
         )
 
+    async def has_canary_retry(self, publication_id: UUID) -> bool:
+        return (
+            publication_id == CANARY_ID
+            and await self.session.scalar(
+                select(ActivityLog.id).where(ActivityLog.operation_key == RETRY_KEY)
+            )
+            is not None
+        )
+
+    async def claim_canary_retry(self, publication_id: UUID, user: User) -> PublicationResponse:
+        publication = await self._locked(publication_id)
+        if (
+            publication.id != CANARY_ID
+            or publication.content_version_id != CANARY_VERSION_ID
+            or publication.channel.value != "VK"
+            or settings.vk_owner_id != CANARY_OWNER_ID
+            or not settings.vk_publishing_enabled
+            or settings.vk_canary_publication_id != CANARY_ID
+            or publication.status is not PublicationStatus.FAILED
+            or publication.failure_code != "VK_PERMISSION_ERROR"
+            or publication.provider_target_id != str(CANARY_OWNER_ID)
+            or publication.external_id is not None
+            or publication.published_at is not None
+            or publication.retry_count != 0
+            or publication.approved_for_publish_at is None
+            or publication.approved_for_publish_by is None
+            or await self.has_canary_retry(publication_id)
+        ):
+            raise AppError(
+                "VK_CANARY_RETRY_BLOCKED", "Условия однократной canary не выполнены.", 409
+            )
+        item = await self._ensure_content_version_approved(
+            publication.content_item_id,
+            publication.content_version_id,
+            publication.channel,
+            require_integrity_hash=True,
+        )
+        await self._ensure_plan_snapshot(publication, item)
+        previous_failure = publication.failure_code
+        publication.status = PublicationStatus.PUBLISHING
+        publication.execution_token = str(uuid4())
+        publication.failure_code = None
+        publication.failure_message = None
+        # This consumes the one manual retry even when delivery later fails or is ambiguous.
+        publication.retry_count = 1
+        await ActivityLogService(self.session).record(
+            RETRY_EVENT,
+            operation_key=RETRY_KEY,
+            campaign_id=publication.campaign_id,
+            content_item_id=publication.content_item_id,
+            user_id=user.id,
+            metadata={
+                **self._early_canary_snapshot(publication),
+                "previous_failure_code": previous_failure,
+            },
+        )
+        await self.session.commit()
+        await self.session.refresh(publication)
+        return await self._response(publication)
+
+    async def _valid_canary_retry(self, publication: Publication) -> bool:
+        event = await self.session.scalar(
+            select(ActivityLog).where(ActivityLog.operation_key == RETRY_KEY)
+        )
+        return (
+            event is not None
+            and event.event_type == RETRY_EVENT
+            and event.user_id is not None
+            and publication.id == CANARY_ID
+            and publication.content_version_id == CANARY_VERSION_ID
+            and publication.channel.value == "VK"
+            and settings.vk_publishing_enabled
+            and settings.vk_canary_publication_id == CANARY_ID
+            and settings.vk_owner_id == CANARY_OWNER_ID
+            and publication.provider_target_id == str(CANARY_OWNER_ID)
+            and publication.retry_count == 1
+            and publication.execution_token is not None
+            and event.metadata_
+            == {
+                **self._early_canary_snapshot(publication),
+                "previous_failure_code": "VK_PERMISSION_ERROR",
+            }
+        )
+
     async def claim_for_publish(
         self, publication_id: UUID, user: User | None = None
     ) -> PublicationResponse:
         """Atomically claim an approved/due publication before Celery execution."""
         publication = await self._locked(publication_id)
+        if await self.has_canary_retry(publication_id):
+            raise AppError("VK_CANARY_RETRY_CONSUMED", "Однократная canary уже запрошена.", 409)
         now = utc_now()
         early_canary = (
             user is not None
@@ -1410,13 +1512,22 @@ class PublicationService:
             await self.session.commit()
             await self.session.refresh(publication)
             return await self._response(publication)
+        diagnostic_retry = await self.has_canary_retry(publication.id)
+        if diagnostic_retry and (
+            not await self._valid_canary_retry(publication)
+            or await self.session.scalar(
+                select(ActivityLog.id).where(ActivityLog.operation_key == CONSUMED_KEY)
+            )
+            is not None
+        ):
+            return None
         if (
             publication.approved_for_publish_at is None
             or publication.approved_for_publish_by is None
             or (
                 publication.scheduled_at is not None
                 and publication.scheduled_at > utc_now()
-                and not await self._has_early_canary_request(publication)
+                and not (diagnostic_retry or await self._has_early_canary_request(publication))
             )
         ):
             return None
@@ -1443,7 +1554,10 @@ class PublicationService:
             return await self._response(publication)
         try:
             await self._ensure_content_version_approved(
-                publication.content_item_id, publication.content_version_id, publication.channel
+                publication.content_item_id,
+                publication.content_version_id,
+                publication.channel,
+                require_integrity_hash=diagnostic_retry,
             )
             await self._ensure_plan_snapshot(publication, item)
         except AppError:
@@ -1453,9 +1567,21 @@ class PublicationService:
             await self.session.commit()
             await self.session.refresh(publication)
             return await self._response(publication)
+        if diagnostic_retry:
+            # Commit a durable one-use execution marker before contacting VK. Redelivery
+            # after a crash or a concurrent task must never repeat the provider request.
+            await ActivityLogService(self.session).record(
+                "PUBLICATION_CANARY_RETRY_CONSUMED",
+                operation_key=CONSUMED_KEY,
+                campaign_id=publication.campaign_id,
+                content_item_id=publication.content_item_id,
+                metadata=self._early_canary_snapshot(publication),
+            )
         await ActivityLogService(self.session).record(
             "PUBLICATION_STARTED",
-            operation_key=f"publication-started:{publication.id}",
+            operation_key=f"publication-started:{publication.id}:canary-retry"
+            if diagnostic_retry
+            else f"publication-started:{publication.id}",
             campaign_id=publication.campaign_id,
             content_item_id=publication.content_item_id,
             metadata={
@@ -1464,7 +1590,7 @@ class PublicationService:
             },
         )
         await self.session.commit()
-        provider = provider or VKProvider()
+        provider = provider or VKProvider(single_attempt=diagnostic_retry)
         try:
             result = await provider.publish(
                 text=version.content, chat_id=str(settings.vk_owner_id or "")
@@ -1484,6 +1610,7 @@ class PublicationService:
             )
             if (
                 error.retryable
+                and not diagnostic_retry
                 and not error.ambiguous
                 and publication.retry_count < settings.publication_max_retries
             ):

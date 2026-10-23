@@ -135,6 +135,7 @@ class VKProvider:
         token: str | None = None,
         *,
         credential_store: VKCredentialStore | None = None,
+        single_attempt: bool = False,
     ) -> None:
         if settings.vk_owner_id is None:
             raise VKProviderError("VK_AUTH_ERROR", "VK publishing is not configured.")
@@ -146,6 +147,7 @@ class VKProvider:
             token or settings.vk_access_token
         ):
             raise VKProviderError("VK_AUTH_ERROR", "Static VK token is forbidden in production.")
+        self._single_attempt = single_attempt
         self._token = token or settings.vk_access_token
         self._credential_store = credential_store
         if self._token is None and self._credential_store is None and settings.vk_credentials_file:
@@ -247,7 +249,12 @@ class VKProvider:
         error = self._error(payload)
         # Error 5/27 is a definitive pre-delivery auth failure. Refresh and retry once;
         # timeouts and ambiguous results are never retried automatically.
-        if error is not None and error[0] in {5, 27} and self._credential_store is not None:
+        if (
+            error is not None
+            and error[0] in {5, 27}
+            and self._credential_store is not None
+            and not self._single_attempt
+        ):
             access_token = await self._access_token(force_refresh=True)
             payload = await self._send(text=text, access_token=access_token)
             error = self._error(payload)

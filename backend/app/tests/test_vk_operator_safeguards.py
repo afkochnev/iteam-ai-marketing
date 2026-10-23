@@ -217,3 +217,63 @@ def test_release_verification_rejects_degraded_readiness(monkeypatch, failure):
     )
     with pytest.raises(runtime.RuntimeErrorSafe, match="readiness"):
         runtime.ensure_release()
+
+
+def test_publication_json_preserves_empty_trailing_fields(monkeypatch):
+    import json
+
+    runtime = runtime_module()
+    fields = ["VK", "SCHEDULED", "date", "date", "user", "", "", ""]
+    monkeypatch.setattr(runtime, "sql", lambda _: json.dumps(fields))
+    assert runtime.publication(uuid4()) == fields
+
+
+@pytest.mark.parametrize("blocked", ["uuid", "state", "version_or_used", "inventory"])
+def test_retry_canary_runtime_refuses_unsafe_gate(monkeypatch, blocked):
+    runtime = runtime_module()
+    monkeypatch.setattr(runtime, "ensure_release", lambda: "release")
+
+    def inventory():
+        if blocked == "inventory":
+            raise runtime.RuntimeErrorSafe("inventory rejected")
+
+    monkeypatch.setattr(runtime, "inventory", inventory)
+    monkeypatch.setattr(runtime, "credential_status", lambda: None)
+    monkeypatch.setattr(runtime, "no_inflight", lambda: None)
+    fields = ["VK", "FAILED", "date", "date", "user", "VK_PERMISSION_ERROR", "-150574411", ""]
+    if blocked == "state":
+        fields[5] = "VK_RECONCILIATION_REQUIRED"
+    monkeypatch.setattr(runtime, "publication", lambda _: fields)
+    monkeypatch.setattr(runtime, "count", lambda _: 0 if blocked == "version_or_used" else 1)
+    monkeypatch.setattr(runtime, "apply_runtime", lambda *_: pytest.fail("must not arm"))
+    with pytest.raises(runtime.RuntimeErrorSafe):
+        runtime.arm_retry_canary(
+            uuid4() if blocked == "uuid" else runtime.UUID("1142723f-4c25-4334-8f22-7e3ceb1f55f4")
+        )
+
+
+def test_retry_canary_runtime_arms_only_exact_gate_without_business_writes(monkeypatch):
+    runtime = runtime_module()
+    monkeypatch.setattr(runtime, "ensure_release", lambda: "release")
+    for name in ["inventory", "credential_status", "no_inflight"]:
+        monkeypatch.setattr(runtime, name, lambda: None)
+    monkeypatch.setattr(
+        runtime,
+        "publication",
+        lambda _: ["VK", "FAILED", "", "date", "user", "VK_PERMISSION_ERROR", "-150574411", ""],
+    )
+    queries, changes = [], []
+    monkeypatch.setattr(runtime, "count", lambda query: queries.append(query) or 1)
+    monkeypatch.setattr(runtime, "apply_runtime", lambda values: changes.append(values))
+    publication_id = runtime.UUID("1142723f-4c25-4334-8f22-7e3ceb1f55f4")
+    runtime.arm_retry_canary(publication_id)
+    assert changes == [
+        {
+            "VK_PUBLISHING_ENABLED": "true",
+            "VK_CANARY_PUBLICATION_ID": str(publication_id),
+            "VK_ACCESS_TOKEN": "",
+        }
+    ]
+    assert all(query.startswith("SELECT") for query in queries)
+    assert "6a4685cd-128b-4a76-ae4b-4595fb8a3238" in queries[0]
+    assert "activity_logs" in queries[0]
