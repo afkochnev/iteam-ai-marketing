@@ -51,13 +51,16 @@ Before enabling the provider, inspect every existing VK publication while the
 provider is still disabled:
 
 ```bash
-./scripts/vk_publishing_inventory.sh
+bash scripts/vk_publishing_inventory.sh
 ```
 
-The inventory reports due, overdue, future, active, failed, and terminal VK
-rows. It performs read-only PostgreSQL queries and makes no provider calls. Any
-row that could be selected by automatic dispatch must be explicitly reviewed
-before activation.
+The inventory reads the exact configured
+`PUBLICATION_AUTO_DISPATCH_MAX_LATENESS_SECONDS` value and reproduces all
+eligibility predicates used by the automatic dispatcher: approval evidence,
+no execution token, no failure code, status, channel, and due-time window. It
+reports due, overdue, future, active, failed, and terminal VK rows, performs only
+read-only PostgreSQL queries, and makes no provider calls. Any row shown as
+`auto_dispatch_eligible_now=YES` must be resolved before activation.
 
 ## Activation gates
 
