@@ -30,7 +30,7 @@ PUBLICATION_FIELDS = {
 METRICS_FIELDS = {
     "TELEGRAM_METRICS_ENABLED": "true",
     "TELEGRAM_METRICS_API_ID": "123",
-    "TEGRAM_METRICS_API_HASH": "private-metrics-secret",
+    "TELEGRAM_METRICS_API_HASH": "private-metrics-secret",
     "TELEGRAM_METRICS_SESSION": "private-metrics-secret",
     "TELEGRAM_METRICS_PEER": "@synthetic",
     "TELEGRAM_METRICS_CHAT_ID": "-100123",
@@ -38,10 +38,6 @@ METRICS_FIELDS = {
     "VK_METRICS_ACCESS_TOKEN": "private-metrics-secret",
     "VK_METRICS_OWNER_ID": "-123",
 }
-# Correct the key while keeping the dictionary declaration visually grouped.
-METRICS_FIELDS["TELEGRAM_METRICS_API_HASH"] = METRICS_FIELDS.pop(
-    "TEGRAM_METRICS_API_HASH"
-)
 
 
 @pytest.fixture(scope="module")

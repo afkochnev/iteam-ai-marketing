@@ -285,10 +285,10 @@ class Settings(BaseSettings):
         if self.smm_agent_output_repair_attempts != 1:
             numeric_errors.append("SMM_AGENT_OUTPUT_REPAIR_ATTEMPTS")
         token_endpoint = urlparse(self.vk_id_token_endpoint)
-        if (
-            token_endpoint.scheme != "https"
-            or token_endpoint.hostname not in {"id.vk.ru", "id.vk.com"}
-        ):
+        if token_endpoint.scheme != "https" or token_endpoint.hostname not in {
+            "id.vk.ru",
+            "id.vk.com",
+        }:
             numeric_errors.append("VK_ID_TOKEN_ENDPOINT")
         if numeric_errors:
             raise RuntimeError(

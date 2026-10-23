@@ -37,6 +37,16 @@ class PreflightError(RuntimeError):
     pass
 
 
+def safe_vk_error(payload: dict[str, Any]) -> str:
+    error = payload.get("error", "UNKNOWN_ERROR")
+    if isinstance(error, dict):
+        code = error.get("error_code", "UNKNOWN_ERROR")
+        message = error.get("error_msg", "VK API error")
+        return f"{code}: {message}"
+    description = payload.get("error_description", "")
+    return f"{error} {description}".strip()
+
+
 def hidden(prompt: str) -> str:
     value = getpass.getpass(prompt).strip()
     if not value:
@@ -61,13 +71,12 @@ def post_form(
     except urllib.error.HTTPError as exc:
         try:
             payload = json.loads(exc.read())
-            error = payload.get("error", "HTTP_ERROR")
-            description = payload.get("error_description", "")
+            message = (
+                safe_vk_error(payload) if isinstance(payload, dict) else "HTTP_ERROR"
+            )
         except (ValueError, AttributeError):
-            error, description = "HTTP_ERROR", ""
-        raise PreflightError(
-            f"VK ID отклонил запрос: {error} {description}".strip()
-        ) from exc
+            message = "HTTP_ERROR"
+        raise PreflightError(f"VK отклонил запрос: {message}") from exc
     except urllib.error.URLError as exc:
         raise PreflightError(
             "Не удалось подключиться к VK. Проверьте сеть и повторите."
@@ -78,11 +87,6 @@ def post_form(
         raise PreflightError("VK вернул ответ в неизвестном формате.") from exc
     if not isinstance(payload, dict):
         raise PreflightError("VK вернул ответ в неизвестном формате.")
-    if "error" in payload:
-        raise PreflightError(
-            f"VK отклонил запрос: {payload.get('error')} "
-            f"{payload.get('error_description', '')}".strip()
-        )
     return payload
 
 
@@ -157,6 +161,8 @@ def exchange_code(
         },
         form={"code": code},
     )
+    if "error" in payload:
+        raise PreflightError(f"VK ID отклонил код: {safe_vk_error(payload)}")
     if str(payload.get("state")) != state:
         raise PreflightError("VK ID вернул другой state при обмене кода.")
     return payload
@@ -182,6 +188,8 @@ def refresh_token(
         },
         form={"refresh_token": refresh_token_value},
     )
+    if "error" in payload:
+        raise PreflightError(f"VK ID отклонил refresh token: {safe_vk_error(payload)}")
     if str(payload.get("state")) != state:
         raise PreflightError("VK ID вернул другой state при обновлении токена.")
     if int(payload.get("user_id", 0)) != expected_user_id:
@@ -300,8 +308,9 @@ from pathlib import Path
 
 path = Path("/run/iteam-vk/credentials.json")
 payload = json.loads(path.read_text(encoding="utf-8"))
-mode = stat.S_IMODE(path.stat().st_mode)
-if mode != 0o600 or os.geteuid() != 10001:
+metadata = path.stat()
+mode = stat.S_IMODE(metadata.st_mode)
+if mode != 0o600 or metadata.st_uid != 10001 or os.geteuid() != 10001:
     raise SystemExit("credential ownership or mode check failed")
 if int(payload.get("owner_id", 0)) >= 0 or not payload.get("refresh_token"):
     raise SystemExit("credential payload verification failed")
