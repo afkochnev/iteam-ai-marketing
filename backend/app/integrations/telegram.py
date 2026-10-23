@@ -191,9 +191,7 @@ class VKProvider:
         if code in {7, 15}:
             return code, VKProviderError("VK_PERMISSION_ERROR", "VK access was denied.")
         if code in {6, 9}:
-            return code, VKProviderError(
-                "VK_RATE_LIMIT", "VK rate limit reached.", retryable=True
-            )
+            return code, VKProviderError("VK_RATE_LIMIT", "VK rate limit reached.", retryable=True)
         return code, VKProviderError("VK_BAD_REQUEST", "VK rejected the message.")
 
     async def publish(self, *, text: str, chat_id: str) -> ProviderPublicationResult:

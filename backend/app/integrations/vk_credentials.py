@@ -82,9 +82,7 @@ class VKCredentialSnapshot:
                 "VK_CREDENTIALS_INVALID", "VK credential schema is unsupported."
             )
         if not snapshot.access_token or not snapshot.refresh_token or not snapshot.device_id:
-            raise VKCredentialError(
-                "VK_CREDENTIALS_INVALID", "VK credential values are missing."
-            )
+            raise VKCredentialError("VK_CREDENTIALS_INVALID", "VK credential values are missing.")
         _ = snapshot.expires_at_datetime
         return snapshot
 
@@ -139,9 +137,7 @@ class VKCredentialStore:
                 "VK_CREDENTIALS_INVALID", "VK credential file is invalid."
             ) from error
         if not isinstance(payload, dict):
-            raise VKCredentialError(
-                "VK_CREDENTIALS_INVALID", "VK credential file is invalid."
-            )
+            raise VKCredentialError("VK_CREDENTIALS_INVALID", "VK credential file is invalid.")
         snapshot = VKCredentialSnapshot.from_payload(payload)
         self._validate_binding(snapshot)
         return snapshot
@@ -248,9 +244,7 @@ class VKCredentialStore:
                 )
                 payload = self._json_payload(response)
                 if response.status_code >= 400 or payload.get("error"):
-                    raise VKCredentialError(
-                        "VK_AUTH_ERROR", "VK token refresh was rejected."
-                    )
+                    raise VKCredentialError("VK_AUTH_ERROR", "VK token refresh was rejected.")
                 access_token = str(payload.get("access_token") or "")
                 refresh_token = str(payload.get("refresh_token") or snapshot.refresh_token)
                 expires_in = int(payload.get("expires_in") or 0)
@@ -282,9 +276,7 @@ class VKCredentialStore:
                 "VK_AUTH_REFRESH_ERROR", "VK token refresh failed.", retryable=True
             ) from error
         except (httpx.HTTPError, TypeError, ValueError) as error:
-            raise VKCredentialError(
-                "VK_AUTH_REFRESH_ERROR", "VK token refresh failed."
-            ) from error
+            raise VKCredentialError("VK_AUTH_REFRESH_ERROR", "VK token refresh failed.") from error
         now = datetime.now(UTC)
         return replace(
             snapshot,
@@ -347,9 +339,7 @@ class VKCredentialStore:
     async def _user_id(self, client: httpx.AsyncClient, access_token: str) -> int:
         response = await self._vk_method(client, "users.get", access_token)
         if not isinstance(response, list) or not response:
-            raise VKCredentialError(
-                "VK_AUTH_REFRESH_ERROR", "VK user identity was not returned."
-            )
+            raise VKCredentialError("VK_AUTH_REFRESH_ERROR", "VK user identity was not returned.")
         return int(response[0]["id"])
 
     async def _read_wall(self, client: httpx.AsyncClient, access_token: str) -> None:
@@ -361,6 +351,4 @@ class VKCredentialStore:
             count="1",
         )
         if not isinstance(response, dict) or "count" not in response:
-            raise VKCredentialError(
-                "VK_AUTH_REFRESH_ERROR", "VK community wall was not readable."
-            )
+            raise VKCredentialError("VK_AUTH_REFRESH_ERROR", "VK community wall was not readable.")

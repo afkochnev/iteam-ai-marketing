@@ -1969,6 +1969,7 @@ async def test_publication_calendar_api_scopes_and_validates_range(
     )
     assert invalid.status_code == 422
 
+
 @pytest.mark.integration
 async def test_vk_canary_scope_blocks_claim_before_provider_state(
     db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch

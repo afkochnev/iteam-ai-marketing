@@ -309,8 +309,7 @@ def _print_pass(safe: dict[str, Any], *, provisioned: bool) -> None:
     print(f"- User: {safe['user_id']} / {safe['user_name']}")
     print(f"- Permissions: wall=PASS, groups=PASS, mask={safe['permissions_mask']}")
     print(
-        "- Community: "
-        f"{safe['community_id']} / owner {safe['owner_id']} / @{safe['screen_name']}"
+        f"- Community: {safe['community_id']} / owner {safe['owner_id']} / @{safe['screen_name']}"
     )
     print(f"- Community role: {safe['role']}; admin_level={safe['admin_level']}")
     print(f"- wall.get: PASS; reported post count={safe['post_count']}")

@@ -149,6 +149,7 @@ def test_credential_permissions_must_be_private(tmp_path: Path) -> None:
         store(path).safe_status()
     assert error.value.code == "VK_CREDENTIALS_PERMISSIONS"
 
+
 async def test_provider_target_mismatch_does_not_open_credential_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -155,9 +155,7 @@ def test_publication_workers_opt_in_and_without_openai_credential(compose_config
         assert environment["VK_OWNER_ID"] == "-123456789"
         assert environment["VK_ACCESS_TOKEN"] == ""
         if service_name == "publication_worker":
-            assert environment["VK_CREDENTIALS_FILE"] == (
-                "/run/iteam-secrets/vk/credentials.json"
-            )
+            assert environment["VK_CREDENTIALS_FILE"] == ("/run/iteam-secrets/vk/credentials.json")
             assert environment["VK_CLIENT_ID"] == "54815172"
             assert environment["VK_EXPECTED_USER_ID"] == "176199961"
         else:
