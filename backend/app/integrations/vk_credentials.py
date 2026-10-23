@@ -253,7 +253,7 @@ class VKCredentialStore:
 
     async def _refresh(self, current: VKCredentialState) -> VKCredentialState:
         request_state = secrets.token_urlsafe(32)
-        params = {
+        params: dict[str, str | int] = {
             "grant_type": "refresh_token",
             "redirect_uri": current.redirect_uri,
             "client_id": current.client_id,
