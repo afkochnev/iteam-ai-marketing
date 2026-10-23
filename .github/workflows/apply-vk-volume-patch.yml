@@ -176,7 +176,9 @@ jobs:
           ruff check --fix backend/app/integrations/vk_credentials.py scripts/vk_user_token_preflight.py
           ruff format backend/app/integrations/vk_credentials.py scripts/vk_user_token_preflight.py backend/app/tests/test_vk_credentials.py
           python -m py_compile scripts/vk_user_token_preflight.py backend/app/integrations/vk_credentials.py
+          cp .env.example .env
           docker compose config >/dev/null
+          rm .env
       - name: Remove workflow and commit
         run: |
           rm .github/workflows/apply-vk-volume-patch.yml
