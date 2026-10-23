@@ -139,12 +139,18 @@ jobs:
                       "Не удалось сохранить VK credentials в изолированный Docker volume."
                   ) from exc
           '''
-          # Remove workflow indentation introduced by this heredoc.
-          replacement = "\n".join(line[10:] if line.startswith("          ") else line for line in replacement.splitlines())
+          replacement = "\n".join(
+              line[10:] if line.startswith("          ") else line
+              for line in replacement.splitlines()
+          )
           script = script[:start] + replacement + script[end:]
           script = script.replace(
               '    parser.add_argument("--credentials-file", type=Path, default=DEFAULT_CREDENTIALS_FILE)\n',
               '    parser.add_argument("--repository-dir", type=Path, default=Path.cwd())\n',
+          )
+          script = script.replace(
+              "        first = read_only_preflight(access_token, group_id=group_id, expected_user_id=user_id)\n",
+              "        read_only_preflight(access_token, group_id=group_id, expected_user_id=user_id)\n",
           )
           script = script.replace(
               "            atomic_write_credentials(args.credentials_file, credentials)\n"
