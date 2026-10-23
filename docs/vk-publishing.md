@@ -111,3 +111,40 @@ Emergency disable:
 
 This changes only runtime configuration. It does not alter Publication business
 state or execute manual SQL.
+
+## Consolidated activation safeguards
+
+There is one credential store (`app.integrations.vk_credentials`) and one
+operator credential command (`vk-publishing-credentials.sh`). No callback or
+credential needs to pass through chat. Both authorization and refresh require
+an exact echoed state, the expected user, explicit wall/groups scopes and a
+nonempty rotating refresh token. Provisioning performs a read-only refresh
+exchange before saving credentials. Stored credentials require a regular file,
+mode 0600, and the publication worker UID (10001 in Compose); symlinks and
+unsupported schemas are rejected. The isolated root provisioning command
+validates against that same explicitly configured owner UID.
+
+Production workers reject static tokens for both APP_ENV=production and prod.
+The provider also rejects an explicitly supplied static token in production.
+Refresh or persistence failure prevents wall.post. Ambiguous publication
+outcomes must be reconciled, never blindly retried.
+
+After deploying an accepted main release with VK disabled, perform:
+
+1. Read-only preflight: `./scripts/vk-publishing-credentials.sh preflight`.
+2. Provision through the hidden prompt: `./scripts/vk-publishing-credentials.sh provision`.
+3. Read-only inventory: `./scripts/vk-publishing-runtime.sh inventory`.
+4. Review every VK row, including future SCHEDULED, overdue, APPROVED,
+   content version/item/channel and any existing target/delivery/failure state.
+5. Select one exact approved Publication UUID and arm the existing canary command.
+6. Verify the real post, audit, durable PUBLISHED, exact target -150574411,
+   and absence of other sends. Force refresh, restart the worker and verify
+   credential status before separately invoking promote.
+
+Inventory requires VK_PUBLISHING_ENABLED=false and runs PostgreSQL queries in
+an enforced read-only transaction. Canary runs inventory before enabling its
+exact UUID gate. Automatic eligibility and promotion use the configured
+PUBLICATION_AUTO_DISPATCH_MAX_LATENESS_SECONDS, rather than a fixed hour.
+Inventory PASS means the read completed with VK disabled and no in-flight VK
+publication; the operator must still review the rows before selecting a canary.
+No inventory command modifies business state, credentials or provider settings.

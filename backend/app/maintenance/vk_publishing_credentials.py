@@ -12,6 +12,7 @@ import asyncio
 import base64
 import getpass
 import hashlib
+import os
 import secrets
 import sys
 import webbrowser
@@ -30,6 +31,7 @@ from app.integrations.vk_credentials import (
     VKCredentialError,
     VKCredentialSnapshot,
     VKCredentialStore,
+    scope_allows_publishing,
 )
 
 REDIRECT_URI = "http://localhost"
@@ -67,6 +69,7 @@ def _store() -> VKCredentialStore:
         api_version=settings.vk_api_version,
         request_timeout_seconds=settings.vk_request_timeout_seconds,
         refresh_leeway_seconds=settings.vk_token_refresh_leeway_seconds,
+        owner_uid=int(os.environ.get("VK_CREDENTIALS_OWNER_UID", str(os.geteuid()))),
     )
 
 
@@ -169,11 +172,18 @@ async def _authorize() -> tuple[VKCredentialSnapshot, dict[str, Any]]:
                     "code": code,
                     "code_verifier": verifier,
                     "device_id": device_id,
+                    "state": state,
                 },
             )
             token_payload = _json_payload(token_response, "token_exchange")
             if token_response.status_code >= 400 or token_payload.get("error"):
                 raise ProvisioningError("token_exchange", "VK rejected the authorization code.")
+            if token_payload.get("state") != state:
+                raise ProvisioningError("token_exchange", "VK token exchange state mismatch.")
+            if int(token_payload.get("user_id") or 0) != store.expected_user_id:
+                raise ProvisioningError("token_exchange", "VK token exchange user mismatch.")
+            if not scope_allows_publishing(str(token_payload.get("scope") or "")):
+                raise ProvisioningError("token_exchange", "VK token lacks wall/groups scope.")
             access_token = str(token_payload.get("access_token") or "")
             refresh_token = str(token_payload.get("refresh_token") or "")
             expires_in = int(token_payload.get("expires_in") or 0)
@@ -281,6 +291,8 @@ async def _authorize() -> tuple[VKCredentialSnapshot, dict[str, Any]]:
         expires_at=(now + timedelta(seconds=expires_in)).isoformat(),
         updated_at=now.isoformat(),
     )
+    # Prove refresh before persisting or reporting successful authorization.
+    snapshot = await store._refresh(snapshot)
     safe = {
         "user_id": user_id,
         "user_name": " ".join(
@@ -327,7 +339,7 @@ async def _run(command: str) -> int:
         snapshot, safe = await _authorize()
         provisioned = command == "provision"
         if provisioned:
-            owner_uid = int(__import__("os").environ.get("VK_CREDENTIALS_OWNER_UID", "10001"))
+            owner_uid = int(os.environ.get("VK_CREDENTIALS_OWNER_UID", "10001"))
             store.provision(snapshot, owner_uid=owner_uid)
         _print_pass(safe, provisioned=provisioned)
         return 0

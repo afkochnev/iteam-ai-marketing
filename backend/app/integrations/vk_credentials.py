@@ -6,6 +6,8 @@ import os
 import secrets
 import stat
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -87,6 +89,13 @@ class VKCredentialSnapshot:
         return snapshot
 
 
+def scope_allows_publishing(scope: str) -> bool:
+    normalized = scope.replace(",", " ").strip()
+    if normalized.isdigit():
+        return int(normalized) & VK_REQUIRED_PERMISSIONS == VK_REQUIRED_PERMISSIONS
+    return {"wall", "groups"}.issubset(normalized.lower().split())
+
+
 class VKCredentialStore:
     """Process-safe rotating VK ID credential file for the publication worker only."""
 
@@ -100,7 +109,9 @@ class VKCredentialStore:
         api_version: str,
         request_timeout_seconds: int,
         refresh_leeway_seconds: int,
+        owner_uid: int | None = None,
     ) -> None:
+        self.owner_uid = os.geteuid() if owner_uid is None else owner_uid
         self.path = Path(path)
         self.lock_path = self.path.with_name(f".{self.path.name}.lock")
         self.client_id = client_id
@@ -120,10 +131,29 @@ class VKCredentialStore:
         os.chmod(self.lock_path, 0o600)
         return os.fdopen(descriptor, "r+")
 
+    @contextmanager
+    def _locked(self, mode: int) -> Iterator[None]:
+        try:
+            with self._open_lock() as lock:
+                fcntl.flock(lock.fileno(), mode)
+                try:
+                    yield
+                finally:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        except OSError as error:
+            raise VKCredentialError(
+                "VK_CREDENTIALS_IO_ERROR", "VK credential storage operation failed."
+            ) from error
+
     def _read_unlocked(self) -> VKCredentialSnapshot:
         try:
-            mode = stat.S_IMODE(self.path.stat().st_mode)
-            if mode & 0o077:
+            metadata = self.path.lstat()
+            mode = stat.S_IMODE(metadata.st_mode)
+            if (
+                not stat.S_ISREG(metadata.st_mode)
+                or mode != 0o600
+                or metadata.st_uid != self.owner_uid
+            ):
                 raise VKCredentialError(
                     "VK_CREDENTIALS_PERMISSIONS", "VK credential file permissions are too broad."
                 )
@@ -155,7 +185,10 @@ class VKCredentialStore:
             raise VKCredentialError(
                 "VK_CREDENTIALS_TARGET_MISMATCH", "VK credential target does not match community."
             )
-        if snapshot.permissions_mask & VK_REQUIRED_PERMISSIONS != VK_REQUIRED_PERMISSIONS:
+        if (
+            not scope_allows_publishing(snapshot.scope)
+            or snapshot.permissions_mask & VK_REQUIRED_PERMISSIONS != VK_REQUIRED_PERMISSIONS
+        ):
             raise VKCredentialError(
                 "VK_CREDENTIALS_SCOPE_MISSING", "VK credential lacks wall/groups access."
             )
@@ -192,14 +225,11 @@ class VKCredentialStore:
 
     def provision(self, snapshot: VKCredentialSnapshot, *, owner_uid: int = 10001) -> None:
         self._validate_binding(snapshot)
-        with self._open_lock() as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        with self._locked(fcntl.LOCK_EX):
             self._write_unlocked(snapshot, owner_uid=owner_uid)
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
     def safe_status(self) -> dict[str, Any]:
-        with self._open_lock() as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+        with self._locked(fcntl.LOCK_SH):
             snapshot = self._read_unlocked()
             status = {
                 "client_id": snapshot.client_id,
@@ -210,21 +240,18 @@ class VKCredentialStore:
                 "expired": snapshot.expires_at_datetime <= datetime.now(UTC),
                 "refresh_token_present": bool(snapshot.refresh_token),
             }
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         return status
 
     async def access_token(self, *, force_refresh: bool = False) -> str:
-        with self._open_lock() as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        with self._locked(fcntl.LOCK_EX):
             snapshot = self._read_unlocked()
             refresh_after = datetime.now(UTC) + timedelta(seconds=self.refresh_leeway_seconds)
             if not force_refresh and snapshot.expires_at_datetime > refresh_after:
                 token = snapshot.access_token
             else:
                 refreshed = await self._refresh(snapshot)
-                self._write_unlocked(refreshed, owner_uid=None)
+                self._write_unlocked(refreshed, owner_uid=self.owner_uid)
                 token = refreshed.access_token
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
         return token
 
     async def _refresh(self, snapshot: VKCredentialSnapshot) -> VKCredentialSnapshot:
@@ -245,8 +272,18 @@ class VKCredentialStore:
                 payload = self._json_payload(response)
                 if response.status_code >= 400 or payload.get("error"):
                     raise VKCredentialError("VK_AUTH_ERROR", "VK token refresh was rejected.")
+                if payload.get("state") != state:
+                    raise VKCredentialError("VK_AUTH_ERROR", "VK refresh state mismatch.")
+                if int(payload.get("user_id") or 0) != self.expected_user_id:
+                    raise VKCredentialError(
+                        "VK_CREDENTIALS_USER_MISMATCH", "VK refresh user mismatch."
+                    )
+                if not scope_allows_publishing(str(payload.get("scope") or "")):
+                    raise VKCredentialError(
+                        "VK_CREDENTIALS_SCOPE_MISSING", "VK refresh lacks wall/groups scope."
+                    )
                 access_token = str(payload.get("access_token") or "")
-                refresh_token = str(payload.get("refresh_token") or snapshot.refresh_token)
+                refresh_token = str(payload.get("refresh_token") or "")
                 expires_in = int(payload.get("expires_in") or 0)
                 if not access_token or not refresh_token or expires_in <= 0:
                     raise VKCredentialError(

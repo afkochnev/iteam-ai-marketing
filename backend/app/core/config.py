@@ -165,6 +165,11 @@ class Settings(BaseSettings):
             return
         if self.worker_role == "publication" and self.vk_publishing_enabled:
             required: list[str] = []
+            if self.app_env.lower() in {"production", "prod"}:
+                if self.vk_access_token:
+                    raise RuntimeError("Static VK_ACCESS_TOKEN is forbidden in production")
+                if not self.vk_credentials_file:
+                    required.append("VK_CREDENTIALS_FILE")
             if self.vk_owner_id is None or self.vk_owner_id >= 0:
                 required.append("VK_OWNER_ID")
             if not self.vk_access_token and not self.vk_credentials_file:

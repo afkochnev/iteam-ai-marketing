@@ -288,7 +288,17 @@ def test_ai_startup_fails_before_worker_import_with_publishing_capability(role):
 
 @pytest.mark.parametrize("role", ["publication", "publication_control", "metrics"])
 def test_publication_worker_startup_without_openai_execution_capability(role):
-    started = import_worker_app(role, {} if role == "metrics" else PUBLICATION_FIELDS)
+    fields = (
+        {}
+        if role == "metrics"
+        else {
+            **PUBLICATION_FIELDS,
+            **VK_BINDING_FIELDS,
+            "VK_ACCESS_TOKEN": "",
+            "VK_CREDENTIALS_FILE": "/secret/vk.json",
+        }
+    )
+    started = import_worker_app(role, fields)
     assert started.returncode == 0, started.stderr
 
 
@@ -347,3 +357,20 @@ def test_metrics_worker_receives_only_read_credentials(compose_config):
     Settings(
         _env_file=None, **{k.lower(): v for k, v in environment.items()}
     ).validate_worker_capabilities()
+
+
+@pytest.mark.parametrize("environment", ["prod", "production"])
+def test_vk_production_worker_rejects_static_token(environment):
+    config = Settings(
+        _env_file=None,
+        app_env=environment,
+        worker_role="publication",
+        vk_publishing_enabled=True,
+        vk_owner_id=-150574411,
+        vk_access_token="synthetic-static-token",
+        vk_credentials_file="/secret/vk.json",
+        vk_client_id=54815172,
+        vk_expected_user_id=176199961,
+    )
+    with pytest.raises(RuntimeError, match="Static VK_ACCESS_TOKEN"):
+        config.validate_worker_capabilities()

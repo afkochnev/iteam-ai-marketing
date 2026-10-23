@@ -98,6 +98,8 @@ async def test_expired_credential_refreshes_read_only_and_rotates_atomically(
                         "refresh_token": "new-refresh-token",
                         "expires_in": 3600,
                         "scope": "wall groups",
+                        "state": data["state"],
+                        "user_id": 176199961,
                     }
                 )
             if url.endswith("account.getAppPermissions"):
@@ -168,3 +170,135 @@ async def test_provider_target_mismatch_does_not_open_credential_store(
     with pytest.raises(VKProviderError) as error:
         await provider.publish(text="Тест", chat_id="-999")
     assert error.value.code == "VK_TARGET_MISMATCH"
+
+
+@pytest.mark.parametrize(
+    "field,value,code",
+    [
+        ("client_id", 1, "VK_CREDENTIALS_APP_MISMATCH"),
+        ("user_id", 1, "VK_CREDENTIALS_USER_MISMATCH"),
+        ("scope", "wall", "VK_CREDENTIALS_SCOPE_MISSING"),
+        ("scope", "groups", "VK_CREDENTIALS_SCOPE_MISSING"),
+        ("schema_version", 2, "VK_CREDENTIALS_INVALID"),
+    ],
+)
+async def test_invalid_stored_credential_blocks_before_network(
+    tmp_path, monkeypatch, field, value, code
+):
+    from dataclasses import replace
+
+    path = tmp_path / "credentials.json"
+    write(path, replace(snapshot(), **{field: value}))
+
+    def never_client(**kwargs):
+        pytest.fail("invalid credential must not reach the network")
+
+    monkeypatch.setattr("app.integrations.vk_credentials.httpx.AsyncClient", never_client)
+    with pytest.raises(VKCredentialError) as error:
+        await store(path).access_token()
+    assert error.value.code == code
+
+
+def test_wrong_file_owner_and_symlink_rejected(tmp_path, monkeypatch):
+    path = tmp_path / "credentials.json"
+    write(path, snapshot())
+    credential_store = store(path)
+    credential_store.owner_uid = os.geteuid() + 1
+    with pytest.raises(VKCredentialError, match="permissions"):
+        credential_store.safe_status()
+    link = tmp_path / "linked.json"
+    link.symlink_to(path)
+    with pytest.raises(VKCredentialError):
+        store(link).safe_status()
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"state": None},
+        {"state": "wrong"},
+        {"user_id": 1},
+        {"scope": "wall"},
+        {"scope": None},
+        {"refresh_token": None},
+        {"access_token": None},
+        {"expires_in": 0},
+    ],
+)
+async def test_bad_refresh_response_never_persisted(tmp_path, monkeypatch, patch):
+    import httpx
+
+    path = tmp_path / "credentials.json"
+    write(path, snapshot(expires_at=datetime.now(UTC) - timedelta(minutes=1)))
+    original = path.read_bytes()
+    calls = []
+
+    def handler(request):
+        from urllib.parse import parse_qs
+
+        calls.append(request.url.path)
+        assert request.url.path.endswith("oauth2/auth")
+        values = parse_qs(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "access_token": "new",
+                "refresh_token": "rotated",
+                "expires_in": 3600,
+                "state": values["state"][0],
+                "user_id": 176199961,
+                "scope": "wall groups",
+                **patch,
+            },
+        )
+
+    original_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        "app.integrations.vk_credentials.httpx.AsyncClient",
+        lambda **kwargs: original_client(transport=httpx.MockTransport(handler), **kwargs),
+    )
+    with pytest.raises(VKCredentialError):
+        await store(path).access_token()
+    assert path.read_bytes() == original
+    assert len(calls) == 1
+
+
+async def test_persistence_failure_prevents_provider_write(tmp_path, monkeypatch):
+    from dataclasses import replace
+
+    from app.core.config import settings
+    from app.integrations.telegram import VKProvider, VKProviderError
+
+    path = tmp_path / "credentials.json"
+    write(path, snapshot(expires_at=datetime.now(UTC) - timedelta(minutes=1)))
+    credential_store = store(path)
+
+    async def refresh(current):
+        return replace(current, access_token="new", refresh_token="rotated")
+
+    def fail_write(*args, **kwargs):
+        raise OSError("synthetic disk failure")
+
+    monkeypatch.setattr(credential_store, "_refresh", refresh)
+    monkeypatch.setattr(credential_store, "_write_unlocked", fail_write)
+    monkeypatch.setattr(settings, "vk_owner_id", -150574411)
+    monkeypatch.setattr(settings, "vk_access_token", None)
+    provider = VKProvider(credential_store=credential_store)
+
+    async def no_send(**kwargs):
+        pytest.fail("wall.post must not run before durable credential rotation")
+
+    monkeypatch.setattr(provider, "_send", no_send)
+    with pytest.raises(VKProviderError):
+        await provider.publish(text="canary", chat_id="-150574411")
+
+
+@pytest.mark.parametrize("environment", ["prod", "production"])
+def test_production_provider_rejects_static_token(monkeypatch, environment):
+    from app.core.config import settings
+    from app.integrations.telegram import VKProvider, VKProviderError
+
+    monkeypatch.setattr(settings, "app_env", environment)
+    monkeypatch.setattr(settings, "vk_owner_id", -150574411)
+    with pytest.raises(VKProviderError, match="Static"):
+        VKProvider(token="synthetic-static-token")

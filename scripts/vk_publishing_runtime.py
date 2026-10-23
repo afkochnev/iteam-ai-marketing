@@ -37,7 +37,11 @@ def run(*args: str, capture: bool = False, check: bool = True) -> str:
         check=False,
     )
     if check and result.returncode != 0:
-        detail = result.stderr.strip().splitlines()[-1] if result.stderr.strip() else "command failed"
+        detail = (
+            result.stderr.strip().splitlines()[-1]
+            if result.stderr.strip()
+            else "command failed"
+        )
         raise RuntimeErrorSafe(f"{args[0]} failed: {detail}")
     return result.stdout.strip() if capture else ""
 
@@ -130,15 +134,18 @@ def sql(query: str) -> str:
         "-T",
         "postgres",
         "psql",
+        "-X",
+        "-v",
+        "ON_ERROR_STOP=1",
         "-U",
         user,
         "-d",
         database,
-        "-At",
+        "-qAt",
         "-F",
         "\t",
         "-c",
-        query,
+        "BEGIN READ ONLY; " + query + " COMMIT;",
         capture=True,
     )
 
@@ -170,11 +177,15 @@ def ensure_release() -> str:
     head = run("git", "rev-parse", "HEAD", capture=True)
     if run("git", "status", "--porcelain", capture=True):
         raise RuntimeErrorSafe("Repository contains local changes.")
-    with urllib.request.urlopen("http://localhost:8000/health/ready", timeout=10) as response:
+    with urllib.request.urlopen(
+        "http://localhost:8000/health/ready", timeout=10
+    ) as response:
         payload = json.load(response)
     build_sha = str(payload.get("build_sha") or "")
     if build_sha != head:
-        raise RuntimeErrorSafe(f"Runtime BUILD_SHA {build_sha or 'missing'} does not match HEAD {head}.")
+        raise RuntimeErrorSafe(
+            f"Runtime BUILD_SHA {build_sha or 'missing'} does not match HEAD {head}."
+        )
     return head
 
 
@@ -208,7 +219,9 @@ def restart_runtime() -> None:
     )
     for _ in range(60):
         try:
-            with urllib.request.urlopen("http://localhost:8000/health/ready", timeout=5) as response:
+            with urllib.request.urlopen(
+                "http://localhost:8000/health/ready", timeout=5
+            ) as response:
                 if response.status == 200:
                     return
         except OSError:
@@ -226,7 +239,9 @@ def validate_base_config() -> dict[str, str]:
     }
     mismatches = [key for key, value in expected.items() if values.get(key) != value]
     if mismatches:
-        raise RuntimeErrorSafe("Set exact VK configuration first: " + ", ".join(mismatches))
+        raise RuntimeErrorSafe(
+            "Set exact VK configuration first: " + ", ".join(mismatches)
+        )
     if values.get("VK_ACCESS_TOKEN", ""):
         raise RuntimeErrorSafe("Legacy VK_ACCESS_TOKEN must be empty.")
     return values
@@ -263,7 +278,7 @@ def status() -> None:
     due = count(
         "SELECT count(*) FROM publications WHERE channel = 'VK' "
         "AND status = 'SCHEDULED' AND scheduled_at <= now() "
-        "AND scheduled_at >= now() - interval '1 hour';"
+        f"AND scheduled_at >= now() - make_interval(secs => {dispatch_window()});"
     )
     print("VK PUBLISHING RUNTIME STATUS")
     print(f"- release: {release}")
@@ -274,17 +289,61 @@ def status() -> None:
     print("- credential values were not printed")
 
 
+def dispatch_window() -> int:
+    raw = env_values().get("PUBLICATION_AUTO_DISPATCH_MAX_LATENESS_SECONDS", "3600")
+    if not raw.isdigit() or int(raw) <= 0:
+        raise RuntimeErrorSafe("Invalid automatic dispatch window.")
+    return int(raw)
+
+
+def inventory() -> None:
+    values = validate_base_config()
+    if values.get("VK_PUBLISHING_ENABLED", "").lower() != "false":
+        raise RuntimeErrorSafe("VK must be explicitly disabled before inventory.")
+    window = dispatch_window()
+    print("VK PUBLICATION INVENTORY (read-only)")
+    print(
+        "id / status / scheduled_at / content_version_id / content_item_id / "
+        "content_channel / target / external_id / failure / auto_dispatch_eligible_now"
+    )
+    print(
+        sql(
+            "SELECT p.id, p.status, p.scheduled_at, p.content_version_id, p.content_item_id, "
+            "c.channel, p.provider_target_id, p.external_id, p.failure_code, "
+            "(p.status = 'SCHEDULED' AND p.approved_for_publish_at IS NOT NULL "
+            "AND p.approved_for_publish_by IS NOT NULL AND p.execution_token IS NULL "
+            "AND p.failure_code IS NULL AND p.scheduled_at <= now() "
+            f"AND p.scheduled_at >= now() - make_interval(secs => {window})) "
+            "FROM publications p LEFT JOIN content_items c ON c.id = p.content_item_id "
+            "WHERE p.channel = 'VK' ORDER BY p.scheduled_at NULLS FIRST, p.created_at, p.id;"
+        )
+    )
+    no_inflight()
+    print(f"INVENTORY: PASS; dispatch window={window}s; expected owner={OWNER_ID}")
+
+
 def arm_canary(publication_id: UUID) -> None:
     release = ensure_release()
-    validate_base_config()
+    inventory()
     credential_status()
     no_inflight()
     row = publication(publication_id)
-    channel, state, _scheduled, approved_at, approved_by, failure, target, external_id = row
+    (
+        channel,
+        state,
+        _scheduled,
+        approved_at,
+        approved_by,
+        failure,
+        target,
+        external_id,
+    ) = row
     if channel != "VK":
         raise RuntimeErrorSafe("Canary publication is not VK.")
     if state not in {"APPROVED", "SCHEDULED"}:
-        raise RuntimeErrorSafe(f"Canary publication status is {state}, expected APPROVED/SCHEDULED.")
+        raise RuntimeErrorSafe(
+            f"Canary publication status is {state}, expected APPROVED/SCHEDULED."
+        )
     if not approved_at or not approved_by:
         raise RuntimeErrorSafe("Canary publication is not approved for delivery.")
     if failure or target or external_id:
@@ -314,7 +373,16 @@ def promote() -> None:
         raise RuntimeErrorSafe("No VK canary publication is configured.")
     canary_id = UUID(raw_id)
     row = publication(canary_id)
-    channel, state, _scheduled, _approved_at, _approved_by, failure, target, external_id = row
+    (
+        channel,
+        state,
+        _scheduled,
+        _approved_at,
+        _approved_by,
+        failure,
+        target,
+        external_id,
+    ) = row
     if channel != "VK" or state != "PUBLISHED" or failure:
         raise RuntimeErrorSafe("VK canary is not durably PUBLISHED.")
     if target != str(OWNER_ID) or not external_id:
@@ -322,7 +390,7 @@ def promote() -> None:
     due_other = count(
         "SELECT count(*) FROM publications WHERE channel = 'VK' "
         "AND status = 'SCHEDULED' AND scheduled_at <= now() "
-        "AND scheduled_at >= now() - interval '1 hour' "
+        f"AND scheduled_at >= now() - make_interval(secs => {dispatch_window()}) "
         f"AND id <> '{canary_id}'::uuid;"
     )
     if due_other:
@@ -363,6 +431,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status")
+    sub.add_parser("inventory")
     canary = sub.add_parser("canary")
     canary.add_argument("publication_id", type=UUID)
     sub.add_parser("promote")
@@ -371,6 +440,9 @@ def main() -> None:
     try:
         if args.command == "status":
             status()
+        elif args.command == "inventory":
+            ensure_release()
+            inventory()
         elif args.command == "canary":
             arm_canary(args.publication_id)
         elif args.command == "promote":

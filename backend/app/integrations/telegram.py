@@ -115,6 +115,10 @@ class VKProvider:
             raise VKProviderError(
                 "VK_TARGET_INVALID", "VK publishing target must be a community wall."
             )
+        if settings.app_env.lower() in {"production", "prod"} and (
+            token or settings.vk_access_token
+        ):
+            raise VKProviderError("VK_AUTH_ERROR", "Static VK token is forbidden in production.")
         self._token = token or settings.vk_access_token
         self._credential_store = credential_store
         if self._token is None and self._credential_store is None and settings.vk_credentials_file:
