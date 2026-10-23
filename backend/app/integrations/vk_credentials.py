@@ -7,11 +7,12 @@ import os
 import secrets
 import stat
 import tempfile
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Any, AsyncIterator
+from typing import Any
 from urllib.parse import urlparse
 
 import httpx
