@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import subprocess
+import sys
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -18,6 +19,7 @@ def load_script() -> ModuleType:
     assert spec is not None
     assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -161,9 +163,7 @@ def test_provisioning_passes_credentials_only_through_stdin(
     script.provision_docker_volume(tmp_path, payload)
 
     assert len(calls) == 2
-    combined_arguments = "\n".join(
-        " ".join(call["command"]) for call in calls
-    )
+    combined_arguments = "\n".join(" ".join(call["command"]) for call in calls)
     assert "secret-access" not in combined_arguments
     assert "secret-refresh" not in combined_arguments
     assert calls[0]["input"] == json.dumps(payload, ensure_ascii=False)
