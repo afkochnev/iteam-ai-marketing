@@ -143,12 +143,16 @@ class VKProvider:
             raise VKProviderError(
                 "VK_TARGET_INVALID", "VK publishing target must be a community wall."
             )
+        explicit_token = (token or "").strip() or None
+        configured_token = (settings.vk_access_token or "").strip() or None
         if settings.app_env.lower() in {"production", "prod"} and (
-            token or settings.vk_access_token
+            explicit_token or configured_token
         ):
             raise VKProviderError("VK_AUTH_ERROR", "Static VK token is forbidden in production.")
         self._single_attempt = single_attempt
-        self._token = token or settings.vk_access_token
+        # Compose deliberately supplies an empty static token in production.
+        # Treat blank values as absent so they cannot bypass the rotating store.
+        self._token = explicit_token or configured_token
         self._credential_store = credential_store
         if self._token is None and self._credential_store is None and settings.vk_credentials_file:
             if settings.vk_client_id is None or settings.vk_expected_user_id is None:
@@ -167,17 +171,21 @@ class VKProvider:
 
     async def _access_token(self, *, force_refresh: bool = False) -> str:
         if self._credential_store is None:
-            if self._token is None:
+            if not self._token or not self._token.strip():
                 raise VKProviderError("VK_AUTH_ERROR", "VK publishing is not configured.")
             return self._token
         try:
-            return await self._credential_store.access_token(force_refresh=force_refresh)
+            access_token = await self._credential_store.access_token(force_refresh=force_refresh)
         except VKCredentialError as error:
             raise VKProviderError(
                 error.code,
                 error.safe_message,
                 retryable=error.retryable,
             ) from error
+
+        if not access_token or not access_token.strip():
+            raise VKProviderError("VK_AUTH_ERROR", "VK publishing credential is empty.")
+        return access_token
 
     async def _send(self, *, text: str, access_token: str) -> dict[str, Any]:
         try:
