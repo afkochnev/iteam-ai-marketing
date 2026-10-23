@@ -8,7 +8,7 @@ import secrets
 import stat
 import tempfile
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -21,6 +21,7 @@ WALL_PERMISSION = 8192
 GROUPS_PERMISSION = 262144
 REQUIRED_PERMISSION_MASK = WALL_PERMISSION | GROUPS_PERMISSION
 ALLOWED_TOKEN_HOSTS = {"id.vk.ru", "id.vk.com"}
+CREDENTIAL_SCHEMA_VERSION = 1
 
 
 class VKCredentialError(Exception):
@@ -45,6 +46,11 @@ class VKCredentialState:
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> VKCredentialState:
+        if payload.get("schema_version") != CREDENTIAL_SCHEMA_VERSION:
+            raise VKCredentialError(
+                "VK_CREDENTIALS_INVALID",
+                "VK publishing credential schema is unsupported.",
+            )
         try:
             expires_at = datetime.fromisoformat(str(payload["expires_at"]).replace("Z", "+00:00"))
             state = cls(
@@ -91,7 +97,7 @@ class VKCredentialState:
 
     def as_payload(self) -> dict[str, Any]:
         return {
-            "schema_version": 1,
+            "schema_version": CREDENTIAL_SCHEMA_VERSION,
             "client_id": self.client_id,
             "redirect_uri": self.redirect_uri,
             "device_id": self.device_id,
@@ -141,29 +147,52 @@ class VKCredentialStore:
                 "VK_CREDENTIALS_INVALID", "VK credential directory is unavailable."
             )
         lock_path = parent / ".credentials.lock"
-        lock_file = await asyncio.to_thread(open, lock_path, "a+", encoding="utf-8")
         try:
+            lock_file = await asyncio.to_thread(open, lock_path, "a+", encoding="utf-8")
             await asyncio.to_thread(os.chmod, lock_path, stat.S_IRUSR | stat.S_IWUSR)
             await asyncio.to_thread(fcntl.flock, lock_file.fileno(), fcntl.LOCK_EX)
+        except OSError as exc:
+            if "lock_file" in locals():
+                with suppress(OSError):
+                    await asyncio.to_thread(lock_file.close)
+            raise VKCredentialError(
+                "VK_CREDENTIALS_IO_ERROR",
+                "VK credential lock cannot be acquired.",
+                retryable=True,
+            ) from exc
+        try:
             yield
         finally:
-            await asyncio.to_thread(fcntl.flock, lock_file.fileno(), fcntl.LOCK_UN)
-            await asyncio.to_thread(lock_file.close)
+            with suppress(OSError):
+                await asyncio.to_thread(fcntl.flock, lock_file.fileno(), fcntl.LOCK_UN)
+            with suppress(OSError):
+                await asyncio.to_thread(lock_file.close)
 
     def _read(self) -> VKCredentialState:
-        if self.path.is_symlink() or not self.path.is_file():
-            raise VKCredentialError("VK_CREDENTIALS_INVALID", "VK credential file is unavailable.")
-        mode = stat.S_IMODE(self.path.stat().st_mode)
-        if mode & (stat.S_IRWXG | stat.S_IRWXO):
-            raise VKCredentialError(
-                "VK_CREDENTIALS_PERMISSIONS",
-                "VK credential file permissions must be 0600.",
-            )
         try:
-            payload = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            if self.path.is_symlink() or not self.path.is_file():
+                raise VKCredentialError(
+                    "VK_CREDENTIALS_INVALID", "VK credential file is unavailable."
+                )
+            metadata = self.path.stat()
+            mode = stat.S_IMODE(metadata.st_mode)
+            if mode != (stat.S_IRUSR | stat.S_IWUSR) or metadata.st_uid != os.geteuid():
+                raise VKCredentialError(
+                    "VK_CREDENTIALS_PERMISSIONS",
+                    "VK credential file owner and permissions must match the worker and mode 0600.",
+                )
+            raw = self.path.read_text(encoding="utf-8")
+        except VKCredentialError:
+            raise
+        except OSError as exc:
             raise VKCredentialError(
-                "VK_CREDENTIALS_INVALID", "VK credential file cannot be read."
+                "VK_CREDENTIALS_IO_ERROR", "VK credential file cannot be read.", retryable=True
+            ) from exc
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise VKCredentialError(
+                "VK_CREDENTIALS_INVALID", "VK credential file has invalid JSON."
             ) from exc
         if not isinstance(payload, dict):
             raise VKCredentialError(
@@ -181,11 +210,17 @@ class VKCredentialStore:
         state.validate()
         parent = self.path.parent
         data = json.dumps(state.as_payload(), ensure_ascii=False, sort_keys=True) + "\n"
-        descriptor, temporary_name = tempfile.mkstemp(prefix=".credentials.", dir=parent)
-        temporary = Path(temporary_name)
+        temporary: Path | None = None
         try:
-            os.fchmod(descriptor, stat.S_IRUSR | stat.S_IWUSR)
-            with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix=".credentials.",
+                dir=parent,
+                delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                os.fchmod(handle.fileno(), stat.S_IRUSR | stat.S_IWUSR)
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -196,9 +231,16 @@ class VKCredentialStore:
                 os.fsync(directory_fd)
             finally:
                 os.close(directory_fd)
+        except OSError as exc:
+            raise VKCredentialError(
+                "VK_CREDENTIALS_IO_ERROR",
+                "VK credential rotation could not be persisted.",
+                retryable=True,
+            ) from exc
         finally:
-            if temporary.exists():
-                temporary.unlink()
+            if temporary is not None and temporary.exists():
+                with suppress(OSError):
+                    temporary.unlink()
 
     async def access_token(self) -> str:
         async with self._locked():
@@ -229,6 +271,7 @@ class VKCredentialStore:
             raise VKCredentialError(
                 "VK_TOKEN_REFRESH_ERROR",
                 "VK ID token refresh failed before publication.",
+                retryable=True,
             ) from exc
         try:
             payload: dict[str, Any] = response.json()
