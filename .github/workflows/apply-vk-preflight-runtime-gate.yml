@@ -75,47 +75,36 @@ jobs:
               raise SystemExit("main marker mismatch")
           text = text.replace(marker, f"\n{functions}{marker}", 1)
 
-          old = '''    try:
-                  client_id = args.client_id or int(input("VK ID application ID: ").strip())
-                  redirect_uri = (
-                      args.redirect_uri
-                      or input("Точный redirect URI из кабинета VK ID: ").strip()
-                  )
-                  if client_id <= 0 or not redirect_uri:
-                      raise PreflightError("Application ID или redirect URI не заданы.")
-                  group_id = args.group_id
-                  if group_id <= 0:
-                      raise PreflightError("Group ID должен быть положительным.")
-          '''
-          old = "\n".join(
-              line[10:] if line.startswith("          ") else line
-              for line in old.splitlines()
-          )
-          new = '''    try:
-                  group_id = args.group_id
-                  if group_id <= 0:
-                      raise PreflightError("Group ID должен быть положительным.")
-                  repository_dir = args.repository_dir.resolve()
-                  validate_local_runtime(repository_dir, group_id=group_id)
+          main_start = text.index("def main() -> int:")
+          block_start = text.index("    try:\n", main_start)
+          block_end = text.index("\n        code_verifier =", block_start)
+          new_block = '''    try:
+              group_id = args.group_id
+              if group_id <= 0:
+                  raise PreflightError("Group ID должен быть положительным.")
+              repository_dir = args.repository_dir.resolve()
+              validate_local_runtime(repository_dir, group_id=group_id)
 
-                  client_id = args.client_id or int(input("VK ID application ID: ").strip())
-                  redirect_uri = (
-                      args.redirect_uri
-                      or input("Точный redirect URI из кабинета VK ID: ").strip()
-                  )
-                  if client_id <= 0 or not redirect_uri:
-                      raise PreflightError("Application ID или redirect URI не заданы.")
+              client_id = args.client_id or int(input("VK ID application ID: ").strip())
+              redirect_uri = (
+                  args.redirect_uri
+                  or input("Точный redirect URI из кабинета VK ID: ").strip()
+              )
+              if client_id <= 0 or not redirect_uri:
+                  raise PreflightError("Application ID или redirect URI не заданы.")
           '''
-          new = "\n".join(
+          new_block = "\n".join(
               line[10:] if line.startswith("          ") else line
-              for line in new.splitlines()
+              for line in new_block.splitlines()
           )
-          if text.count(old) != 1:
-              raise SystemExit(f"main preflight block mismatch: {text.count(old)}")
-          text = text.replace(old, new, 1)
+          text = text[:block_start] + new_block + text[block_end:]
+          expected = "provision_docker_volume(args.repository_dir.resolve(), credentials)"
+          if text.count(expected) != 1:
+              raise SystemExit("provision call marker mismatch")
           text = text.replace(
-              "provision_docker_volume(args.repository_dir.resolve(), credentials)",
+              expected,
               "provision_docker_volume(repository_dir, credentials)",
+              1,
           )
           path.write_text(text)
           PY
