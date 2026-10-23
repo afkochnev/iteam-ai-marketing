@@ -25,6 +25,12 @@ PUBLICATION_FIELDS = {
     "VK_ACCESS_TOKEN": "synthetic-vk-token",
     "VK_OWNER_ID": "-123456789",
 }
+VK_BINDING_FIELDS = {
+    "VK_CREDENTIALS_FILE": "",
+    "VK_CLIENT_ID": "54815172",
+    "VK_EXPECTED_USER_ID": "176199961",
+    "VK_CANARY_PUBLICATION_ID": "",
+}
 
 
 @pytest.fixture(scope="module")
@@ -36,7 +42,12 @@ def compose_config(tmp_path_factory):
     env_file.write_text(
         "OPENAI_API_KEY=synthetic-openai-key\nOPENAI_DEFAULT_MODEL=synthetic-model\n"
         + "\n".join(
-            f"{key}={value}" for key, value in {**PUBLICATION_FIELDS, **METRICS_FIELDS}.items()
+            f"{key}={value}"
+            for key, value in {
+                **PUBLICATION_FIELDS,
+                **VK_BINDING_FIELDS,
+                **METRICS_FIELDS,
+            }.items()
         )
         + "\n"
     )
@@ -117,6 +128,7 @@ def test_ai_workers_always_available_with_no_publishing_capability(compose_confi
     for field in PUBLICATION_FIELDS:
         expected = "false" if field.endswith("_ENABLED") else ""
         assert environment[field] == expected
+    assert environment["VK_CREDENTIALS_FILE"] == ""
     config = Settings(_env_file=None, **{key.lower(): value for key, value in environment.items()})
     assert config.vk_owner_id is None
     config.validate_worker_capabilities()
@@ -131,13 +143,25 @@ def test_publication_workers_opt_in_and_without_openai_credential(compose_config
     environment = service["environment"]
     assert environment["WORKER_ROLE"] == WORKER_QUEUES[service_name]
     assert environment["OPENAI_API_KEY"] == ""
-    # Publishing workers retain their own synthetic provider capabilities.
-    for field, value in PUBLICATION_FIELDS.items():
-        assert environment[field] == (
-            ("false" if field.endswith("_ENABLED") else "")
-            if service_name == "metrics_worker"
-            else value
-        )
+    if service_name == "metrics_worker":
+        for field in PUBLICATION_FIELDS:
+            assert environment[field] == ("false" if field.endswith("_ENABLED") else "")
+        assert environment["VK_CREDENTIALS_FILE"] == ""
+    else:
+        assert environment["TELEGRAM_PUBLISHING_ENABLED"] == "true"
+        assert environment["TELEGRAM_BOT_TOKEN"] == "synthetic-telegram-token"
+        assert environment["TELEGRAM_TARGET_CHAT_ID"] == "synthetic-chat-id"
+        assert environment["VK_PUBLISHING_ENABLED"] == "true"
+        assert environment["VK_OWNER_ID"] == "-123456789"
+        assert environment["VK_ACCESS_TOKEN"] == ""
+        if service_name == "publication_worker":
+            assert environment["VK_CREDENTIALS_FILE"] == (
+                "/run/iteam-secrets/vk/credentials.json"
+            )
+            assert environment["VK_CLIENT_ID"] == "54815172"
+            assert environment["VK_EXPECTED_USER_ID"] == "176199961"
+        else:
+            assert environment["VK_CREDENTIALS_FILE"] == ""
     config = Settings(_env_file=None, **{key.lower(): value for key, value in environment.items()})
     config.validate_worker_capabilities()
 
@@ -183,6 +207,25 @@ def test_ai_role_rejects_working_publication_capability_even_when_disabled(role,
         config.validate_worker_capabilities()
 
 
+@pytest.mark.parametrize("role", ["ai", "ai_control"])
+def test_ai_role_rejects_vk_credential_file(role):
+    config = Settings(_env_file=None, worker_role=role, vk_credentials_file="/secret/vk.json")
+    with pytest.raises(RuntimeError, match="VK_CREDENTIALS_FILE"):
+        config.validate_worker_capabilities()
+
+
+def test_vk_publication_worker_requires_refreshable_binding():
+    config = Settings(
+        _env_file=None,
+        worker_role="publication",
+        vk_publishing_enabled=True,
+        vk_owner_id=-150574411,
+        vk_credentials_file="/secret/vk.json",
+    )
+    with pytest.raises(RuntimeError, match="VK_CLIENT_ID"):
+        config.validate_worker_capabilities()
+
+
 def test_unknown_worker_role_fails_closed():
     with pytest.raises(RuntimeError, match="WORKER_ROLE is invalid"):
         Settings(_env_file=None, worker_role="unknown").validate_worker_capabilities()
@@ -204,6 +247,10 @@ def import_worker_app(role, capabilities=None):
             "TELEGRAM_BOT_TOKEN": "",
             "TELEGRAM_TARGET_CHAT_ID": "",
             "VK_ACCESS_TOKEN": "",
+            "VK_CREDENTIALS_FILE": "",
+            "VK_CLIENT_ID": "",
+            "VK_EXPECTED_USER_ID": "",
+            "VK_CANARY_PUBLICATION_ID": "",
             "VK_OWNER_ID": "",
         }
     )
@@ -298,6 +345,7 @@ def test_metrics_worker_receives_only_read_credentials(compose_config):
         assert environment[field] == value
     for field in PUBLICATION_FIELDS:
         assert environment[field] == ("false" if field.endswith("_ENABLED") else "")
+    assert environment["VK_CREDENTIALS_FILE"] == ""
     Settings(
         _env_file=None, **{k.lower(): v for k, v in environment.items()}
     ).validate_worker_capabilities()

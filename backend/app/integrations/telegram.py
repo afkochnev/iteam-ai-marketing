@@ -7,6 +7,7 @@ from typing import Any, Protocol
 import httpx
 
 from app.core.config import settings
+from app.integrations.vk_credentials import VKCredentialError, VKCredentialStore
 
 
 class PublicationProviderError(Exception):
@@ -100,34 +101,61 @@ class TelegramProvider:
 
 
 class VKProvider:
-    """Minimal VK wall.post adapter; business state remains in PublicationService."""
+    """VK wall.post adapter with target binding and refreshable user credentials."""
 
-    def __init__(self, token: str | None = None) -> None:
-        self._token = token or settings.vk_access_token
-        if not self._token or settings.vk_owner_id is None:
+    def __init__(
+        self,
+        token: str | None = None,
+        *,
+        credential_store: VKCredentialStore | None = None,
+    ) -> None:
+        if settings.vk_owner_id is None:
             raise VKProviderError("VK_AUTH_ERROR", "VK publishing is not configured.")
         if settings.vk_owner_id >= 0:
             raise VKProviderError(
                 "VK_TARGET_INVALID", "VK publishing target must be a community wall."
             )
-
-    async def publish(self, *, text: str, chat_id: str) -> ProviderPublicationResult:
-        if chat_id != str(settings.vk_owner_id):
-            raise VKProviderError(
-                "VK_TARGET_MISMATCH", "VK publishing target does not match configured owner."
+        self._token = token or settings.vk_access_token
+        self._credential_store = credential_store
+        if self._token is None and self._credential_store is None and settings.vk_credentials_file:
+            if settings.vk_client_id is None or settings.vk_expected_user_id is None:
+                raise VKProviderError("VK_AUTH_ERROR", "VK publishing is not configured.")
+            self._credential_store = VKCredentialStore(
+                settings.vk_credentials_file,
+                client_id=settings.vk_client_id,
+                expected_user_id=settings.vk_expected_user_id,
+                owner_id=settings.vk_owner_id,
+                api_version=settings.vk_api_version,
+                request_timeout_seconds=settings.vk_request_timeout_seconds,
+                refresh_leeway_seconds=settings.vk_token_refresh_leeway_seconds,
             )
-        if not text.strip() or len(text) > 4096:
-            raise VKProviderError("VK_BAD_REQUEST", "VK message is invalid.")
+        if self._token is None and self._credential_store is None:
+            raise VKProviderError("VK_AUTH_ERROR", "VK publishing is not configured.")
+
+    async def _access_token(self, *, force_refresh: bool = False) -> str:
+        if self._credential_store is None:
+            if self._token is None:
+                raise VKProviderError("VK_AUTH_ERROR", "VK publishing is not configured.")
+            return self._token
+        try:
+            return await self._credential_store.access_token(force_refresh=force_refresh)
+        except VKCredentialError as error:
+            raise VKProviderError(
+                error.code,
+                error.safe_message,
+                retryable=error.retryable,
+            ) from error
+
+    async def _send(self, *, text: str, access_token: str) -> dict[str, Any]:
         try:
             async with httpx.AsyncClient(timeout=settings.vk_request_timeout_seconds) as client:
                 response = await client.post(
                     "https://api.vk.com/method/wall.post",
-                    # Keep credentials out of request URLs.  httpx may log
-                    # URLs at INFO level; form data is not included there.
+                    # Credentials remain in form data, never in URLs or logs.
                     data={
                         "owner_id": settings.vk_owner_id,
                         "from_group": 1,
-                        "access_token": self._token,
+                        "access_token": access_token,
                         "v": settings.vk_api_version,
                         "message": text,
                     },
@@ -146,26 +174,56 @@ class VKProvider:
             raise VKProviderError("VK_PROVIDER_ERROR", "VK request failed.") from exc
         try:
             payload: dict[str, Any] = response.json()
-            if "error" in payload:
-                error = payload["error"]
-                code = int(error.get("error_code", 0))
-                if code in {5, 27}:
-                    raise VKProviderError("VK_AUTH_ERROR", "VK authentication failed.")
-                if code in {7, 15}:
-                    raise VKProviderError("VK_PERMISSION_ERROR", "VK access was denied.")
-                if code in {6, 9}:
-                    raise VKProviderError("VK_RATE_LIMIT", "VK rate limit reached.", retryable=True)
-                raise VKProviderError("VK_BAD_REQUEST", "VK rejected the message.")
+        except (ValueError, TypeError) as exc:
+            raise VKProviderError(
+                "VK_PROVIDER_ERROR", "VK returned an invalid response.", ambiguous=True
+            ) from exc
+        return payload
+
+    @staticmethod
+    def _error(payload: dict[str, Any]) -> tuple[int, VKProviderError] | None:
+        raw_error = payload.get("error")
+        if not isinstance(raw_error, dict):
+            return None
+        code = int(raw_error.get("error_code", 0))
+        if code in {5, 27}:
+            return code, VKProviderError("VK_AUTH_ERROR", "VK authentication failed.")
+        if code in {7, 15}:
+            return code, VKProviderError("VK_PERMISSION_ERROR", "VK access was denied.")
+        if code in {6, 9}:
+            return code, VKProviderError(
+                "VK_RATE_LIMIT", "VK rate limit reached.", retryable=True
+            )
+        return code, VKProviderError("VK_BAD_REQUEST", "VK rejected the message.")
+
+    async def publish(self, *, text: str, chat_id: str) -> ProviderPublicationResult:
+        # Target validation is deliberately before credential access or any network call.
+        if chat_id != str(settings.vk_owner_id):
+            raise VKProviderError(
+                "VK_TARGET_MISMATCH", "VK publishing target does not match configured owner."
+            )
+        if not text.strip() or len(text) > 4096:
+            raise VKProviderError("VK_BAD_REQUEST", "VK message is invalid.")
+        access_token = await self._access_token()
+        payload = await self._send(text=text, access_token=access_token)
+        error = self._error(payload)
+        # Error 5/27 is a definitive pre-delivery auth failure. Refresh and retry once;
+        # timeouts and ambiguous results are never retried automatically.
+        if error is not None and error[0] in {5, 27} and self._credential_store is not None:
+            access_token = await self._access_token(force_refresh=True)
+            payload = await self._send(text=text, access_token=access_token)
+            error = self._error(payload)
+        if error is not None:
+            raise error[1]
+        try:
             post_id = str(payload["response"]["post_id"])
-        except VKProviderError:
-            raise
-        except (ValueError, KeyError, TypeError) as exc:
+        except (KeyError, TypeError) as exc:
             raise VKProviderError(
                 "VK_PROVIDER_ERROR", "VK returned an invalid response.", ambiguous=True
             ) from exc
         return ProviderPublicationResult(
             external_id=post_id,
-            external_url=None,
+            external_url=f"https://vk.com/wall{settings.vk_owner_id}_{post_id}",
             published_at=datetime.now(UTC),
             provider_target_id=str(settings.vk_owner_id),
         )

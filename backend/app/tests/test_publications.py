@@ -1968,3 +1968,71 @@ async def test_publication_calendar_api_scopes_and_validates_range(
         params={"from": end.isoformat(), "to": start.isoformat()},
     )
     assert invalid.status_code == 422
+
+@pytest.mark.integration
+async def test_vk_canary_scope_blocks_claim_before_provider_state(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    monkeypatch.setattr(settings, "vk_owner_id", -150574411)
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.channel = ContentChannel.VK
+    await db_session.commit()
+    service = PublicationService(db_session)
+    created = await service.create(
+        PublicationCreate(
+            content_item_id=post.id,
+            content_version_id=version.id,
+            channel=ContentChannel.VK,
+        ),
+        user,
+    )
+    await service.approve(created.id, user)
+    monkeypatch.setattr(settings, "vk_canary_publication_id", uuid4())
+
+    with pytest.raises(AppError) as error:
+        await service.claim_for_publish(created.id, user)
+    assert error.value.code == "VK_CANARY_SCOPE_MISMATCH"
+    persisted = await db_session.get(Publication, created.id)
+    assert persisted is not None
+    assert persisted.status is PublicationStatus.APPROVED
+    assert persisted.execution_token is None
+    assert persisted.provider_target_id is None
+
+
+@pytest.mark.integration
+async def test_vk_canary_scope_blocks_stale_claim_before_provider_call(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "vk_publishing_enabled", True)
+    monkeypatch.setattr(settings, "vk_owner_id", -150574411)
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.channel = ContentChannel.VK
+    await db_session.commit()
+    service = PublicationService(db_session)
+    created = await service.create(
+        PublicationCreate(
+            content_item_id=post.id,
+            content_version_id=version.id,
+            channel=ContentChannel.VK,
+        ),
+        user,
+    )
+    await service.approve(created.id, user)
+    monkeypatch.setattr(settings, "vk_canary_publication_id", created.id)
+    claimed = await service.claim_for_publish(created.id, user)
+    row = await db_session.get(Publication, claimed.id)
+    assert row is not None and row.execution_token is not None
+    token = row.execution_token
+    monkeypatch.setattr(settings, "vk_canary_publication_id", uuid4())
+    provider = _FakeTelegramProvider()
+
+    result = await service.execute_vk(created.id, provider, execution_token=token)
+    assert result is not None
+    assert result.status is PublicationStatus.FAILED
+    assert result.failure_code == "VK_CANARY_SCOPE_MISMATCH"
+    assert provider.calls == 0

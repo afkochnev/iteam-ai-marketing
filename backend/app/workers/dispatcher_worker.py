@@ -1,7 +1,7 @@
 import asyncio
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.pool import NullPool
@@ -43,12 +43,18 @@ async def _dispatch() -> None:
 
 
 async def _dispatch_publications() -> None:
-    enabled_channels = []
+    channel_filters = []
     if settings.telegram_publishing_enabled:
-        enabled_channels.append(ContentChannel.TELEGRAM)
+        channel_filters.append(Publication.channel == ContentChannel.TELEGRAM)
     if settings.vk_publishing_enabled:
-        enabled_channels.append(ContentChannel.VK)
-    if not enabled_channels:
+        vk_filter = Publication.channel == ContentChannel.VK
+        if settings.vk_canary_publication_id is not None:
+            vk_filter = and_(
+                vk_filter,
+                Publication.id == settings.vk_canary_publication_id,
+            )
+        channel_filters.append(vk_filter)
+    if not channel_filters:
         return
     now = datetime.now(UTC)
     cutoff = now - timedelta(seconds=settings.publication_auto_dispatch_max_lateness_seconds)
@@ -68,7 +74,7 @@ async def _dispatch_publications() -> None:
                             Publication.failure_code.is_(None),
                             Publication.scheduled_at <= now,
                             Publication.scheduled_at >= cutoff,
-                            Publication.channel.in_(enabled_channels),
+                            or_(*channel_filters),
                         )
                         .with_for_update(skip_locked=True)
                         .limit(20)

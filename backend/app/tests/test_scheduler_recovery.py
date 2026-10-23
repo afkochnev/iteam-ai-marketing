@@ -77,6 +77,10 @@ def test_scheduler_process_selects_schedule_before_start(role):
             "TELEGRAM_BOT_TOKEN": "",
             "TELEGRAM_TARGET_CHAT_ID": "",
             "VK_ACCESS_TOKEN": "",
+            "VK_CREDENTIALS_FILE": "",
+            "VK_CLIENT_ID": "",
+            "VK_EXPECTED_USER_ID": "",
+            "VK_CANARY_PUBLICATION_ID": "",
             "VK_OWNER_ID": "",
             "OPENAI_API_KEY": "",
         }
@@ -128,6 +132,16 @@ def test_ai_scheduler_fail_fast_with_publication_capability(field):
         assert value not in str(exc.value)
 
 
+def test_ai_scheduler_rejects_vk_credential_file():
+    config = Settings(
+        _env_file=None,
+        scheduler_role="ai",
+        vk_credentials_file="/secret/vk.json",
+    )
+    with pytest.raises(RuntimeError, match="VK_CREDENTIALS_FILE"):
+        config.validate_scheduler_capabilities()
+
+
 def test_worker_and_scheduler_roles_cannot_be_combined():
     with pytest.raises(RuntimeError, match="must not be combined"):
         Settings(
@@ -151,6 +165,7 @@ def test_compose_schedulers_are_separate_and_capability_scoped(compose_config, s
         assert environment["SCHEDULER_ROLE"] == "ai"
         for field in PUBLICATION_FIELDS:
             assert environment[field] == ("false" if field.endswith("_ENABLED") else "")
+        assert environment["VK_CREDENTIALS_FILE"] == ""
     else:
         assert service_name not in compose_config["default_services"]
         assert service["profiles"] == ["publishing"]

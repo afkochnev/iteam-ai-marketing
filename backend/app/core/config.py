@@ -1,4 +1,5 @@
 from functools import lru_cache
+from uuid import UUID
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -65,8 +66,15 @@ class Settings(BaseSettings):
     publication_max_retries: int = 3
     publication_publishing_stale_seconds: int = 600
     vk_publishing_enabled: bool = False
+    # VK_ACCESS_TOKEN remains a test/development fallback. Production uses the
+    # rotating credential file mounted only into publication_worker.
     vk_access_token: str | None = None
+    vk_credentials_file: str | None = None
+    vk_client_id: int | None = None
+    vk_expected_user_id: int | None = None
     vk_owner_id: int | None = None
+    vk_canary_publication_id: UUID | None = None
+    vk_token_refresh_leeway_seconds: int = Field(default=300, ge=30)
     vk_api_version: str = "5.199"
     vk_request_timeout_seconds: int = 30
     telegram_metrics_enabled: bool = False
@@ -108,6 +116,9 @@ class Settings(BaseSettings):
 
     @field_validator(
         "vk_owner_id",
+        "vk_client_id",
+        "vk_expected_user_id",
+        "vk_canary_publication_id",
         "telegram_metrics_api_id",
         "telegram_metrics_chat_id",
         "vk_metrics_owner_id",
@@ -147,9 +158,27 @@ class Settings(BaseSettings):
             "metrics",
         }:
             raise RuntimeError("WORKER_ROLE is invalid")
-        if self.worker_role not in {"ai", "ai_control"}:
+        if self.worker_role in {"ai", "ai_control"}:
+            self._validate_ai_publication_capabilities("AI worker")
             return
-        self._validate_ai_publication_capabilities("AI worker")
+        if self.worker_role == "metrics":
+            return
+        if self.worker_role == "publication" and self.vk_publishing_enabled:
+            required: list[str] = []
+            if self.vk_owner_id is None or self.vk_owner_id >= 0:
+                required.append("VK_OWNER_ID")
+            if not self.vk_access_token and not self.vk_credentials_file:
+                required.append("VK_CREDENTIALS_FILE")
+            if self.vk_credentials_file:
+                if self.vk_client_id is None or self.vk_client_id <= 0:
+                    required.append("VK_CLIENT_ID")
+                if self.vk_expected_user_id is None or self.vk_expected_user_id <= 0:
+                    required.append("VK_EXPECTED_USER_ID")
+            if required:
+                raise RuntimeError(
+                    "VK publication worker configuration is invalid; set: "
+                    + ", ".join(sorted(set(required)))
+                )
 
     def _validate_ai_publication_capabilities(self, process: str) -> None:
         publication_capabilities = {
@@ -158,6 +187,7 @@ class Settings(BaseSettings):
             "TELEGRAM_BOT_TOKEN": bool(self.telegram_bot_token),
             "TELEGRAM_TARGET_CHAT_ID": bool(self.telegram_target_chat_id),
             "VK_ACCESS_TOKEN": bool(self.vk_access_token),
+            "VK_CREDENTIALS_FILE": bool(self.vk_credentials_file),
             "VK_OWNER_ID": self.vk_owner_id is not None,
         }
         errors = [name for name, present in publication_capabilities.items() if present]
@@ -236,6 +266,7 @@ class Settings(BaseSettings):
             "TASK_DISPATCH_INTERVAL_SECONDS": self.task_dispatch_interval_seconds,
             "TELEGRAM_REQUEST_TIMEOUT_SECONDS": self.telegram_request_timeout_seconds,
             "VK_REQUEST_TIMEOUT_SECONDS": self.vk_request_timeout_seconds,
+            "VK_TOKEN_REFRESH_LEEWAY_SECONDS": self.vk_token_refresh_leeway_seconds,
             "METRICS_SYNC_INTERVAL_SECONDS": self.metrics_sync_interval_seconds,
             "METRICS_LOOKBACK_DAYS": self.metrics_lookback_days,
             "PUBLICATION_PUBLISHING_STALE_SECONDS": self.publication_publishing_stale_seconds,
@@ -278,10 +309,12 @@ class Settings(BaseSettings):
             if not self.telegram_target_chat_id:
                 errors.append("TELEGRAM_TARGET_CHAT_ID")
         if self.vk_publishing_enabled:
-            if not self.vk_access_token:
-                errors.append("VK_ACCESS_TOKEN")
-            if self.vk_owner_id is None:
+            if self.vk_owner_id is None or self.vk_owner_id >= 0:
                 errors.append("VK_OWNER_ID")
+            if self.vk_client_id is None or self.vk_client_id <= 0:
+                errors.append("VK_CLIENT_ID")
+            if self.vk_expected_user_id is None or self.vk_expected_user_id <= 0:
+                errors.append("VK_EXPECTED_USER_ID")
         if not self.cookie_secure:
             errors.append("COOKIE_SECURE")
         if not self.allowed_hosts or self.allowed_hosts == "localhost,127.0.0.1":

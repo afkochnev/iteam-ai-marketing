@@ -1264,6 +1264,16 @@ class PublicationService:
                 "Для этого канала публикация пока недоступна.",
                 422,
             )
+        if (
+            publication.channel.value == "VK"
+            and settings.vk_canary_publication_id is not None
+            and publication.id != settings.vk_canary_publication_id
+        ):
+            raise AppError(
+                "VK_CANARY_SCOPE_MISMATCH",
+                "VK включён только для выбранной canary-публикации.",
+                409,
+            )
         provider_enabled = {
             "TELEGRAM": settings.telegram_publishing_enabled,
             "VK": settings.vk_publishing_enabled,
@@ -1320,6 +1330,27 @@ class PublicationService:
             return None
         if execution_token is not None and publication.execution_token != execution_token:
             return None
+        if (
+            settings.vk_canary_publication_id is not None
+            and publication.id != settings.vk_canary_publication_id
+        ):
+            publication.status = PublicationStatus.FAILED
+            publication.failure_code = "VK_CANARY_SCOPE_MISMATCH"
+            publication.failure_message = "VK canary scope blocked this publication."
+            publication.execution_token = None
+            await ActivityLogService(self.session).record(
+                "PUBLICATION_FAILED",
+                operation_key=f"publication-canary-blocked:{publication.id}",
+                campaign_id=publication.campaign_id,
+                content_item_id=publication.content_item_id,
+                metadata={
+                    "publication_id": str(publication.id),
+                    "failure_code": publication.failure_code,
+                },
+            )
+            await self.session.commit()
+            await self.session.refresh(publication)
+            return await self._response(publication)
         if (
             publication.approved_for_publish_at is None
             or publication.approved_for_publish_by is None
