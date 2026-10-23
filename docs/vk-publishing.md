@@ -148,3 +148,9 @@ PUBLICATION_AUTO_DISPATCH_MAX_LATENESS_SECONDS, rather than a fixed hour.
 Inventory PASS means the read completed with VK disabled and no in-flight VK
 publication; the operator must still review the rows before selecting a canary.
 No inventory command modifies business state, credentials or provider settings.
+
+The runtime operator first requires successful database/Redis/schema readiness,
+then checks BUILD_SHA from application settings inside backend, publication
+worker, control worker and scheduler against the clean checkout HEAD. It does
+not expect release metadata in the readiness response. A missing or different
+SHA in any role blocks the command before activation.
