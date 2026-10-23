@@ -81,13 +81,9 @@ class VKCredentialState:
             )
         redirect = urlparse(self.redirect_uri)
         if redirect.scheme not in {"https", "http"} or not redirect.netloc:
-            raise VKCredentialError(
-                "VK_CREDENTIALS_INVALID", "VK redirect URI is invalid."
-            )
+            raise VKCredentialError("VK_CREDENTIALS_INVALID", "VK redirect URI is invalid.")
         if redirect.scheme == "http" and redirect.hostname not in {"localhost", "127.0.0.1"}:
-            raise VKCredentialError(
-                "VK_CREDENTIALS_INVALID", "VK redirect URI must use HTTPS."
-            )
+            raise VKCredentialError("VK_CREDENTIALS_INVALID", "VK redirect URI must use HTTPS.")
         if not scope_allows_publishing(self.scope):
             raise VKCredentialError(
                 "VK_PERMISSION_ERROR", "VK token lacks wall or groups permissions."
@@ -156,9 +152,7 @@ class VKCredentialStore:
 
     def _read(self) -> VKCredentialState:
         if self.path.is_symlink() or not self.path.is_file():
-            raise VKCredentialError(
-                "VK_CREDENTIALS_INVALID", "VK credential file is unavailable."
-            )
+            raise VKCredentialError("VK_CREDENTIALS_INVALID", "VK credential file is unavailable.")
         mode = stat.S_IMODE(self.path.stat().st_mode)
         if mode & (stat.S_IRWXG | stat.S_IRWXO):
             raise VKCredentialError(

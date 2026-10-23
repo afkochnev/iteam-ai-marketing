@@ -7,9 +7,8 @@ is a separate credential and must never be used by the publication worker.
 ## Credential lifecycle
 
 VK ID access tokens are short-lived. The authorization response also contains a
-refresh token and `device_id`. Production stores the rotating credential state
-in `.runtime-secrets/vk/credentials.json` with mode `0600`; the directory is
-mounted only into `publication_worker`.
+refresh token and `device_id`. Production stores the rotating credential state in a dedicated Docker named
+volume with mode `0600`; that volume is mounted only into `publication_worker`.
 
 Before `wall.post`, the worker:
 

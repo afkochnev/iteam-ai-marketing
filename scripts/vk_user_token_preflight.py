@@ -12,11 +12,9 @@ import base64
 import getpass
 import hashlib
 import json
-import os
 import secrets
-import stat
+import subprocess
 import sys
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -33,7 +31,6 @@ WALL_PERMISSION = 8192
 GROUPS_PERMISSION = 262144
 REQUIRED_PERMISSION_MASK = WALL_PERMISSION | GROUPS_PERMISSION
 DEFAULT_GROUP_ID = 150574411
-DEFAULT_CREDENTIALS_FILE = Path(".runtime-secrets/vk/credentials.json")
 
 
 class PreflightError(RuntimeError):
@@ -47,7 +44,9 @@ def hidden(prompt: str) -> str:
     return value
 
 
-def post_form(url: str, *, query: dict[str, Any], form: dict[str, Any]) -> dict[str, Any]:
+def post_form(
+    url: str, *, query: dict[str, Any], form: dict[str, Any]
+) -> dict[str, Any]:
     request_url = f"{url}?{urllib.parse.urlencode(query)}"
     encoded = urllib.parse.urlencode(form).encode("utf-8")
     request = urllib.request.Request(
@@ -66,9 +65,13 @@ def post_form(url: str, *, query: dict[str, Any], form: dict[str, Any]) -> dict[
             description = payload.get("error_description", "")
         except (ValueError, AttributeError):
             error, description = "HTTP_ERROR", ""
-        raise PreflightError(f"VK ID отклонил запрос: {error} {description}".strip()) from exc
+        raise PreflightError(
+            f"VK ID отклонил запрос: {error} {description}".strip()
+        ) from exc
     except urllib.error.URLError as exc:
-        raise PreflightError("Не удалось подключиться к VK. Проверьте сеть и повторите.") from exc
+        raise PreflightError(
+            "Не удалось подключиться к VK. Проверьте сеть и повторите."
+        ) from exc
     try:
         payload = json.loads(raw)
     except ValueError as exc:
@@ -96,7 +99,11 @@ def api_call(method: str, access_token: str, **params: Any) -> Any:
     if "error" in payload:
         error = payload["error"]
         code = error.get("error_code", "?") if isinstance(error, dict) else "?"
-        message = error.get("error_msg", "VK API error") if isinstance(error, dict) else "VK API error"
+        message = (
+            error.get("error_msg", "VK API error")
+            if isinstance(error, dict)
+            else "VK API error"
+        )
         raise PreflightError(f"{method}: VK API error {code}: {message}")
     if "response" not in payload:
         raise PreflightError(f"{method}: VK API не вернул response.")
@@ -113,7 +120,9 @@ def parse_redirect(value: str) -> dict[str, str]:
         try:
             payload = json.loads(combined["payload"][0])
         except (ValueError, TypeError) as exc:
-            raise PreflightError("Не удалось разобрать payload из redirect URL.") from exc
+            raise PreflightError(
+                "Не удалось разобрать payload из redirect URL."
+            ) from exc
         if isinstance(payload, dict):
             for key, item in payload.items():
                 combined.setdefault(str(key), []).append(str(item))
@@ -190,7 +199,9 @@ def normalize_group_list(response: Any) -> list[dict[str, Any]]:
     return []
 
 
-def read_only_preflight(access_token: str, *, group_id: int, expected_user_id: int) -> dict[str, Any]:
+def read_only_preflight(
+    access_token: str, *, group_id: int, expected_user_id: int
+) -> dict[str, Any]:
     users = api_call("users.get", access_token, fields="screen_name")
     if not isinstance(users, list) or len(users) != 1 or not isinstance(users[0], dict):
         raise PreflightError("users.get не подтвердил единственного пользователя.")
@@ -207,9 +218,16 @@ def read_only_preflight(access_token: str, *, group_id: int, expected_user_id: i
         )
 
     group_details = normalize_group_list(
-        api_call("groups.getById", access_token, group_ids=str(group_id), fields="screen_name")
+        api_call(
+            "groups.getById",
+            access_token,
+            group_ids=str(group_id),
+            fields="screen_name",
+        )
     )
-    target = next((item for item in group_details if int(item.get("id", 0)) == group_id), None)
+    target = next(
+        (item for item in group_details if int(item.get("id", 0)) == group_id), None
+    )
     if target is None:
         raise PreflightError("groups.getById не подтвердил целевое сообщество.")
 
@@ -222,7 +240,9 @@ def read_only_preflight(access_token: str, *, group_id: int, expected_user_id: i
         fields="screen_name,admin_level,is_admin",
     )
     admin_groups = normalize_group_list(administered)
-    managed = next((item for item in admin_groups if int(item.get("id", 0)) == group_id), None)
+    managed = next(
+        (item for item in admin_groups if int(item.get("id", 0)) == group_id), None
+    )
     if managed is None:
         raise PreflightError("Пользователь не управляет целевым сообществом.")
 
@@ -239,26 +259,103 @@ def read_only_preflight(access_token: str, *, group_id: int, expected_user_id: i
     }
 
 
-def atomic_write_credentials(path: Path, payload: dict[str, Any]) -> None:
-    parent = path.parent
-    parent.mkdir(parents=True, exist_ok=True)
-    if parent.is_symlink():
-        raise PreflightError("Каталог credentials не должен быть symlink.")
-    os.chmod(parent, stat.S_IRWXU)
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".credentials.", dir=parent)
-    temporary = Path(temporary_name)
+def provision_docker_volume(repository_dir: Path, payload: dict[str, Any]) -> None:
+    writer = r"""
+import json
+import os
+import sys
+import tempfile
+from pathlib import Path
+
+target = Path("/run/iteam-vk")
+credentials = target / "credentials.json"
+data = sys.stdin.read()
+parsed = json.loads(data)
+if not isinstance(parsed, dict):
+    raise SystemExit("invalid credential payload")
+target.mkdir(parents=True, exist_ok=True)
+os.chown(target, 10001, 10001)
+os.chmod(target, 0o700)
+descriptor, temporary_name = tempfile.mkstemp(prefix=".credentials.", dir=target)
+temporary = Path(temporary_name)
+try:
+    os.fchown(descriptor, 10001, 10001)
+    os.fchmod(descriptor, 0o600)
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(json.dumps(parsed, ensure_ascii=False, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, credentials)
+    os.chown(credentials, 10001, 10001)
+    os.chmod(credentials, 0o600)
+finally:
+    if temporary.exists():
+        temporary.unlink()
+"""
+    verifier = r"""
+import json
+import os
+import stat
+from pathlib import Path
+
+path = Path("/run/iteam-vk/credentials.json")
+payload = json.loads(path.read_text(encoding="utf-8"))
+mode = stat.S_IMODE(path.stat().st_mode)
+if mode != 0o600 or os.geteuid() != 10001:
+    raise SystemExit("credential ownership or mode check failed")
+if int(payload.get("owner_id", 0)) >= 0 or not payload.get("refresh_token"):
+    raise SystemExit("credential payload verification failed")
+with path.open("a", encoding="utf-8"):
+    pass
+"""
+    base = [
+        "docker",
+        "compose",
+        "run",
+        "--rm",
+        "-T",
+        "--no-deps",
+    ]
     try:
-        os.fchmod(descriptor, stat.S_IRUSR | stat.S_IWUSR)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, sort_keys=True)
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
-    finally:
-        if temporary.exists():
-            temporary.unlink()
+        subprocess.run(
+            [
+                *base,
+                "--user",
+                "0:0",
+                "--entrypoint",
+                "python",
+                "publication_worker",
+                "-c",
+                writer,
+            ],
+            cwd=repository_dir,
+            input=json.dumps(payload, ensure_ascii=False),
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+        subprocess.run(
+            [
+                *base,
+                "--user",
+                "10001:10001",
+                "--entrypoint",
+                "python",
+                "publication_worker",
+                "-c",
+                verifier,
+            ],
+            cwd=repository_dir,
+            text=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise PreflightError(
+            "Не удалось сохранить VK credentials в изолированный Docker volume."
+        ) from exc
 
 
 def required_token_fields(payload: dict[str, Any]) -> tuple[str, str, int, int, str]:
@@ -282,13 +379,16 @@ def main() -> int:
     parser.add_argument("--client-id", type=int)
     parser.add_argument("--redirect-uri")
     parser.add_argument("--group-id", type=int, default=DEFAULT_GROUP_ID)
-    parser.add_argument("--credentials-file", type=Path, default=DEFAULT_CREDENTIALS_FILE)
+    parser.add_argument("--repository-dir", type=Path, default=Path.cwd())
     parser.add_argument("--provision", action="store_true")
     args = parser.parse_args()
 
     try:
         client_id = args.client_id or int(input("VK ID application ID: ").strip())
-        redirect_uri = args.redirect_uri or input("Точный redirect URI из кабинета VK ID: ").strip()
+        redirect_uri = (
+            args.redirect_uri
+            or input("Точный redirect URI из кабинета VK ID: ").strip()
+        )
         if client_id <= 0 or not redirect_uri:
             raise PreflightError("Application ID или redirect URI не заданы.")
         group_id = args.group_id
@@ -296,20 +396,28 @@ def main() -> int:
             raise PreflightError("Group ID должен быть положительным.")
 
         code_verifier = secrets.token_urlsafe(64)
-        code_challenge = base64.urlsafe_b64encode(
-            hashlib.sha256(code_verifier.encode("ascii")).digest()
-        ).rstrip(b"=").decode("ascii")
+        code_challenge = (
+            base64.urlsafe_b64encode(
+                hashlib.sha256(code_verifier.encode("ascii")).digest()
+            )
+            .rstrip(b"=")
+            .decode("ascii")
+        )
         state = secrets.token_urlsafe(32)
-        authorize_url = f"{VK_ID_AUTHORIZE}?{urllib.parse.urlencode({
-            'response_type': 'code',
-            'client_id': client_id,
-            'redirect_uri': redirect_uri,
-            'scope': 'wall groups',
-            'state': state,
-            'code_challenge': code_challenge,
-            'code_challenge_method': 'S256',
-            'prompt': 'consent',
-        })}"
+        authorize_url = f"{VK_ID_AUTHORIZE}?{
+            urllib.parse.urlencode(
+                {
+                    'response_type': 'code',
+                    'client_id': client_id,
+                    'redirect_uri': redirect_uri,
+                    'scope': 'wall groups',
+                    'state': state,
+                    'code_challenge': code_challenge,
+                    'code_challenge_method': 'S256',
+                    'prompt': 'consent',
+                }
+            )
+        }"
 
         print("\nОткройте URL авторизации VK ID. Он не содержит access token:")
         print(authorize_url)
@@ -333,8 +441,10 @@ def main() -> int:
             code_verifier=code_verifier,
             state=state,
         )
-        access_token, refresh_value, _expires, user_id, _scope = required_token_fields(issued)
-        first = read_only_preflight(access_token, group_id=group_id, expected_user_id=user_id)
+        access_token, refresh_value, _expires, user_id, _scope = required_token_fields(
+            issued
+        )
+        read_only_preflight(access_token, group_id=group_id, expected_user_id=user_id)
 
         refreshed = refresh_token(
             client_id=client_id,
@@ -343,8 +453,12 @@ def main() -> int:
             refresh_token_value=refresh_value,
             expected_user_id=user_id,
         )
-        access_token, refresh_value, expires_in, user_id, scope = required_token_fields(refreshed)
-        second = read_only_preflight(access_token, group_id=group_id, expected_user_id=user_id)
+        access_token, refresh_value, expires_in, user_id, scope = required_token_fields(
+            refreshed
+        )
+        second = read_only_preflight(
+            access_token, group_id=group_id, expected_user_id=user_id
+        )
 
         user = second["user"]
         group = second["group"]
@@ -378,18 +492,23 @@ def main() -> int:
                 "scope": scope,
                 "access_token": access_token,
                 "refresh_token": refresh_value,
-                "expires_at": (datetime.now(UTC) + timedelta(seconds=expires_in)).isoformat(),
+                "expires_at": (
+                    datetime.now(UTC) + timedelta(seconds=expires_in)
+                ).isoformat(),
             }
-            atomic_write_credentials(args.credentials_file, credentials)
-            print(f"- Credentials provisioned: {args.credentials_file}")
-            print("- File mode: 0600")
+            provision_docker_volume(args.repository_dir.resolve(), credentials)
+            print("- Credentials provisioned: isolated Docker volume")
+            print("- Runtime owner/mode: uid=10001 / 0600")
         else:
             print("- Credentials provisioned: NO; tokens discarded")
         return 0
     except (PreflightError, ValueError) as exc:
         print("\nVK USER TOKEN PREFLIGHT: FAIL", file=sys.stderr)
         print(f"- {exc}", file=sys.stderr)
-        print("- wall.post / other VK writes / DB writes / OpenAI calls: 0", file=sys.stderr)
+        print(
+            "- wall.post / other VK writes / DB writes / OpenAI calls: 0",
+            file=sys.stderr,
+        )
         print("- Token values printed: 0", file=sys.stderr)
         return 1
 

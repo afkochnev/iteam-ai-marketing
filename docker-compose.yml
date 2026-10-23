@@ -121,7 +121,7 @@ services:
     command: celery -A app.workers.celery_app:celery_app worker --loglevel=INFO --queues=publication
     profiles: [publishing]
     volumes:
-      - ${VK_PUBLISHING_STATE_DIR:-./.runtime-secrets/vk}:/run/iteam-vk
+      - vk_publishing_state:/run/iteam-vk
     environment:
       <<: *no-metrics-environment
       WORKER_ROLE: publication
@@ -172,3 +172,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  vk_publishing_state:
