@@ -167,3 +167,19 @@ worker requires the same exact event and active canary gate before an early
 provider call. Scheduled time and approved plan remain unchanged. Schedulers,
 other UUIDs, ordinary unrestricted VK mode and Telegram retain their existing
 time checks. Never promote while a canary is in flight.
+
+### Safe VK failure diagnostics
+
+New `PUBLICATION_FAILED` audit events for VK API errors include `vk_error_code`
+and, when supplied, `vk_error_subcode`. Only JSON integers in the range
+0..2147483647 are accepted; missing or malformed values are omitted. The existing
+`failure_code`, safe failure message, retry policy, and canary gates are unchanged.
+For example, VK error 15/subcode 1133 identifies a method permission denial,
+while subcode 1134 identifies an application type permission denial (see the
+[official VK error schema](https://github.com/VKCOM/vk-api-schema/blob/master/errors.json)).
+Do not infer either subcode from the generic `VK_PERMISSION_ERROR` label.
+
+Raw provider messages, request parameters, credentials, and callback URLs are
+never copied into this diagnostic metadata. Previously recorded failures cannot
+be enriched retroactively: the original VK response was not retained. Installing
+this change does not authorize a new publishing attempt or enable VK.

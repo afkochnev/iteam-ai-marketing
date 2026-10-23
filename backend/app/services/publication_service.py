@@ -1499,6 +1499,7 @@ class PublicationService:
                 metadata={
                     "publication_id": str(publication.id),
                     "failure_code": publication.failure_code,
+                    **error.safe_diagnostics(),
                 },
             )
             await self.session.commit()

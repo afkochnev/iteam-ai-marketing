@@ -26,7 +26,34 @@ class TelegramProviderError(PublicationProviderError):
 
 
 class VKProviderError(PublicationProviderError):
-    pass
+    def __init__(
+        self,
+        code: str,
+        message: str,
+        *,
+        retryable: bool = False,
+        ambiguous: bool = False,
+        error_code: int | None = None,
+        error_subcode: int | None = None,
+    ):
+        super().__init__(code, message, retryable=retryable, ambiguous=ambiguous)
+        # Accept only bounded JSON integers, never provider text or request parameters.
+        self.error_code = self._numeric_code(error_code)
+        self.error_subcode = self._numeric_code(error_subcode)
+
+    @staticmethod
+    def _numeric_code(value: object) -> int | None:
+        return value if type(value) is int and 0 <= value <= 2_147_483_647 else None
+
+    def safe_diagnostics(self) -> dict[str, int]:
+        return {
+            key: value
+            for key, value in (
+                ("vk_error_code", self.error_code),
+                ("vk_error_subcode", self.error_subcode),
+            )
+            if value is not None
+        }
 
 
 @dataclass(frozen=True)
@@ -189,14 +216,23 @@ class VKProvider:
         raw_error = payload.get("error")
         if not isinstance(raw_error, dict):
             return None
-        code = int(raw_error.get("error_code", 0))
+        code = VKProviderError._numeric_code(raw_error.get("error_code")) or 0
+        subcode = VKProviderError._numeric_code(raw_error.get("error_subcode"))
         if code in {5, 27}:
-            return code, VKProviderError("VK_AUTH_ERROR", "VK authentication failed.")
-        if code in {7, 15}:
-            return code, VKProviderError("VK_PERMISSION_ERROR", "VK access was denied.")
-        if code in {6, 9}:
-            return code, VKProviderError("VK_RATE_LIMIT", "VK rate limit reached.", retryable=True)
-        return code, VKProviderError("VK_BAD_REQUEST", "VK rejected the message.")
+            label, message, retryable = "VK_AUTH_ERROR", "VK authentication failed.", False
+        elif code in {7, 15}:
+            label, message, retryable = "VK_PERMISSION_ERROR", "VK access was denied.", False
+        elif code in {6, 9}:
+            label, message, retryable = "VK_RATE_LIMIT", "VK rate limit reached.", True
+        else:
+            label, message, retryable = "VK_BAD_REQUEST", "VK rejected the message.", False
+        return code, VKProviderError(
+            label,
+            message,
+            retryable=retryable,
+            error_code=VKProviderError._numeric_code(raw_error.get("error_code")),
+            error_subcode=subcode,
+        )
 
     async def publish(self, *, text: str, chat_id: str) -> ProviderPublicationResult:
         # Target validation is deliberately before credential access or any network call.
