@@ -37,6 +37,22 @@ def write_credentials(path: Path, *, owner_id: int = -150574411, expired: bool =
     os.chmod(path, 0o600)
 
 
+def successful_refresh(request: httpx.Request) -> httpx.Response:
+    return httpx.Response(
+        200,
+        json={
+            "access_token": "new-access",
+            "refresh_token": "new-refresh",
+            "expires_in": 3600,
+            "id_token": "id-token",
+            "state": request.url.params["state"],
+            "token_type": "Bearer",
+            "user_id": 176199961,
+            "scope": "wall groups",
+        },
+    )
+
+
 async def test_expired_vk_credentials_are_refreshed_and_rotated_atomically(
     tmp_path: Path,
 ) -> None:
@@ -52,19 +68,7 @@ async def test_expired_vk_credentials_are_refreshed_and_rotated_atomically(
         assert request.url.params["client_id"] == "123456"
         assert request.url.params["device_id"] == "device-1"
         assert parse_qs(request.content.decode())["refresh_token"] == ["old-refresh"]
-        return httpx.Response(
-            200,
-            json={
-                "access_token": "new-access",
-                "refresh_token": "new-refresh",
-                "expires_in": 3600,
-                "id_token": "id-token",
-                "state": request.url.params["state"],
-                "token_type": "Bearer",
-                "user_id": 176199961,
-                "scope": "wall groups",
-            },
-        )
+        return successful_refresh(request)
 
     store = VKCredentialStore(
         path,
@@ -133,6 +137,68 @@ async def test_vk_refresh_state_mismatch_does_not_replace_credentials(tmp_path: 
         await store.access_token()
     assert mismatch.value.code == "VK_TOKEN_REFRESH_ERROR"
     assert path.read_text(encoding="utf-8") == before
+
+
+async def test_vk_refresh_does_not_return_new_token_when_persistence_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "vk" / "credentials.json"
+    write_credentials(path)
+    before = path.read_text(encoding="utf-8")
+
+    def fail_replace(_source: object, _target: object) -> None:
+        raise OSError("simulated volume failure")
+
+    monkeypatch.setattr("app.integrations.vk_credentials.os.replace", fail_replace)
+    store = VKCredentialStore(
+        path,
+        owner_id=-150574411,
+        token_endpoint="https://id.vk.ru/oauth2/auth",
+        refresh_skew_seconds=120,
+        transport=httpx.MockTransport(successful_refresh),
+    )
+
+    with pytest.raises(VKCredentialError) as failure:
+        await store.access_token()
+    assert failure.value.code == "VK_CREDENTIALS_IO_ERROR"
+    assert failure.value.retryable is True
+    assert path.read_text(encoding="utf-8") == before
+
+
+async def test_vk_credentials_require_exact_file_mode(tmp_path: Path) -> None:
+    path = tmp_path / "vk" / "credentials.json"
+    write_credentials(path, expired=False)
+    os.chmod(path, 0o640)
+    store = VKCredentialStore(
+        path,
+        owner_id=-150574411,
+        token_endpoint="https://id.vk.ru/oauth2/auth",
+        refresh_skew_seconds=120,
+    )
+
+    with pytest.raises(VKCredentialError) as permissions:
+        await store.access_token()
+    assert permissions.value.code == "VK_CREDENTIALS_PERMISSIONS"
+
+
+async def test_vk_credentials_reject_unknown_schema(tmp_path: Path) -> None:
+    path = tmp_path / "vk" / "credentials.json"
+    write_credentials(path, expired=False)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["schema_version"] = 2
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    os.chmod(path, 0o600)
+    store = VKCredentialStore(
+        path,
+        owner_id=-150574411,
+        token_endpoint="https://id.vk.ru/oauth2/auth",
+        refresh_skew_seconds=120,
+    )
+
+    with pytest.raises(VKCredentialError) as schema:
+        await store.access_token()
+    assert schema.value.code == "VK_CREDENTIALS_INVALID"
 
 
 async def test_vk_credentials_are_bound_to_exact_community_owner(tmp_path: Path) -> None:
