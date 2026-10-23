@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   apply:
-    if: github.event.head_commit.message == 'Stage VK refreshable publishing workflow'
+    if: github.event.head_commit.message == 'Assemble VK publishing patch chunks'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,15 +28,42 @@ jobs:
           set -euo pipefail
           git merge-base --is-ancestor 7cb279b2f682c390dcdb2a6898f11ed042feb867 HEAD
 
-      - name: Decode and apply reviewed patch
+      - name: Assemble, verify and apply reviewed patch
         shell: bash
         run: |
           set -euo pipefail
-          base64 --decode .github/patches/vk-refreshable-publishing.patch.gz.b64 > /tmp/vk.patch.gz
+          cat \
+            .github/patches/vk-refreshable-publishing.part00 \
+            .github/patches/vk-refreshable-publishing.part01 \
+            .github/patches/vk-refreshable-publishing.part02 \
+            .github/patches/vk-refreshable-publishing.part03_00 \
+            .github/patches/vk-refreshable-publishing.part03_01 \
+            .github/patches/vk-refreshable-publishing.part03_02 \
+            .github/patches/vk-refreshable-publishing.part03_03 \
+            .github/patches/vk-refreshable-publishing.part03_04 \
+            .github/patches/vk-refreshable-publishing.part04_00 \
+            .github/patches/vk-refreshable-publishing.part04_01 \
+            .github/patches/vk-refreshable-publishing.part04_02 \
+            .github/patches/vk-refreshable-publishing.part04_03 \
+            .github/patches/vk-refreshable-publishing.part04_04 \
+            .github/patches/vk-refreshable-publishing.part05_00 \
+            .github/patches/vk-refreshable-publishing.part05_01 \
+            .github/patches/vk-refreshable-publishing.part05_02 \
+            .github/patches/vk-refreshable-publishing.part05_03 \
+            > /tmp/vk.patch.gz.b64
+          base64 --decode /tmp/vk.patch.gz.b64 > /tmp/vk.patch.gz
+          echo 'b529d95f236ba2a5866e976875fd48bbd72dff3b0af1a9f6c58b5ec82d330111  /tmp/vk.patch.gz' | sha256sum --check -
           gzip --decompress /tmp/vk.patch.gz
           git apply --check /tmp/vk.patch
           git apply --index /tmp/vk.patch
           git rm .github/patches/vk-refreshable-publishing.patch.gz.b64
+          git rm .github/patches/vk-refreshable-publishing.part00
+          git rm .github/patches/vk-refreshable-publishing.part01
+          git rm .github/patches/vk-refreshable-publishing.part02
+          git rm .github/patches/vk-refreshable-publishing.part03
+          git rm .github/patches/vk-refreshable-publishing.part03_*
+          git rm .github/patches/vk-refreshable-publishing.part04_*
+          git rm .github/patches/vk-refreshable-publishing.part05_*
           git rm .github/workflows/apply-vk-refreshable-publishing.yml
 
       - name: Commit branch changes
