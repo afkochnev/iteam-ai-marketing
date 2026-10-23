@@ -192,6 +192,7 @@ async def test_publication_api_routes_execution_with_claim_token(monkeypatch, ch
     service = SimpleNamespace(
         claim_for_publish=AsyncMock(return_value=publication),
         _locked=AsyncMock(return_value=publication),
+        has_canary_retry=AsyncMock(return_value=False),
     )
     monkeypatch.setattr(publication_api, "PublicationService", lambda _session: service)
     monkeypatch.setattr(publication_api.ActivityLogService, "record", AsyncMock())
