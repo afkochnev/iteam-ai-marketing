@@ -7,8 +7,9 @@ is a separate credential and must never be used by the publication worker.
 ## Credential lifecycle
 
 VK ID access tokens are short-lived. The authorization response also contains a
-refresh token and `device_id`. Production stores the rotating credential state in a dedicated Docker named
-volume with mode `0600`; that volume is mounted only into `publication_worker`.
+refresh token and `device_id`. Production stores the rotating credential state
+in a dedicated Docker named volume with mode `0600`; that volume is mounted only
+into `publication_worker`.
 
 Before `wall.post`, the worker:
 
@@ -43,6 +44,20 @@ redirect URL through a hidden prompt. It then performs only:
 It never calls `wall.post`, never changes PostgreSQL, and never prints token
 values. Credentials are written only after the full preflight and refresh
 lifecycle pass.
+
+## Read-only publication inventory
+
+Before enabling the provider, inspect every existing VK publication while the
+provider is still disabled:
+
+```bash
+./scripts/vk_publishing_inventory.sh
+```
+
+The inventory reports due, overdue, future, active, failed, and terminal VK
+rows. It performs read-only PostgreSQL queries and makes no provider calls. Any
+row that could be selected by automatic dispatch must be explicitly reviewed
+before activation.
 
 ## Activation gates
 
