@@ -1,0 +1,79 @@
+name: Fix PR41 Ruff findings
+
+on:
+  push:
+    branches:
+      - feat/vk-refreshable-publishing
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fix-pr41-ruff
+  cancel-in-progress: false
+
+jobs:
+  fix:
+    if: github.event.head_commit.message == 'Stage PR41 Ruff fixes'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/vk-refreshable-publishing
+          fetch-depth: 0
+
+      - name: Apply exact Ruff fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path("backend/app/integrations/vk_credentials.py")
+          text = path.read_text(encoding="utf-8")
+          replacements = {
+              "        snapshot.expires_at_datetime\n":
+                  "        _ = snapshot.expires_at_datetime\n",
+              '''                    raise VKCredentialError(\n                        "VK_CREDENTIALS_SCOPE_MISSING", "Refreshed VK token lacks wall/groups access."\n                    )''':
+                  '''                    raise VKCredentialError(\n                        "VK_CREDENTIALS_SCOPE_MISSING",\n                        "Refreshed VK token lacks wall/groups access.",\n                    )''',
+              '''                    raise VKCredentialError(\n                        "VK_CREDENTIALS_USER_MISMATCH", "Refreshed VK token belongs to another user."\n                    )''':
+                  '''                    raise VKCredentialError(\n                        "VK_CREDENTIALS_USER_MISMATCH",\n                        "Refreshed VK token belongs to another user.",\n                    )''',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f"Expected vk_credentials.py text not found: {old!r}")
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding="utf-8")
+
+          path = Path("backend/app/maintenance/vk_publishing_credentials.py")
+          text = path.read_text(encoding="utf-8")
+          replacements = {
+              '''                raise ProvisioningError("identity", "Authorized VK user does not match expected user.")''':
+                  '''                raise ProvisioningError(\n                    "identity",\n                    "Authorized VK user does not match expected user.",\n                )''',
+              '''        "user_name": " ".join(\n            part for part in (str(user.get("first_name", "")), str(user.get("last_name", ""))) if part\n        ),''':
+                  '''        "user_name": " ".join(\n            part\n            for part in (\n                str(user.get("first_name", "")),\n                str(user.get("last_name", "")),\n            )\n            if part\n        ),''',
+              '''    parser.add_argument(\n        "command", choices=("preflight", "provision", "status", "refresh"), nargs="?", default="status"\n    )''':
+                  '''    parser.add_argument(\n        "command",\n        choices=("preflight", "provision", "status", "refresh"),\n        nargs="?",\n        default="status",\n    )''',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f"Expected vk_publishing_credentials.py text not found: {old!r}")
+              text = text.replace(old, new, 1)
+          path.write_text(text, encoding="utf-8")
+          PY
+
+          python3 -m compileall -q \
+            backend/app/integrations/vk_credentials.py \
+            backend/app/maintenance/vk_publishing_credentials.py
+          git rm .github/workflows/fix-pr41-ruff.yml
+
+      - name: Commit fixes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'Alexander'
+          git config user.email 'afkochnev@gmail.com'
+          git add backend/app/integrations/vk_credentials.py \
+            backend/app/maintenance/vk_publishing_credentials.py
+          git commit -m 'Fix PR41 Ruff findings'
+          git push origin HEAD:feat/vk-refreshable-publishing
