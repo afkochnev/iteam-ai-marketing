@@ -96,12 +96,27 @@ After verifying the exact post on the community wall, promote to normal
 automatic delivery:
 
 ```bash
-./scripts/vk-publishing-runtime.sh promote
+./scripts/vk-publishing-runtime.sh promote 1142723f-4c25-4334-8f22-7e3ceb1f55f4
 ```
 
-Promotion requires the canary to be durably `PUBLISHED`, bound to owner
-`-150574411`, with an external post id. It also refuses promotion if any other
-VK rows would become immediately due inside the automatic dispatch window.
+Promotion requires VK to be explicitly disabled in configuration and all four
+runtime roles. The UUID is mandatory; the gate may be empty or match that UUID.
+No intermediate canary arming or publication retry is needed. The canary must be
+approved, durably `PUBLISHED`, bound to owner `-150574411`, with an external post
+id and a delivery timestamp. Its audit and business state are read only.
+
+The worker must select a valid isolated credential store with an access token
+valid beyond the refresh leeway. If expired, perform a separately authorized
+refresh/read-only preflight first; promote itself does not refresh or call VK.
+
+Promotion refuses any VK `PUBLISHING` rows, any overdue `SCHEDULED` rows (including
+those outside the dispatch lateness window), missing schedule times, or schedules
+within the next five minutes. Resolve historical rows through the application's
+approved cancel/reschedule workflow before promotion; never edit the DB manually.
+Future schedules must be reviewed in the printed inventory. The five-minute
+quiet interval covers normal restart time and is not a lock on concurrent human
+scheduling: avoid scheduling during activation and rerun inventory immediately
+before the separately authorized command.
 
 Emergency disable:
 

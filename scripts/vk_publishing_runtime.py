@@ -454,39 +454,92 @@ def arm_retry_canary(publication_id: UUID, *, new_authorization: bool = False) -
     )
 
 
-def promote() -> None:
+def promotion_runtime_preflight(canary_id: UUID) -> None:
+    """Read only: runtime must be disabled and the worker credential fresh."""
+    base = (
+        "from app.core.config import settings; "
+        "assert not settings.vk_publishing_enabled, 'VK must be disabled'; "
+        f"assert (settings.vk_owner_id, settings.vk_client_id, settings.vk_expected_user_id) == ({OWNER_ID}, 54815172, 176199961), 'Runtime target/app/user mismatch'; "
+        "assert not settings.vk_access_token, 'Static token must be absent'; "
+        "assert str(settings.vk_canary_publication_id or '') in "
+        f"('', '{canary_id}'), 'Conflicting canary gate'; "
+    )
+    credential = (
+        "from datetime import datetime, UTC, timedelta; "
+        "from app.integrations.telegram import VKProvider; "
+        "p=VKProvider(); "
+        "assert p._token is None and p._credential_store is not None, 'Rotating store required'; "
+        "s=p._credential_store.safe_status(); "
+        "assert datetime.fromisoformat(s['expires_at']) > datetime.now(UTC) + "
+        "timedelta(seconds=settings.vk_token_refresh_leeway_seconds), "
+        "'Refresh credentials separately before promote'; "
+    )
+    for service in RUNTIME_SERVICES:
+        script = (
+            base
+            + (credential if service == "publication_worker" else "")
+            + "print('PASS')"
+        )
+        if (
+            run(
+                "docker",
+                "compose",
+                "exec",
+                "-T",
+                service,
+                "python",
+                "-c",
+                script,
+                capture=True,
+            )
+            != "PASS"
+        ):
+            raise RuntimeErrorSafe("Promotion runtime preflight failed.")
+
+
+def promote(canary_id: UUID) -> None:
     release = ensure_release()
     values = validate_base_config()
+    if values.get("VK_PUBLISHING_ENABLED", "").lower() != "false":
+        raise RuntimeErrorSafe("VK must be explicitly disabled before promotion.")
+    configured_id = values.get("VK_CANARY_PUBLICATION_ID", "")
+    if configured_id and configured_id != str(canary_id):
+        raise RuntimeErrorSafe("Explicit canary conflicts with configured gate.")
+    inventory()
     credential_status()
-    no_inflight()
-    raw_id = values.get("VK_CANARY_PUBLICATION_ID", "")
-    if not raw_id:
-        raise RuntimeErrorSafe("No VK canary publication is configured.")
-    canary_id = UUID(raw_id)
+    promotion_runtime_preflight(canary_id)
     row = publication(canary_id)
-    (
-        channel,
-        state,
-        _scheduled,
-        _approved_at,
-        _approved_by,
-        failure,
-        target,
-        external_id,
-    ) = row
-    if channel != "VK" or state != "PUBLISHED" or failure:
-        raise RuntimeErrorSafe("VK canary is not durably PUBLISHED.")
+    channel, state, _, approved_at, approved_by, failure, target, external_id = row
+    if (
+        channel != "VK"
+        or state != "PUBLISHED"
+        or failure
+        or not approved_at
+        or not approved_by
+    ):
+        raise RuntimeErrorSafe("VK canary is not durably approved/PUBLISHED.")
     if target != str(OWNER_ID) or not external_id:
         raise RuntimeErrorSafe("VK canary target/external id is not verified.")
-    due_other = count(
-        "SELECT count(*) FROM publications WHERE channel = 'VK' "
-        "AND status = 'SCHEDULED' AND scheduled_at <= now() "
-        f"AND scheduled_at >= now() - make_interval(secs => {dispatch_window()}) "
-        f"AND id <> '{canary_id}'::uuid;"
+    delivered = count(
+        "SELECT count(*) FROM publications WHERE "
+        f"id='{canary_id}'::uuid AND channel='VK' AND status='PUBLISHED' "
+        "AND published_at IS NOT NULL AND failure_code IS NULL "
+        f"AND provider_target_id='{OWNER_ID}' AND external_id IS NOT NULL;"
     )
-    if due_other:
+    if delivered != 1:
+        raise RuntimeErrorSafe("VK canary has no durable delivery timestamp.")
+    # Do not silently rely on the dispatch lateness cutoff for historical backlog.
+    # A quiet five-minute interval also covers normal service restart time.
+    no_inflight()
+    unsafe = count(
+        "SELECT count(*) FROM publications WHERE channel='VK' "
+        "AND status='SCHEDULED' "
+        "AND (scheduled_at IS NULL OR scheduled_at <= now() + interval '5 minutes');"
+    )
+    if unsafe:
         raise RuntimeErrorSafe(
-            f"Refusing promotion: {due_other} other VK publication(s) are immediately due."
+            f"Refusing promotion: {unsafe} VK scheduled row(s) overdue or due within five minutes. "
+            "Resolve through the application before promotion."
         )
     apply_runtime(
         {
@@ -499,7 +552,7 @@ def promote() -> None:
     print(f"- release: {release}")
     print(f"- verified canary: {canary_id}")
     print(f"- exact owner_id: {OWNER_ID}")
-    print("- immediately due unintended rows: 0")
+    print("- overdue / immediately due / next five minutes: 0")
 
 
 def disable() -> None:
@@ -529,7 +582,8 @@ def main() -> None:
     retry.add_argument("publication_id", type=UUID)
     retry_v2 = sub.add_parser("retry-canary-v2")
     retry_v2.add_argument("publication_id", type=UUID)
-    sub.add_parser("promote")
+    promotion = sub.add_parser("promote")
+    promotion.add_argument("publication_id", type=UUID)
     sub.add_parser("disable")
     args = parser.parse_args()
     try:
@@ -545,7 +599,7 @@ def main() -> None:
         elif args.command == "retry-canary-v2":
             arm_retry_canary(args.publication_id, new_authorization=True)
         elif args.command == "promote":
-            promote()
+            promote(args.publication_id)
         else:
             disable()
     except (RuntimeErrorSafe, ValueError, OSError, subprocess.SubprocessError) as error:
