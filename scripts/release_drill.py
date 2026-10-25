@@ -324,6 +324,12 @@ def drill(first_run: int, second_run: int, output: Path, cosign: str) -> dict:
                 )
             else:
                 raise ReleaseError("DRILL_FAILURE_NOT_INJECTED")
+            failure = json.loads((state / "failure-result.json").read_text())
+            require(
+                failure["deployment_error_code"] == "INJECTED_FRONTEND_FAILURE"
+                and failure["rollback_status"] == "COMPLETED",
+                "DRILL_FAILURE_DIAGNOSTICS_MISSING",
+            )
             require(
                 runtime.snapshot()["build_sha"] == first["release_sha"]
                 and runtime.data_hash() == data_hash,
@@ -348,6 +354,7 @@ def drill(first_run: int, second_run: int, output: Path, cosign: str) -> dict:
                 "upgrade": upgraded["status"],
                 "rollback": rolled_back["status"],
                 "injected_failure_recovered": True,
+                "original_failure_code_retained": True,
                 "encrypted_backup_isolated_restore": True,
                 "business_data_hash_unchanged": True,
                 "schema_unchanged": True,

@@ -46,7 +46,133 @@ DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
 
 
 class ReleaseError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        code: str,
+        *,
+        deployment_error_code: str | None = None,
+        rollback_error_code: str | None = None,
+    ):
+        super().__init__(code)
+        self.deployment_error_code = deployment_error_code
+        self.rollback_error_code = rollback_error_code
+
+
+def failure_code(error: Exception) -> str:
+    """Only known internal codes may enter diagnostics; never exception text."""
+    fixed = {
+        "EXTERNAL_COMMAND_FAILED",
+        "TOOL_UNAVAILABLE",
+        "READINESS_TIMEOUT",
+        "FRONTEND_READINESS_TIMEOUT",
+        "WORKER_QUEUES_NOT_READY",
+        "SCHEMA_HEAD_MISMATCH",
+        "WORK_IN_FLIGHT_OR_DUE_SOON",
+        "CANARY_GATE_ACTIVE",
+        "BUILD_SHA_MISMATCH",
+        "SERVICE_TOPOLOGY_CHANGED",
+        "DATA_SERVICE_IMAGE_CHANGED",
+        "CREDENTIAL_POLICY_CHANGED",
+        "ROLLBACK_CREDENTIAL_POLICY_CHANGED",
+        "CREDENTIAL_VOLUME_MISSING",
+        "CREDENTIAL_MOUNT_LEAK",
+        "INVALID_ENVIRONMENT_METADATA",
+        "INJECTED_FRONTEND_FAILURE",
+        "INJECTED_FAILURE",
+        "DRILL_READINESS_TIMEOUT",
+        "DRILL_FRONTEND_READINESS_TIMEOUT",
+    }
+    dynamic = (
+        {
+            f"{prefix}:{name}"
+            for prefix in (
+                "SERVICE_INSTANCE_COUNT",
+                "SERVICE_NOT_RUNNING",
+                "IMAGE_REVISION_MISMATCH",
+                "RUNTIME_ENVIRONMENT_MISMATCH",
+            )
+            for name in ALL
+        }
+        | {
+            f"RUNTIME_POLICY_CHANGED:{name}:{key}"
+            for name in ALL
+            for key in (
+                "env_hash",
+                "operator_env_hash",
+                "runtime_policy_hash",
+                "command",
+                "mounts",
+            )
+        }
+        | {
+            "PERSISTED_STATE_CHANGED:" + key
+            for key in (
+                "schema",
+                "vk",
+                "telegram",
+                "canary",
+                "publication_hash",
+                "audit_hash",
+            )
+        }
+    )
+    return (
+        str(error)
+        if isinstance(error, ReleaseError) and str(error) in fixed | dynamic
+        else "UNEXPECTED_DEPLOYMENT_ERROR"
+    )
+
+
+def record_failure(path: Path, details: dict[str, Any]) -> bool:
+    # Failure to persist diagnostics must not prevent the recovery itself.
+    try:
+        save(path, details)
+        return True
+    except (OSError, ReleaseError):
+        return False
+
+
+def environment_hashes(
+    actual: list[str], baked: list[str], configured: dict[str, str | None], service: str
+) -> tuple[str, str]:
+    """Validate actual env against image metadata + exact Compose overrides."""
+    require(service in ALL, "INVALID_ENVIRONMENT_METADATA")
+
+    def parse(lines: list[str]) -> dict[str, str]:
+        values: dict[str, str] = {}
+        for line in lines:
+            require(
+                isinstance(line, str) and "=" in line, "INVALID_ENVIRONMENT_METADATA"
+            )
+            key, value = line.split("=", 1)
+            require(bool(key) and key not in values, "INVALID_ENVIRONMENT_METADATA")
+            values[key] = value
+        return values
+
+    expected = parse(baked)
+    for key, value in configured.items():
+        require(
+            isinstance(key, str)
+            and bool(key)
+            and (value is None or isinstance(value, str)),
+            "INVALID_ENVIRONMENT_METADATA",
+        )
+        if value is None:
+            expected.pop(key, None)
+        else:
+            expected[key] = value
+    ignored = {"BUILD_SHA", "COMPOSE_FILE"}
+    observed = {
+        key: value for key, value in parse(actual).items() if key not in ignored
+    }
+    expected = {key: value for key, value in expected.items() if key not in ignored}
+    require(observed == expected, "RUNTIME_ENVIRONMENT_MISMATCH:" + service)
+    operator = {key: value for key, value in configured.items() if key not in ignored}
+
+    def digest(value: dict) -> str:
+        return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+    return digest(observed), digest(operator)
 
 
 def require(value: Any, code: str) -> None:
@@ -539,14 +665,24 @@ class Runtime:
 
     def topology(self) -> dict[str, Any]:
         result = {}
+        configured = json.loads(self.compose("config", "--format", "json"))
+        image_envs: dict[str, list[str]] = {}
         for name in sorted(ALL):
             data = self.inspect(name)
             require(data["State"]["Running"], "SERVICE_NOT_RUNNING:" + name)
             config = data["Config"]
-            env = sorted(
-                line
-                for line in config["Env"]
-                if not line.startswith(("BUILD_SHA=", "COMPOSE_FILE="))
+            if data["Image"] not in image_envs:
+                image_envs[data["Image"]] = (
+                    json.loads(command(["docker", "image", "inspect", data["Image"]]))[
+                        0
+                    ]["Config"].get("Env")
+                    or []
+                )
+            env_hash, operator_env_hash = environment_hashes(
+                config.get("Env") or [],
+                image_envs[data["Image"]],
+                configured["services"][name].get("environment") or {},
+                name,
             )
             mounts = sorted(
                 (
@@ -585,14 +721,14 @@ class Runtime:
                     ).encode()
                 ).hexdigest(),
                 "reference": config["Image"],
-                "env_hash": hashlib.sha256(json.dumps(env).encode()).hexdigest(),
+                "env_hash": env_hash,
+                "operator_env_hash": operator_env_hash,
                 "command": config["Cmd"],
                 "mounts": mounts,
                 "revision": (config.get("Labels") or {}).get(
                     "org.opencontainers.image.revision"
                 ),
             }
-        configured = json.loads(self.compose("config", "--format", "json"))
         # A rendered Compose config may contain secrets. Persist only a hash of the policy.
         publication_mounts = [
             mount
@@ -715,12 +851,16 @@ def compare(before: dict[str, Any], after: dict[str, Any], sha: str) -> None:
     require(before.keys() == after.keys(), "SERVICE_TOPOLOGY_CHANGED")
     for name, old in before.items():
         new = after[name]
-        for key in ("env_hash", "runtime_policy_hash", "command", "mounts"):
+        for key in ("operator_env_hash", "runtime_policy_hash", "command", "mounts"):
             require(old[key] == new[key], "RUNTIME_POLICY_CHANGED:" + name + ":" + key)
         if name in APP:
             require(new["revision"] == sha, "IMAGE_REVISION_MISMATCH:" + name)
         else:
             require(new["image"] == old["image"], "DATA_SERVICE_IMAGE_CHANGED")
+            require(
+                new["env_hash"] == old["env_hash"],
+                "RUNTIME_POLICY_CHANGED:" + name + ":env_hash",
+            )
 
 
 def compare_snapshot(before: dict[str, Any], after: dict[str, Any], sha: str) -> None:
@@ -885,7 +1025,16 @@ def switch(
         save(state / (operation + "-result.json"), result)
         save(state / "current-release.json", value)
         return result
-    except Exception:
+    except Exception as error:
+        original_code = failure_code(error)
+        failure_path = state / (operation + "-failure.json")
+        details = {
+            "status": "DEPLOYMENT_FAILED",
+            "deployment_error_code": original_code,
+            "rollback_status": "PENDING" if paused else "NOT_REQUIRED",
+            "database_downgrade": False,
+        }
+        record_failure(failure_path, details)
         # Never restore business data or lower the Alembic revision automatically.
         if paused:
             try:
@@ -922,17 +1071,28 @@ def switch(
                     runtime.credentials() == credentials,
                     "ROLLBACK_CREDENTIAL_POLICY_CHANGED",
                 )
-                save(
-                    state / (operation + "-result.json"),
-                    {
-                        "status": "ROLLED_BACK",
-                        "previous_sha": old_sha,
-                        "database_downgrade": False,
-                    },
+            except Exception as rollback_error:
+                details.update(
+                    status="ROLLBACK_REQUIRES_OPERATOR_ATTENTION",
+                    rollback_status="FAILED",
+                    rollback_error_code=failure_code(rollback_error),
                 )
-            except Exception:
-                raise ReleaseError("ROLLBACK_REQUIRES_OPERATOR_ATTENTION") from None
-        raise ReleaseError("DEPLOY_FAILED_ROLLBACK_COMPLETED") from None
+                record_failure(failure_path, details)
+                record_failure(state / (operation + "-result.json"), details)
+                raise ReleaseError(
+                    "ROLLBACK_REQUIRES_OPERATOR_ATTENTION",
+                    deployment_error_code=original_code,
+                    rollback_error_code=details["rollback_error_code"],
+                ) from None
+            details.update(
+                status="ROLLED_BACK", rollback_status="COMPLETED", previous_sha=old_sha
+            )
+            record_failure(failure_path, details)
+            record_failure(state / (operation + "-result.json"), details)
+            raise ReleaseError(
+                "DEPLOY_FAILED_ROLLBACK_COMPLETED", deployment_error_code=original_code
+            ) from None
+        raise ReleaseError(original_code, deployment_error_code=original_code) from None
 
 
 @contextlib.contextmanager
@@ -1035,9 +1195,14 @@ def main() -> None:
             else "LOCAL_VERIFICATION_FAILED"
         )
         require(re.fullmatch(r"[A-Za-z0-9_:]+", code), "UNSAFE_ERROR_CODE")
-        print(
-            json.dumps({"status": "FAIL", "error_code": code, "automatic_retry": False})
-        )
+        details = {"status": "FAIL", "error_code": code, "automatic_retry": False}
+        if isinstance(error, ReleaseError):
+            for key in ("deployment_error_code", "rollback_error_code"):
+                value = getattr(error, key)
+                if value is not None:
+                    # These are sanitized again at the output boundary.
+                    details[key] = failure_code(ReleaseError(value))
+        print(json.dumps(details))
         raise SystemExit(1) from None
 
 
