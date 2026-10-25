@@ -529,3 +529,28 @@ async def test_director_links_to_the_first_missing_social_post_for_approved_plan
     assert workspace.director.next_step.href == (
         f"/campaigns/{campaign.id}/plan#plan-item-{plan_item.id}"
     )
+
+
+async def test_director_does_not_prioritize_approval_from_previous_plan(
+    db_session: AsyncSession,
+) -> None:
+    fixture = await workspace_fixture(db_session, with_post=True)
+    old_plan = fixture["plan"]
+    post = fixture["post"]
+    post.status = ContentStatus.WAITING_APPROVAL
+    old_plan.created_at = datetime.now(UTC) - timedelta(days=10)
+    current = PublicationPlan(
+        campaign_id=old_plan.campaign_id,
+        status=PublicationPlanStatus.APPROVED,
+        planning_horizon_start=datetime.now(UTC),
+        planning_horizon_end=datetime.now(UTC) + timedelta(days=14),
+        timezone_policy="UTC",
+        created_by_user_id=old_plan.created_by_user_id,
+        approved_at=datetime.now(UTC),
+        approved_by_user_id=old_plan.approved_by_user_id,
+    )
+    db_session.add(current)
+    await db_session.commit()
+    workspace = await CampaignWorkspaceService(db_session).get(old_plan.campaign_id)
+    assert workspace.publication_plan.id == current.id
+    assert workspace.director.next_step.entity_id != post.id

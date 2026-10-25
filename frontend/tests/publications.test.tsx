@@ -499,7 +499,7 @@ describe("publication operator actions", () => {
       provider_enabled: true,
     }]);
     render(<PublicationsPage />);
-    expect(await screen.findByText(/Готовность автоматической отправки не подтверждена/)).toBeInTheDocument();
+    expect(await screen.findByText(/Автоматическая отправка включена/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Опубликовать/ })).not.toBeInTheDocument();
     expect(screen.getByText(/Операционные действия временно недоступны/)).toBeInTheDocument();
   });

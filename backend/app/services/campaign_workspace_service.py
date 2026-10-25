@@ -964,6 +964,12 @@ class CampaignWorkspaceService:
                         else [p for posts in posts_by_item.values() for p in posts]
                     )
                     if p.status is ContentStatus.WAITING_APPROVAL
+                    and any(
+                        p.id == post.id
+                        for item in (current_plan.items if current_plan else [])
+                        if item.status is PublicationPlanItemStatus.PLANNED
+                        for post in posts_by_item.get(item.id, [])
+                    )
                 ),
                 None,
             )

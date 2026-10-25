@@ -120,7 +120,8 @@ describe("Content and approvals UI", () => {
     expect(screen.getByRole("button", { name: "Создать новую редакцию" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Отправить на доработку" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Отклонить" })).not.toBeInTheDocument();
-    expect(screen.getByText("Уже запланирована публикация версии v2.")).toBeInTheDocument();
+    expect(screen.queryByText("Уже запланирована публикация версии v2.")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Создать новую редакцию" }));
     expect(screen.getByText("Если вы создадите новую редакцию, запланированная публикация останется привязана к v2. Новая версия не заменит её автоматически.")).toBeInTheDocument();
     expect(screen.getByText(/Публикация:/)).toBeInTheDocument();
   });
