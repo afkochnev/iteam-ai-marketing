@@ -145,6 +145,7 @@ describe("publication calendar", () => {
     mocks.calendar.mockResolvedValue([]);
     render(<PublicationsPage />);
     expect(await screen.findByText(/Показана кампания «Вторая»/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "← Вторая" })).toHaveAttribute("href", "/campaigns/campaign-2");
     expect(mocks.calendar).toHaveBeenCalledTimes(1);
     expect(mocks.calendar).toHaveBeenCalledWith("campaign-2", expect.any(String), expect.any(String));
     expect(screen.getByRole("link", { name: "Показать все кампании" })).toHaveAttribute("href", "/publications");

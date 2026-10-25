@@ -82,7 +82,7 @@ export default function ContentPage() {
   if (authLoading) return <main><p>Проверяем авторизацию…</p></main>;
   return (
     <main className="page">
-      <PageBreadcrumbs items={[{ label: "Контент" }]} />
+      <PageBreadcrumbs items={[{ label: campaignId ? campaigns.find((campaign) => campaign.id === campaignId)?.name || "Кампания" : "Главная", href: campaignId ? `/campaigns/${campaignId}` : "/" }, { label: "Контент" }]} />
       <header className="page-header">
         <div><p className="eyebrow">Рабочая библиотека</p><h1>Контент</h1><p className="page-subtitle">Статьи, социальные посты и их происхождение. Откройте материал, чтобы посмотреть версии, согласования и источники.</p></div>
         <span className="subtle">Найдено: {filtered.length}</span>

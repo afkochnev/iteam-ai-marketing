@@ -23,7 +23,7 @@ export default function ApprovalsPage() {
   useEffect(() => { const timer = window.setTimeout(load, 0); return () => window.clearTimeout(timer); }, [load]);
 
   return <main className="page">
-    <PageBreadcrumbs items={[{ label: "Согласования" }]} />
+    <PageBreadcrumbs items={[{ label: "Главная", href: "/" }, { label: "Согласования" }]} />
     <header className="page-header"><div><p className="eyebrow">Решения человека</p><h1>Согласования</h1><p className="page-subtitle">Проверяйте стратегию кампании и версии материалов до следующего этапа.</p></div><Link className="button-link secondary" href="/campaigns">К кампаниям</Link></header>
     {error && <div className="empty-state" role="alert"><h2>Не удалось загрузить согласования</h2><p>{error}</p><button onClick={load}>Повторить загрузку</button></div>}
     {loading && <p role="status">Загружаем согласования…</p>}
