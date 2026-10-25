@@ -64,7 +64,17 @@ class DrillRuntime(Runtime):
             time.sleep(1)
         raise ReleaseError("DRILL_READINESS_TIMEOUT")
 
+    def workers_ready(self) -> None:
+        print("DRILL: exact worker queue readiness", flush=True)
+        try:
+            super().workers_ready()
+        except ReleaseError:
+            print("DRILL: worker queue readiness failed", flush=True)
+            raise
+        print("DRILL: worker queue readiness PASS", flush=True)
+
     def frontend_ready(self) -> None:
+        print("DRILL: frontend HTTP readiness", flush=True)
         for _ in range(60):
             try:
                 self.compose(
@@ -78,6 +88,7 @@ class DrillRuntime(Runtime):
                 return
             except ReleaseError:
                 time.sleep(1)
+        print("DRILL: frontend HTTP readiness failed", flush=True)
         raise ReleaseError("DRILL_FRONTEND_READINESS_TIMEOUT")
 
     def data_hash(self) -> str:
