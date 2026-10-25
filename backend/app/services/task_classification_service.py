@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
@@ -10,9 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.content import ContentItem, ContentType
 from app.models.publication import Publication
+from app.models.publication_plan import PublicationPlan
 from app.models.task import Task, TaskStatus, TaskType
 
-TaskClassification = Literal["actionable", "superseded", "historical"]
+TaskClassification = Literal["actionable", "superseded", "historical", "obsolete"]
 
 
 def is_legacy_feedback_task(task: Task) -> bool:
@@ -50,6 +52,31 @@ async def classify_tasks(
         )
         for task in tasks
     }
+    pending_plan_ids = [
+        task.id
+        for task in tasks
+        if task.task_type is TaskType.MANUAL
+        and task.status in {TaskStatus.READY, TaskStatus.BLOCKED}
+    ]
+    if pending_plan_ids:
+        expired = await session.execute(
+            select(
+                AgentRun.task_id,
+                PublicationPlan.planning_horizon_start,
+                PublicationPlan.planning_horizon_end,
+            )
+            .join(PublicationPlan, PublicationPlan.generated_by_agent_run_id == AgentRun.id)
+            .where(
+                AgentRun.task_id.in_(pending_plan_ids),
+                AgentRun.status == AgentRunStatus.QUEUED,
+                PublicationPlan.planning_horizon_end < datetime.now(UTC),
+            )
+        )
+        for task_id, start, end in expired:
+            result[task_id] = (
+                "obsolete",
+                f"Устаревший медиаплан: {start:%d.%m.%Y} — {end:%d.%m.%Y}. Требуется закрытие.",
+            )
     failed_plan_tasks: list[tuple[Task, str]] = []
     for task in tasks:
         if (

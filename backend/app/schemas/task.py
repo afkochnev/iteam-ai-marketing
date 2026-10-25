@@ -6,7 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.models.task import TaskPriority, TaskStatus, TaskType
 
-TaskClassification = Literal["actionable", "superseded", "historical"]
+TaskClassification = Literal["actionable", "superseded", "historical", "obsolete"]
 
 
 class TaskCreate(BaseModel):
