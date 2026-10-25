@@ -102,7 +102,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/release_drill.py --from-build-run 40201898307 --to-build-run 40208930170 --output release-drill-proof.json
+          python3 scripts/release_drill.py --latest-two --output release-drill-proof.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: release-drill-proof

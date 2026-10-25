@@ -12,6 +12,7 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import release_ops as ops
 import release_backup as backup
+import release_drill as drill
 from test_release_ops import FakeRuntime, NEW, OLD, manifest
 
 
@@ -81,6 +82,38 @@ class PolicyTests(unittest.TestCase):
             self.assertRaisesRegex(ops.ReleaseError, "FRONTEND_READINESS_TIMEOUT"),
         ):
             runtime.frontend_ready()
+
+    def test_ci_drill_uses_two_distinct_recent_builds_not_expiring_fixed_ids(self):
+        data = {
+            "workflow_runs": [
+                {
+                    "id": 30,
+                    "head_sha": NEW,
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+                {
+                    "id": 29,
+                    "head_sha": NEW,
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+                {
+                    "id": 28,
+                    "head_sha": OLD,
+                    "status": "completed",
+                    "conclusion": "success",
+                },
+            ]
+        }
+        with patch.object(drill, "gh", return_value=data):
+            self.assertEqual(drill.recent_build_pair(), (28, 30))
+        data["workflow_runs"] = data["workflow_runs"][:2]
+        with (
+            patch.object(drill, "gh", return_value=data),
+            self.assertRaises(ops.ReleaseError),
+        ):
+            drill.recent_build_pair()
 
     def gate_data(self):
         return {

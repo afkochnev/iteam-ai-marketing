@@ -23,6 +23,7 @@ from release_ops import (
     ReleaseError,
     Runtime,
     command,
+    gh,
     overlay,
     prepare,
     require,
@@ -314,6 +315,8 @@ def drill(first_run: int, second_run: int, output: Path, cosign: str) -> dict:
             result = {
                 "status": "PASS",
                 "repository": REPO,
+                "from_build_run": first_run,
+                "to_build_run": second_run,
                 "from_sha": first["release_sha"],
                 "to_sha": second["release_sha"],
                 "upgrade": upgraded["status"],
@@ -336,20 +339,47 @@ def drill(first_run: int, second_run: int, output: Path, cosign: str) -> dict:
         return result
 
 
+def recent_build_pair() -> tuple[int, int]:
+    runs = gh(
+        "actions/workflows/release-images.yml/runs?branch=main&status=success&per_page=30"
+    )
+    selected = []
+    seen = set()
+    for run in runs["workflow_runs"]:
+        if (
+            run["status"] == "completed"
+            and run["conclusion"] == "success"
+            and run["head_sha"] not in seen
+        ):
+            selected.append(run["id"])
+            seen.add(run["head_sha"])
+        if len(selected) == 2:
+            return selected[1], selected[0]
+    raise ReleaseError("TWO_SUCCESSFUL_RELEASES_REQUIRED")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--from-build-run", type=int, required=True)
-    parser.add_argument("--to-build-run", type=int, required=True)
+    parser.add_argument("--from-build-run", type=int)
+    parser.add_argument("--to-build-run", type=int)
+    parser.add_argument("--latest-two", action="store_true")
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--cosign", default="cosign")
     args = parser.parse_args()
     os.umask(0o077)
     try:
-        print(
-            json.dumps(
-                drill(args.from_build_run, args.to_build_run, args.output, args.cosign)
+        if args.latest_two:
+            require(
+                args.from_build_run is None and args.to_build_run is None,
+                "AMBIGUOUS_DRILL_RELEASES",
             )
-        )
+            first, second = recent_build_pair()
+        else:
+            require(
+                args.from_build_run and args.to_build_run, "TWO_BUILD_RUNS_REQUIRED"
+            )
+            first, second = args.from_build_run, args.to_build_run
+        print(json.dumps(drill(first, second, args.output, args.cosign)))
     except (ReleaseError, OSError, ValueError, KeyError, TypeError) as error:
         print(
             json.dumps(

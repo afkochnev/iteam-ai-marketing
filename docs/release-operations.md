@@ -55,7 +55,7 @@ Backup использует единый repeatable-read snapshot: pg_dump ср�
 
 ## Репетиция
 
-`release-tools` CI запускает unit/failure tests и настоящий disposable Compose-проект: предыдущие подписанные образы → следующие подписанные образы → возврат → искусственный сбой запуска frontend → автоматический возврат.
+`release-tools` CI выбирает два последних успешных build run с разными main SHA (ID включаются в proof), запускает unit/failure tests и настоящий disposable Compose-проект: предыдущие подписанные образы → следующие подписанные образы → возврат → искусственный сбой запуска frontend → автоматический возврат.
 
 В проекте 11 сервисов, отдельные volumes и internal network, нет опубликованных портов, bind mounts, production credentials и доступа к внешней сети. Publishing/metrics выключены, OpenAI key пуст. Через Alembic создаётся отдельная тестовая БД, штатный seed создаёт непустые fixture-данные. Проверяются encrypted backup/isolated restore, неизменность fixture-данных, schema, SHA, topology, отключённых gates и HTTP frontend после rollback. Project/volumes удаляются; в artifact уходит только metadata proof, не backup или ключ.
 
@@ -72,3 +72,5 @@ Backup использует единый repeatable-read snapshot: pg_dump ср�
 - Выполнены свежие encrypted backup/isolated restore и отдельно разрешённый production digest deploy; postflight PASS и предыдущий manifest сохранён.
 
 Документация GitHub: [environment protection](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments), [review history API](https://docs.github.com/en/rest/actions/workflow-runs#get-the-review-history-for-a-workflow-run). Настройки, CI proof и production-приёмка являются разными проверками.
+
+Release records в GitHub Actions подчиняются retention репозитория. При истёкших/отсутствующих artifacts проверка закрывается ошибкой; переход на mutable SHA-tag в качестве обхода запрещён. Для архивного release требуется восстановить проверяемые records либо отдельно пересмотреть протокол хранения. Локальные предыдущие manifests и pinned image IDs сохраняются независимо от CI artifacts.
