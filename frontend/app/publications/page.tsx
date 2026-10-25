@@ -285,6 +285,10 @@ function PublicationsWorkspace() {
     try {
       const updated = await action();
       applyPublication(updated, { campaign: row.campaign, title: row.title });
+      if (updated.id !== row.publication_id && updated.status === "SCHEDULED") {
+        setRows((current) => current.map((item) => item.publication_id === row.publication_id ? { ...item, status: "CANCELLED" } : item));
+        cache.current.delete(row.campaign.id);
+      }
       setActionNotice(successMessage);
       setFeedback((current) => ({
         ...current,
@@ -313,6 +317,14 @@ function PublicationsWorkspace() {
 
   function schedulePublication(row: CalendarRow) {
     setScheduleEditorKey(`publication:${row.publication_id}`);
+  }
+
+  async function reuseArchived(row: CalendarRow) {
+    if (!window.confirm("Создать копию архивного поста? Она потребует отдельного согласования. Отправки сейчас не будет.")) return;
+    setBusyKey(`publication:${row.publication_id}`);
+    try { const copy = await contentApi.reuse(row.content_item_id); router.push(`/content/${copy.id}#approval`); }
+    catch (reason) { setFeedback((current) => ({ ...current, [`publication:${row.publication_id}`]: { tone: "error", message: reason instanceof Error ? reason.message : "Не удалось создать копию." } })); }
+    finally { setBusyKey(null); }
   }
 
   function cancelPublication(row: CalendarRow) {
@@ -424,7 +436,12 @@ function PublicationsWorkspace() {
     ["DRAFT", "WAITING_APPROVAL", "APPROVED", "PUBLISHING"].includes(item.status)
   ));
   const published = rows.filter((item) => item.status === "PUBLISHED");
-  const cancelled = rows.filter((item) => item.status === "CANCELLED");
+  const cancelledHistory = rows.filter((item) => item.status === "CANCELLED");
+  const hasReplacement = (item: CalendarRow) => rows.some((other) => {
+    const copy = cache.current.get(other.campaign.id)?.content?.find((content) => content.id === other.content_item_id);
+    return (other.content_item_id === item.content_item_id || copy?.reuse_source_content_id === item.content_item_id) && other.publication_id !== item.publication_id && ["SCHEDULED", "PUBLISHING", "PUBLISHED"].includes(other.status);
+  });
+  const cancelled = cancelledHistory.filter((item) => !hasReplacement(item));
   const attention = rows.filter((item) => (
     item.status !== "CANCELLED" && (item.status === "FAILED" || item.failure_code)
   ));
@@ -477,7 +494,7 @@ function PublicationsWorkspace() {
   const publicationScheduleEditor = (item: CalendarRow) => {
     const key = `publication:${item.publication_id}`;
     if (scheduleEditorKey !== key) return null;
-    const rescheduling = item.status === "SCHEDULED";
+    const rescheduling = item.status === "SCHEDULED" || item.status === "CANCELLED";
     return <PublicationScheduleEditor
       editorKey={key}
       title={rescheduling ? "Перенести публикацию" : "Назначить дату публикации"}
@@ -487,7 +504,7 @@ function PublicationsWorkspace() {
       onClose={() => setScheduleEditorKey(null)}
       onSubmit={(scheduledAt) => performAction(
         item,
-        () => publicationsApi.schedule(item.publication_id, scheduledAt),
+        () => item.status === "CANCELLED" || item.publication_plan_item_id !== null ? publicationsApi.replan(item.publication_id, scheduledAt) : publicationsApi.schedule(item.publication_id, scheduledAt),
         rescheduling ? "Новое время публикации сохранено." : "Публикация запланирована.",
       )}
     />;
@@ -622,11 +639,11 @@ function PublicationsWorkspace() {
           </div><StatusBadge status={item.status} label={PUBLICATION_STATUS_LABELS[item.status]} /></div>
           {delivery(item)}
           {item.operational_data_complete ? <div className="actions">
-            {item.publication_plan_item_id === null && <button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => schedulePublication(item)}>Перенести</button>}
+            <button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => schedulePublication(item)}>Перенести</button>
             <button className="secondary" disabled={busyKey === `publication:${item.publication_id}`} onClick={() => cancelPublication(item)}>Отменить</button>
           </div> : actionUnavailable(item)}
           {publicationScheduleEditor(item)}
-          {item.publication_plan_item_id && <p className="muted">Перенос публикации из утверждённого медиаплана требует изменения медиаплана.</p>}
+          {item.publication_plan_item_id && <p className="muted">Перенос создаёт новую запись с аудитом решения. Утверждённый медиаплан сохраняется в истории без изменений.</p>}
           {actionFeedback(item)}
           <Link href={`/content/${item.content_item_id}#publication`}>Проверить пост и запланированную версию</Link>
         </article>)}</div> : rowsIncomplete || loading ? incomplete : <p className="empty-state">Запланированных публикаций пока нет. <a href="#ready">Проверить готовые посты</a></p>}
@@ -660,10 +677,13 @@ function PublicationsWorkspace() {
             <p className="row-meta"><Link href={`/campaigns/${item.campaign.id}`}>{item.campaign.name}</Link><span>{item.channel === "VK" ? "VK" : "Telegram"}{item.scheduled_at ? ` · ${formatDateTime(item.scheduled_at)}` : ""}</span>{version(item)}</p>
           </div><StatusBadge status={item.status} label={PUBLICATION_STATUS_LABELS[item.status]} /></div>
           <p>Внешняя отправка не выполняется. Запись сохранена в истории публикаций.</p>
-          {item.content_status === "ARCHIVED" && <p className="subtle">Связанный материал находится в архиве.</p>}
+          {!publicationSourceArchived(item) && <div className="actions"><Link href={`/content/${item.content_item_id}#edit`}>Редактировать материал</Link><button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => schedulePublication(item)}>Запланировать заново</button></div>}
+          {publicationScheduleEditor(item)}{actionFeedback(item)}
+          {item.content_status === "ARCHIVED" && <><p className="subtle">Архивный оригинал сохраняется. Копия потребует отдельного согласования и нового выбора времени.</p><button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => void reuseArchived(item)}>Создать копию для новой публикации</button></>}
         </article>)}</div> : rowsIncomplete || loading ? incomplete : <p className="empty-state">Отменённых публикаций нет.</p>}
       </section>
 
+      <details className="disclosure" id="cancelled-history"><summary>История отменённых публикаций · {cancelledHistory.length}</summary><div className="disclosure-body">{cancelledHistory.map((item) => <p key={item.publication_id}><Link href={`/content/${item.content_item_id}`}>{item.title}</Link> · {item.scheduled_at ? formatDateTime(item.scheduled_at) : "Без даты"}{hasReplacement(item) ? " · Есть новая запланированная или опубликованная запись" : " · Отменена"}</p>)}</div></details>
       <details className="disclosure" id="published">
         <summary>Опубликованные · {rowsIncomplete ? "неполные данные" : published.length}</summary>
         <div className="disclosure-body">{published.length ? published.map((item) => <article className="content-card" id={`publication-${item.publication_id}`} tabIndex={-1} key={item.publication_id}>

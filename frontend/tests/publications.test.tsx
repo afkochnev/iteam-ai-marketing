@@ -5,15 +5,17 @@ import PublicationsPage from "../app/publications/page";
 
 const mocks = vi.hoisted(() => ({
   user: { role: "ADMIN" },
-  router: { replace: vi.fn() },
+  router: { replace: vi.fn(), push: vi.fn() },
   searchParams: new URLSearchParams(),
   campaigns: vi.fn(),
   calendar: vi.fn(),
   publications: vi.fn(),
   content: vi.fn(),
+  reuse: vi.fn(),
   plans: vi.fn(),
   approve: vi.fn(),
   schedule: vi.fn(),
+  replan: vi.fn(),
   cancel: vi.fn(),
   cancelPlanContent: vi.fn(),
   reschedulePlanContent: vi.fn(),
@@ -35,14 +37,14 @@ vi.mock("@/lib/api", async (original) => {
   return {
     ...actual,
     campaignsApi: { ...actual.campaignsApi, list: mocks.campaigns },
-    contentApi: { ...actual.contentApi, list: mocks.content },
+    contentApi: { ...actual.contentApi, list: mocks.content, reuse: mocks.reuse },
     publicationPlansApi: { ...actual.publicationPlansApi, list: mocks.plans },
     publicationsApi: {
       ...actual.publicationsApi,
       calendar: mocks.calendar,
       listCampaign: mocks.publications,
       approve: mocks.approve,
-      schedule: mocks.schedule,
+      schedule: mocks.schedule, replan: mocks.replan,
       cancel: mocks.cancel,
       cancelPlanContent: mocks.cancelPlanContent,
       reschedulePlanContent: mocks.reschedulePlanContent,
@@ -299,7 +301,7 @@ describe("publication operator actions", () => {
     expect(within(section).queryByRole("button", { name: "Опубликовать сейчас" })).not.toBeInTheDocument();
     fireEvent.click(await within(section).findByRole("button", { name: "Отменить" }));
     await waitFor(() => expect(mocks.cancel).toHaveBeenCalledWith("overdue"));
-    expect(await screen.findByRole("status")).toHaveTextContent("Публикация отменена");
+    expect((await screen.findAllByRole("status")).some((node) => node.textContent?.includes("Публикация отменена"))).toBe(true);
     await waitFor(() => expect(within(section).queryByText("Просроченный пост")).not.toBeInTheDocument());
     const cancelledSection = screen.getByRole("region", { name: "Отменённые" });
     expect(within(cancelledSection).getByText("Просроченный пост")).toBeInTheDocument();
@@ -467,6 +469,33 @@ describe("publication operator actions", () => {
       new Date("2026-10-27T10:00").toISOString(),
     ));
     expect(within(section).getByRole("button", { name: "Отменить" })).toBeInTheDocument();
+  });
+
+  it("replans a cancelled post once and moves the old record to history", async () => {
+    mocks.content.mockResolvedValue([{ id: "post-1", title: "Отменённый пост" }]);
+    mocks.publications.mockResolvedValue([publication({ id: "cancelled-old", status: "CANCELLED" })]);
+    mocks.replan.mockResolvedValue(publication({ id: "replacement", status: "SCHEDULED", scheduled_at: "2026-10-28T10:00:00Z" }));
+    render(<PublicationsPage />);
+    const cancelled = await screen.findByRole("region", { name: "Отменённые" });
+    fireEvent.click(await within(cancelled).findByRole("button", { name: "Запланировать заново" }));
+    fireEvent.change(within(cancelled).getByLabelText("Дата и время публикации"), { target: { value: "2026-10-28T10:00" } });
+    fireEvent.click(within(cancelled).getByRole("button", { name: "Сохранить перенос" }));
+    await waitFor(() => expect(mocks.replan).toHaveBeenCalledTimes(1));
+    expect(mocks.publishNow).not.toHaveBeenCalled();
+    expect(await screen.findByText(/Есть новая запланированная или опубликованная запись/)).toBeInTheDocument();
+    expect(within(cancelled).queryByRole("button", { name: "Запланировать заново" })).not.toBeInTheDocument();
+  });
+
+  it("opens a separate copy of archived material without planning or sending it", async () => {
+    mocks.content.mockResolvedValue([{ id: "post-1", title: "Архивный пост", status: "ARCHIVED" }]);
+    mocks.publications.mockResolvedValue([publication({ id: "archived-cancelled", status: "CANCELLED" })]);
+    mocks.reuse.mockResolvedValue({ id: "new-copy" });
+    render(<PublicationsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Создать копию для новой публикации" }));
+    await waitFor(() => expect(mocks.router.push).toHaveBeenCalledWith("/content/new-copy#approval"));
+    expect(mocks.reuse).toHaveBeenCalledWith("post-1");
+    expect(mocks.replan).not.toHaveBeenCalled();
+    expect(mocks.publishNow).not.toHaveBeenCalled();
   });
 
   it("provides retry and reconciliation actions for failed publications", async () => {

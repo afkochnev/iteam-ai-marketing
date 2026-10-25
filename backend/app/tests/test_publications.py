@@ -2107,3 +2107,71 @@ async def test_vk_failure_audit_persists_only_safe_provider_diagnostics(
     assert audit.metadata_ == expected
     assert secret not in json.dumps(audit.metadata_)
     assert secret not in result.model_dump_json()
+
+
+async def test_replan_cancelled_preserves_history_and_rejects_second_delivery(db_session):
+    user, _campaign, post, version = await _approved_post(db_session)
+    service = PublicationService(db_session)
+    original = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.cancel(original.id, user)
+    when = datetime.now(UTC) + timedelta(days=2)
+    replacement = await service.replan(original.id, when, user)
+    assert replacement.id != original.id
+    assert replacement.status is PublicationStatus.SCHEDULED
+    old = await db_session.get(Publication, original.id)
+    assert old.status is PublicationStatus.CANCELLED
+    assert old.external_id is None and old.published_at is None
+    assert replacement.content_version_id == version.id
+    event_row = await db_session.scalar(
+        select(ActivityLog).where(
+            ActivityLog.operation_key == f"publication-replanned:{replacement.id}"
+        )
+    )
+    assert event_row.metadata_["source_publication_id"] == str(original.id)
+    with pytest.raises(AppError) as error:
+        await service.replan(original.id, when + timedelta(days=1), user)
+    assert error.value.code == "PUBLICATION_ALREADY_EXISTS"
+
+
+async def test_replan_rejects_inflight_or_past_schedule(db_session):
+    user, _campaign, post, version = await _approved_post(db_session)
+    service = PublicationService(db_session)
+    original = await service.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await service.cancel(original.id, user)
+    with pytest.raises(AppError) as error:
+        await service.replan(original.id, datetime.now(UTC) - timedelta(days=1), user)
+    assert error.value.code == "PUBLICATION_TIME_IN_PAST"
+    row = await db_session.get(Publication, original.id)
+    row.execution_token = str(uuid4())
+    await db_session.commit()
+    with pytest.raises(AppError) as error:
+        await service.replan(original.id, datetime.now(UTC) + timedelta(days=1), user)
+    assert error.value.code == "PUBLICATION_RECONCILIATION_REQUIRED"
+
+
+async def test_archived_post_reuse_requires_approval_and_is_idempotent(db_session):
+    from app.api.content import reuse_archived_content
+
+    user, _campaign, post, version = await _approved_post(db_session)
+    post.status = ContentStatus.ARCHIVED
+    await db_session.commit()
+    copy = await reuse_archived_content(post.id, user, db_session)
+    assert copy.id != post.id
+    assert copy.status is ContentStatus.WAITING_APPROVAL
+    assert copy.current_version.content == version.content
+    assert copy.approved_version_id is None
+    second = await reuse_archived_content(post.id, user, db_session)
+    assert second.id == copy.id
+    await db_session.refresh(post)
+    assert post.status is ContentStatus.ARCHIVED
+    assert post.current_version_id == version.id

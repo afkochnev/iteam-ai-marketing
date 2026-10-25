@@ -230,6 +230,7 @@ export default function ContentDetailPage() {
       </header>
 
       {notice && <p className="notice" role="status">{notice}</p>}
+      {item.reuse_source_content_id && <p className="notice">Это отдельная копия <Link href={`/content/${item.reuse_source_content_id}`}>архивного материала</Link>. Она требует собственного согласования. Прежний слот не восстановлен; после утверждения выберите новую дату в <Link href={`/publications?campaign_id=${item.campaign_id}#ready`}>разделе публикаций</Link>.</p>}
       {revisionProgress && revisionMessage && <section className={revisionIsStopped || revisionIsUnavailable ? "warning" : "notice"} aria-live="polite" aria-label="Статус доработки" role="status"><strong>{revisionMessage}</strong><span> · </span><Link href={`/tasks/${revisionProgress.task_id}`}>Открыть задачу</Link>{revisionProgress.agent_run_id && <details><summary>Технические сведения</summary><p>AgentRun: <code>{revisionProgress.agent_run_id}</code></p></details>}</section>}
       <section className="section-block" aria-label="Сведения о материале">
         <div className="section-heading"><h2>Карточка материала</h2><span className="subtle">{contentStatusHelp(item.status)}</span></div>

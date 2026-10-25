@@ -22,3 +22,5 @@ frontend/coverage/
 frontend/.vitest/
 frontend/tsconfig.tsbuildinfo
 *.log
+
+/frontend/node_modules
