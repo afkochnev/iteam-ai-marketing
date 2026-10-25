@@ -75,7 +75,10 @@ class FakeRuntime:
                 "reference": "old-image",
                 "runtime_policy_hash": "stable-runtime-policy",
                 "revision": self.sha if name in ops.APP else None,
-                "env_hash": "changed"
+                "env_hash": "image-defaults-" + self.sha
+                if name in ops.APP
+                else "data-env",
+                "operator_env_hash": "changed"
                 if self.drift and self.sha == NEW
                 else "same-private-env-hash",
                 "command": [name],
