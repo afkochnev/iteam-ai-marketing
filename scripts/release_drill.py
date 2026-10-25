@@ -100,7 +100,7 @@ class DrillRuntime(Runtime):
             "-U",
             "iteam",
             "-d",
-            "iteam_release_test",
+            "iteam_release_drill",
             "-At",
             "-c",
             "SELECT id,email,password_hash,role,is_active FROM users ORDER BY id",
@@ -112,10 +112,13 @@ class DrillRuntime(Runtime):
 def create_drill(root: Path, project: str, first: dict) -> DrillRuntime:
     sha = first["release_sha"]
     env = {
-        "APP_ENV": "test",
+        "APP_ENV": "development",
+        # Exercise the real Redis broker, not process-local test memory transport.
+        "TASK_DISPATCH_INTERVAL_SECONDS": "3600",
+        "OPTIMIZATION_ANALYSIS_SCAN_INTERVAL_SECONDS": "3600",
         "BUILD_SHA": sha,
         "COMPOSE_FILE": "compose.json:first-images.json",
-        "DATABASE_URL": "postgresql+asyncpg://iteam:drill-only@postgres:5432/iteam_release_test",
+        "DATABASE_URL": "postgresql+asyncpg://iteam:drill-only@postgres:5432/iteam_release_drill",
         "REDIS_URL": "redis://redis:6379/15",
         "JWT_SECRET": secrets.token_urlsafe(40),
         "APP_SECRET": secrets.token_urlsafe(40),
@@ -140,7 +143,7 @@ def create_drill(root: Path, project: str, first: dict) -> DrillRuntime:
             "environment": {
                 "POSTGRES_USER": "iteam",
                 "POSTGRES_PASSWORD": "drill-only",
-                "POSTGRES_DB": "iteam_release_test",
+                "POSTGRES_DB": "iteam_release_drill",
             },
             "volumes": ["postgres_data:/var/lib/postgresql/data"],
             "healthcheck": {
@@ -150,7 +153,7 @@ def create_drill(root: Path, project: str, first: dict) -> DrillRuntime:
                     "-U",
                     "iteam",
                     "-d",
-                    "iteam_release_test",
+                    "iteam_release_drill",
                 ],
                 "interval": "1s",
                 "timeout": "3s",
@@ -265,6 +268,18 @@ def drill(first_run: int, second_run: int, output: Path, cosign: str) -> dict:
             )
             runtime.compose("up", "-d", "--no-build", *APP)
             runtime.ready()
+            require(
+                runtime.compose(
+                    "exec",
+                    "-T",
+                    "backend",
+                    "python",
+                    "-c",
+                    "from app.core.config import settings;print(settings.celery_broker_url=='redis://redis:6379/15')",
+                )
+                == "True",
+                "DRILL_REAL_BROKER_REQUIRED",
+            )
             require(runtime.snapshot()["schema"] == SCHEMA, "DRILL_SCHEMA_MISMATCH")
             for name in APP:
                 data = runtime.inspect(name)

@@ -307,6 +307,10 @@ class ReleaseTests(unittest.TestCase):
             for volume in service.get("volumes", []):
                 self.assertFalse(volume.startswith("/"))
         env = runtime.env_path.read_text()
+        self.assertIn("APP_ENV=development\n", env)
+        self.assertIn("/iteam_release_drill\n", env)
+        self.assertIn("REDIS_URL=redis://redis:6379/15\n", env)
+        self.assertNotIn("/iteam_release_test", env)
         self.assertIn("VK_PUBLISHING_ENABLED=false", env)
         self.assertIn("TELEGRAM_PUBLISHING_ENABLED=false", env)
         self.assertIn("VK_ACCESS_TOKEN=\n", env)
