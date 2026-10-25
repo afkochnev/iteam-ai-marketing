@@ -9,6 +9,7 @@ from app.core.security import hash_password, verify_password
 from app.models.user import User, UserRole
 from app.repositories.users import UserRepository
 from app.schemas.auth import (
+    ChangeEmailRequest,
     ChangePasswordRequest,
     LoginRequest,
     LoginResponse,
@@ -113,3 +114,48 @@ async def change_password(
     await session.commit()
     set_session_cookie(response, user)
     return LogoutResponse(message="Пароль изменён. Другие сессии завершены.")
+
+
+@router.post("/change-email", response_model=LogoutResponse)
+async def change_email(
+    payload: ChangeEmailRequest,
+    current_user: CurrentUser,
+    response: Response,
+    session: SessionDependency,
+) -> LogoutResponse:
+    if current_user.role is not UserRole.ADMIN:
+        raise AppError("FORBIDDEN", "Изменение email доступно администратору.", 403)
+    authenticated_version = current_user.auth_version
+    user = await session.scalar(
+        select(User)
+        .where(User.id == current_user.id)
+        .with_for_update()
+        .execution_options(populate_existing=True)
+    )
+    if user is None or not user.is_active or user.auth_version != authenticated_version:
+        raise AppError("AUTHENTICATION_REQUIRED", "Требуется авторизация.", 401)
+    if user.role is not UserRole.ADMIN:
+        raise AppError("FORBIDDEN", "Изменение email доступно администратору.", 403)
+    if not verify_password(payload.current_password, user.password_hash):
+        raise AppError("INVALID_CURRENT_PASSWORD", "Текущий пароль неверен.", 400)
+    email = str(payload.email)
+    if email == user.email:
+        raise AppError("EMAIL_UNCHANGED", "Новый email совпадает с текущим.", 400)
+    previous = user.email
+    user.email = email
+    user.auth_version += 1
+    try:
+        await session.flush()
+        await ActivityLogService(session).record(
+            "USER_EMAIL_CHANGED",
+            user_id=user.id,
+            metadata={"previous_email": previous, "email": email},
+        )
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise AppError("EMAIL_UNAVAILABLE", "Этот email уже используется.", 409) from None
+    set_session_cookie(response, user)
+    return LogoutResponse(
+        message="Email изменён. Пароль и права сохранены. Другие сессии завершены."
+    )

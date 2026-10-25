@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import RegisterPage from "../app/register/page";
 import ProfilePage from "../app/profile/page";
-const mocks = vi.hoisted(() => ({ capabilities: vi.fn(), register: vi.fn(), changePassword: vi.fn(), replace: vi.fn(), user: { full_name: "User", email: "user@example.com", role: "MANAGER" } as object | null }));
+const mocks = vi.hoisted(() => ({ capabilities: vi.fn(), register: vi.fn(), changePassword: vi.fn(), changeEmail: vi.fn(), replace: vi.fn(), user: { full_name: "User", email: "user@example.com", role: "MANAGER" } as object | null }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace: mocks.replace }) }));
 vi.mock("@/components/auth-provider", () => ({ useAuth: () => ({ user: mocks.user, loading: false }) }));
 vi.mock("@/lib/api", () => ({ authApi: mocks }));
@@ -21,6 +21,19 @@ function fillChange(current = "valid-password", password = "secure-password-24")
 }
 describe("Accounts", () => {
   beforeEach(() => { vi.clearAllMocks(); mocks.user = { full_name: "User", email: "user@example.com", role: "MANAGER" }; mocks.capabilities.mockResolvedValue({ self_registration_enabled: true }); mocks.register.mockResolvedValue({}); mocks.changePassword.mockResolvedValue({ message: "Пароль изменён. Другие сессии завершены." }); });
+  it("changes administrator email only after password confirmation", async () => {
+    mocks.user = { full_name: "Admin", email: "admin@example.com", role: "ADMIN" };
+    mocks.changeEmail.mockResolvedValue({ message: "Email изменён. Пароль и права сохранены." });
+    render(<ProfilePage />);
+    fireEvent.change(screen.getByLabelText("Новый email"), { target: { value: "afkochnev@gmail.com" } });
+    fireEvent.change(screen.getByLabelText("Текущий пароль для подтверждения email"), { target: { value: "valid-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Изменить email" }));
+    expect(await screen.findByText("afkochnev@gmail.com")).toBeInTheDocument();
+    expect(mocks.changeEmail).toHaveBeenCalledWith("afkochnev@gmail.com", "valid-password");
+    expect(screen.getByLabelText("Текущий пароль для подтверждения email")).toHaveValue("");
+    expect(mocks.changePassword).not.toHaveBeenCalled();
+  });
+
   it("explains disabled registration", async () => {
     mocks.capabilities.mockResolvedValue({ self_registration_enabled: false }); render(<RegisterPage />);
     await waitFor(() => expect(screen.getByRole("status")).toHaveTextContent("регистрация отключена")); expect(screen.queryByRole("button")).not.toBeInTheDocument();

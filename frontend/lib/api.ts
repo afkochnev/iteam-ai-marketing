@@ -111,6 +111,7 @@ async function uploadRequest<T>(path: string, body: FormData): Promise<T> {
 }
 
 export const authApi = {
+  changeEmail: (email: string, current_password: string) => request<{ message: string }>("/auth/change-email", { method: "POST", body: JSON.stringify({ email, current_password }) }),
   capabilities: () => request<{ self_registration_enabled: boolean }>("/auth/capabilities"),
   register: (email: string, password: string, full_name: string) => request<User>("/auth/register", { method: "POST", body: JSON.stringify({ email, password, full_name }) }),
   changePassword: (current_password: string, new_password: string) => request<{ message: string }>("/auth/change-password", { method: "POST", body: JSON.stringify({ current_password, new_password }) }),

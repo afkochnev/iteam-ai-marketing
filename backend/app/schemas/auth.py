@@ -66,3 +66,14 @@ class ChangePasswordRequest(BaseModel):
     @classmethod
     def check_password(cls, value: str) -> str:
         return validate_password(value)
+
+
+class ChangeEmailRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    email: EmailStr
+    current_password: str = Field(min_length=1, max_length=1024)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def normalize_email(cls, value: object) -> object:
+        return value.strip().lower() if isinstance(value, str) else value

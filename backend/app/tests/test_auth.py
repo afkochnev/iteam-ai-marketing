@@ -89,3 +89,66 @@ async def test_require_admin_allows_admin_and_rejects_manager() -> None:
     with pytest.raises(AppError) as error:
         await require_admin(manager)
     assert error.value.status_code == status.HTTP_403_FORBIDDEN
+
+
+async def test_admin_changes_email_with_same_password_and_role(client, db_session):
+    user = await create_user(db_session)
+    previous = user.email
+    password_hash = user.password_hash
+    await client.post("/api/v1/auth/login", json={"email": previous, "password": "valid-password"})
+    old_cookie = client.cookies.get(settings.auth_cookie_name)
+    denied = await client.post(
+        "/api/v1/auth/change-email",
+        json={"email": "afkochnev@gmail.com", "current_password": "wrong"},
+    )
+    assert denied.status_code == 400
+    result = await client.post(
+        "/api/v1/auth/change-email",
+        json={"email": " AFKOCHNEV@gmail.com ", "current_password": "valid-password"},
+    )
+    assert result.status_code == 200
+    revoked = await client.get(
+        "/api/v1/auth/me", headers={"Cookie": f"{settings.auth_cookie_name}={old_cookie}"}
+    )
+    assert revoked.status_code == 401
+    await db_session.refresh(user)
+    assert user.email == "afkochnev@gmail.com"
+    assert user.role is UserRole.ADMIN and user.password_hash == password_hash
+    assert (await client.get("/api/v1/auth/me")).json()["email"] == user.email
+    assert (
+        await client.post(
+            "/api/v1/auth/login", json={"email": previous, "password": "valid-password"}
+        )
+    ).status_code == 401
+    assert (
+        await client.post(
+            "/api/v1/auth/login", json={"email": user.email, "password": "valid-password"}
+        )
+    ).status_code == 200
+
+
+async def test_manager_cannot_change_admin_identity(client, db_session):
+    user = await create_user(db_session, role=UserRole.MANAGER)
+    await client.post(
+        "/api/v1/auth/login", json={"email": user.email, "password": "valid-password"}
+    )
+    result = await client.post(
+        "/api/v1/auth/change-email",
+        json={"email": "afkochnev@gmail.com", "current_password": "valid-password"},
+    )
+    assert result.status_code == 403
+
+
+async def test_admin_email_collision_preserves_original_identity(client, db_session):
+    user = await create_user(db_session)
+    other = await create_user(db_session, role=UserRole.MANAGER)
+    original = user.email
+    await client.post("/api/v1/auth/login", json={"email": original, "password": "valid-password"})
+    result = await client.post(
+        "/api/v1/auth/change-email",
+        json={"email": other.email, "current_password": "valid-password"},
+    )
+    assert result.status_code == 409
+    await db_session.refresh(user)
+    assert user.email == original and user.role is UserRole.ADMIN
+    assert (await client.get("/api/v1/auth/me")).status_code == 200
