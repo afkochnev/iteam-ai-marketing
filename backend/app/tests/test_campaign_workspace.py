@@ -554,3 +554,44 @@ async def test_director_does_not_prioritize_approval_from_previous_plan(
     workspace = await CampaignWorkspaceService(db_session).get(old_plan.campaign_id)
     assert workspace.publication_plan.id == current.id
     assert workspace.director.next_step.entity_id != post.id
+
+
+async def test_expired_queued_plan_task_is_obsolete_without_status_mutation(db_session):
+    from app.services.task_classification_service import classify_tasks
+
+    fixture = await workspace_fixture(db_session, with_post=False)
+    campaign, plan = fixture["campaign"], fixture["plan"]
+    task = Task(
+        campaign_id=campaign.id,
+        task_type=TaskType.MANUAL,
+        title="Сформировать план публикаций",
+        status=TaskStatus.READY,
+        priority=TaskPriority.NORMAL,
+        assigned_agent_id=fixture["article"].author_agent_id,
+    )
+    db_session.add(task)
+    await db_session.flush()
+    run = AgentRun(
+        agent_id=task.assigned_agent_id,
+        task_id=task.id,
+        campaign_id=campaign.id,
+        status=AgentRunStatus.QUEUED,
+        input_data={},
+        output_data={},
+        model="test-model",
+        prompt_snapshot="",
+        prompt_hash="test",
+    )
+    db_session.add(run)
+    await db_session.flush()
+    plan.generated_by_agent_run_id = run.id
+    plan.planning_horizon_start = datetime.now(UTC) - timedelta(days=20)
+    plan.planning_horizon_end = datetime.now(UTC) - timedelta(days=6)
+    await db_session.commit()
+    classification, label = (await classify_tasks(db_session, [task]))[task.id]
+    assert classification == "obsolete"
+    assert "Требуется закрытие" in label
+    await db_session.refresh(task)
+    assert task.status is TaskStatus.READY
+    await db_session.refresh(run)
+    assert run.status is AgentRunStatus.QUEUED

@@ -61,7 +61,7 @@ export default function TasksPage() {
       return rank(a.status) - rank(b.status) || new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
     }), [tasks, filters]);
   const attentionTasks = visible.filter((task) => task.classification === "actionable" && attention.has(task.status));
-  const readyTasks = visible.filter((task) => task.status === "READY");
+  const readyTasks = visible.filter((task) => task.status === "READY" && task.classification === "actionable");
   const activeTasks = visible.filter((task) => active.has(task.status));
   const historyTasks = visible.filter((task) => task.classification !== "actionable" || ["COMPLETED", "CANCELLED", "APPROVED"].includes(task.status));
   const clearFilters = () => setFilters({});
@@ -71,7 +71,7 @@ export default function TasksPage() {
     <header className="page-header"><div><p className="eyebrow">Рабочий процесс</p><h1>Задачи</h1><p className="page-subtitle">Сначала показываем то, что требует решения, затем готовую и текущую работу. Завершённые задачи доступны в истории.</p></div><Link className="button-link" href="/tasks/new">Новая задача</Link></header>
     <div className="summary-grid" aria-label="Сводка по задачам">
       <a className="metric-card" href="#tasks-attention" title="Ошибки и задачи, ожидающие зависимость"><strong>{tasks.filter((task) => task.classification === "actionable" && attention.has(task.status)).length}</strong><span>Требуют внимания</span></a>
-      <a className="metric-card" href="#tasks-ready" title="Можно запустить следующим шагом"><strong>{tasks.filter((task) => task.status === "READY").length}</strong><span>Готовы к выполнению</span></a>
+      <a className="metric-card" href="#tasks-ready" title="Можно запустить следующим шагом"><strong>{tasks.filter((task) => task.status === "READY" && task.classification === "actionable").length}</strong><span>Готовы к выполнению</span></a>
       <a className="metric-card" href="#tasks-active" title="Система или исполнитель уже работает"><strong>{tasks.filter((task) => active.has(task.status)).length}</strong><span>В работе и ожидании</span></a>
       <a className="metric-card" href="#tasks-history" title="Завершённые, отменённые, superseded и исторические задачи"><strong>{tasks.filter((task) => task.classification !== "actionable" || ["COMPLETED", "CANCELLED", "APPROVED"].includes(task.status)).length}</strong><span>В истории</span></a>
     </div>
