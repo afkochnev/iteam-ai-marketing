@@ -2,6 +2,8 @@ import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 
+from sqlalchemy import select
+
 from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.director_chat import CHAT_PROMPT
@@ -12,7 +14,7 @@ from app.models.knowledge import (
     KnowledgeSourceStatus,
     KnowledgeSourceType,
 )
-from app.models.user import UserRole
+from app.models.user import User, UserRole
 from app.repositories.agents import AgentRepository
 from app.repositories.users import UserRepository
 
@@ -82,6 +84,10 @@ AGENT_SEEDS = (
 async def seed_admin() -> bool:
     async with async_session_factory() as session:
         repository = UserRepository(session)
+        # Bootstrap never recreates a placeholder after an administrator changes email.
+        if await session.scalar(select(User.id).where(User.role == UserRole.ADMIN).limit(1)):
+            print("Administrator already provisioned; identity is managed through the application.")
+            return False
         if await repository.get_by_email(settings.admin_email):
             print(f"Admin {settings.admin_email.strip().lower()} already exists.")
             return False
