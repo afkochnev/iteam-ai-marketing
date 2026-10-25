@@ -75,3 +75,36 @@ jobs:
       - run: npm run lint
       - run: npm test
       - run: npm run build
+
+  release-tools:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s scripts/tests -v
+      - run: python3 -m py_compile scripts/release_ops.py scripts/release_backup.py scripts/release_drill.py
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac
+        with:
+          cosign-release: v3.1.4
+      - name: Isolated upgrade, rollback and failure recovery with published images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/release_drill.py --from-build-run 40201898307 --to-build-run 40208930170 --output release-drill-proof.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-drill-proof
+          path: release-drill-proof.json
+          if-no-files-found: error
