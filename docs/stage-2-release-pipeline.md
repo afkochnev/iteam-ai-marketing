@@ -17,3 +17,7 @@ Production presently has VK and Telegram publishing enabled. Any deployment must
 ## Repository audit, 2026-10-25
 
 Read-only GitHub API checks found no repository rulesets, no classic protection on `main` (404 Branch not protected), and no environments. Thus the current workflow can prove CI success but cannot claim a protected human approval boundary. Configure and independently verify these controls before production deployment is connected. Do not interpret a green image build as production acceptance.
+
+## Следующий шаг
+
+Подготовлен [протокол approval, digest deployment и rollback](release-operations.md), scripts/release_ops.py, scripts/release_backup.py и scripts/release_drill.py. Конфигурации защиты main/environment хранятся в infra/release/ и требуют отдельного согласованного применения; их наличие в git не означает применение. Production из GitHub Actions не вызывается. Статус приёмки определяется по реальным CI/drill proofs, live gates и отдельно разрешённому production deploy.

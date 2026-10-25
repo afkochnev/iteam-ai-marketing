@@ -215,8 +215,8 @@ def test_runtime_script_matrix(tmp_path):
     }
     subprocess.run([str(root / "scripts/runtime-up.sh"), "normal"], env=environment, check=True)
     call = capture.read_text().strip().split()
-    assert call[:6] == ["compose", "--profile", "publishing", "up", "-d", "postgres"]
-    assert set(call[5:]) == {
+    assert call[:6] == ["compose", "--profile", "publishing", "up", "-d", "--no-build"]
+    assert set(call[6:]) == {
         "postgres",
         "redis",
         "backend",
@@ -239,7 +239,7 @@ def test_runtime_script_matrix(tmp_path):
         "publication_worker publication_control_worker publication_scheduler metrics_worker"
         in calls[0]
     )
-    assert calls[1] == "compose up -d postgres redis backend frontend"
+    assert calls[1] == "compose up -d --no-build postgres redis backend frontend"
     capture.write_text("")
     subprocess.run([str(root / "scripts/runtime-status.sh")], env=environment, check=True)
     assert "ps -a" in capture.read_text()
