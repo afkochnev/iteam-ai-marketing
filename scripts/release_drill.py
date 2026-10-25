@@ -334,7 +334,7 @@ def main() -> None:
                 drill(args.from_build_run, args.to_build_run, args.output, args.cosign)
             )
         )
-    except (ReleaseError, OSError, ValueError, KeyError) as error:
+    except (ReleaseError, OSError, ValueError, KeyError, TypeError) as error:
         print(
             json.dumps(
                 {

@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import release_ops as ops
+import release_backup as backup
 from test_release_ops import FakeRuntime, NEW, OLD, manifest
 
 
@@ -28,6 +29,22 @@ class PolicyTests(unittest.TestCase):
         )
         updated = ops.set_env(original, {"BUILD_SHA": NEW})
         self.assertEqual(updated, original.replace(OLD, NEW))
+
+    def test_private_backup_files_are_exclusive_and_0600(self):
+        key, encrypted = self.root / "key", self.root / "dump.enc"
+        with backup.private_file(key) as stream:
+            stream.write("fixture")
+        with backup.private_file(encrypted, binary=True) as stream:
+            stream.write(b"ciphertext")
+        self.assertEqual(key.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(encrypted.stat().st_mode & 0o777, 0o600)
+        with self.assertRaises(FileExistsError):
+            backup.private_file(key)
+        link = self.root / "link"
+        link.symlink_to(key)
+        with self.assertRaises(OSError):
+            backup.private_file(link)
+        self.assertEqual(key.read_text(), "fixture")
 
     def gate_data(self):
         return {

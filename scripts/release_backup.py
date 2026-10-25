@@ -35,6 +35,14 @@ asyncio.run(main())
 """
 
 
+def private_file(path: Path, *, binary: bool = False):
+    return open(
+        path,
+        "xb" if binary else "x",
+        opener=lambda name, flags: os.open(name, flags | os.O_NOFOLLOW, 0o600),
+    )
+
+
 def file_hash(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -122,7 +130,7 @@ def backup_restore(
     )
     backup = directory / (name + ".dump.enc")
     key = key_directory / (name + ".key")
-    with key.open("x", opener=lambda p, flags: os.open(p, flags, 0o600)) as stream:
+    with private_file(key) as stream:
         stream.write(secrets.token_urlsafe(48) + "\n")
     exporter = None
     restore_name = name + "-restore"
@@ -146,9 +154,7 @@ def backup_restore(
         )
         user, dbname = env["POSTGRES_USER"], env["POSTGRES_DB"]
         # Both subprocesses are argv-only; no shell expansion, plaintext file or token output.
-        with backup.open(
-            "xb", opener=lambda p, flags: os.open(p, flags, 0o600)
-        ) as output:
+        with private_file(backup, binary=True) as output:
             dump = subprocess.Popen(
                 runtime.base
                 + [
@@ -336,7 +342,14 @@ def main() -> None:
             Runtime(args.root), args.backup_dir, args.key_dir, args.proof
         )
         print(json.dumps(result))
-    except (ReleaseError, OSError, ValueError, KeyError, subprocess.SubprocessError):
+    except (
+        ReleaseError,
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        subprocess.SubprocessError,
+    ):
         print(json.dumps({"status": "FAIL", "automatic_retry": False}))
         raise SystemExit(1) from None
 
