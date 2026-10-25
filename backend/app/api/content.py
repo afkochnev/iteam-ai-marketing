@@ -122,6 +122,7 @@ def _response(
                 approved_version_id = UUID(str(raw_version_id))
                 break
     return ContentResponse(
+        reuse_source_content_id=(item.metadata_ or {}).get("reuse_source_content_id"),
         id=item.id,
         campaign_id=item.campaign_id,
         content_type=item.content_type,
