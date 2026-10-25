@@ -1,4 +1,5 @@
 "use client";
+import { PageBreadcrumbs } from "@/components/page-breadcrumbs";
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/components/auth-provider";
@@ -31,7 +32,7 @@ export default function ProfilePage() {
     finally { setBusy(false); }
   }
   if (loading || !user) return <main><p>Загрузка…</p></main>;
-  return <main><h1>Профиль</h1><section className="card"><p>{user.full_name}</p><p>{savedEmail ?? user.email}</p><p>{user.role}</p></section>
+  return <main><PageBreadcrumbs items={[{ label: "Главная", href: "/" }, { label: "Профиль" }]} /><h1>Профиль</h1><section className="card"><p>{user.full_name}</p><p>{savedEmail ?? user.email}</p><p>{user.role}</p></section>
     {user.role === "ADMIN" && <section className="login-card"><h2>Изменить email для входа</h2><p>Пароль и права администратора сохранятся. После изменения используйте новый email.</p><form onSubmit={updateEmail}><label htmlFor="new-email">Новый email</label><input id="new-email" type="email" autoComplete="email" required value={email} onChange={(event) => setEmail(event.target.value)} /><label htmlFor="email-password">Текущий пароль для подтверждения email</label><input id="email-password" type="password" autoComplete="current-password" required value={emailPassword} onChange={(event) => setEmailPassword(event.target.value)} /><button disabled={busy}>Изменить email</button></form>{emailError && <p role="alert">{emailError}</p>}{emailNotice && <p role="status">{emailNotice}</p>}</section>}
     <section className="login-card"><h2>Сменить пароль</h2><p>{PASSWORD_REQUIREMENTS}</p><form onSubmit={submit}>
       <label htmlFor="current">Текущий пароль</label><input id="current" type="password" autoComplete="current-password" value={current} onChange={(event) => setCurrent(event.target.value)} />

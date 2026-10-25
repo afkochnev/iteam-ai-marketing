@@ -468,9 +468,9 @@ async def test_director_ignores_failed_plan_item_task_after_post_exists(
     workspace = await CampaignWorkspaceService(db_session).get(campaign.id)
 
     assert workspace.director.failed_task_count == 1
-    assert workspace.director.next_step.entity_type == "publication_plan_item"
-    assert workspace.director.next_step.entity_id == next_item.id
-    assert workspace.director.next_step.title == "Создать TELEGRAM-пост для пункта №2"
+    assert workspace.director.next_step.entity_type == "publication"
+    assert workspace.director.next_step.entity_id == fixture["publication"].id
+    assert workspace.director.next_step.title == "Проверить готовность запланированной публикации"
 
 
 async def test_director_prioritizes_pending_post_approval_before_next_missing_post(
@@ -554,6 +554,8 @@ async def test_director_does_not_prioritize_approval_from_previous_plan(
     workspace = await CampaignWorkspaceService(db_session).get(old_plan.campaign_id)
     assert workspace.publication_plan.id == current.id
     assert workspace.director.next_step.entity_id != post.id
+    assert workspace.director.previous_plan_materials[0].entity_id == post.id
+    assert "Материал прежнего плана" in workspace.director.previous_plan_materials[0].title
 
 
 async def test_expired_queued_plan_task_is_obsolete_without_status_mutation(db_session):
@@ -595,3 +597,34 @@ async def test_expired_queued_plan_task_is_obsolete_without_status_mutation(db_s
     assert task.status is TaskStatus.READY
     await db_session.refresh(run)
     assert run.status is AgentRunStatus.QUEUED
+
+
+async def test_scheduled_current_post_precedes_next_slot_approval(db_session):
+    fixture = await workspace_fixture(db_session, with_post=True)
+    workspace = await CampaignWorkspaceService(db_session).get(fixture["campaign"].id)
+    assert workspace.director.next_step.title == "Проверить готовность запланированной публикации"
+    assert workspace.director.next_step.entity_id == fixture["publication"].id
+
+
+def test_previous_plan_notice_identifies_same_channel_time_conflict():
+    from types import SimpleNamespace
+
+    old_id, current_id, post_id = uuid4(), uuid4(), uuid4()
+    when = datetime.now(UTC) + timedelta(days=2)
+    post = SimpleNamespace(
+        id=post_id,
+        title="Старый пост",
+        status=ContentStatus.WAITING_APPROVAL,
+        metadata_={"publication_plan_item_id": str(old_id)},
+    )
+    old = SimpleNamespace(id=old_id, channel=ContentChannel.VK, scheduled_at=when)
+    current = SimpleNamespace(id=current_id, channel=ContentChannel.VK, scheduled_at=when)
+    notices = CampaignWorkspaceService._previous_plan_materials(
+        [post], [current], {}, [], {old_id: old}
+    )
+    assert "Время и канал совпадают" in notices[0].description
+    current.channel = ContentChannel.TELEGRAM
+    notices = CampaignWorkspaceService._previous_plan_materials(
+        [post], [current], {}, [], {old_id: old}
+    )
+    assert "Время и канал совпадают" not in notices[0].description

@@ -345,3 +345,7 @@ form { display: grid; gap: .75rem; }
 
 .actions + p, p + .actions { margin-top: .75rem; }
 .back-link { display: inline-block; margin-bottom: .5rem; }
+
+.delivery-status { margin-block: 1rem; padding-block: .5rem; }
+.delivery-status > p { margin-block: .5rem 1rem; }
+.back-link { display: inline-block; margin-bottom: .75rem; }

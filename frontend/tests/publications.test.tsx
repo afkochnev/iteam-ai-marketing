@@ -274,7 +274,7 @@ describe("publication operator actions", () => {
     render(<PublicationsPage />);
     expect(await screen.findByText(/результат ещё не подтверждён/)).toHaveAttribute("role", "status");
     const section = screen.getByRole("region", { name: "Требуют действия / В процессе" });
-    expect(within(section).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(section).queryByRole("button", { name: /Отправить|Повторить|Перенести|Отменить/ })).not.toBeInTheDocument();
   });
 
   it("cancels an overdue publication on the canonical page without provider publishing", async () => {

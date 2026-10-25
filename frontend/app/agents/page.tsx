@@ -1,4 +1,5 @@
 "use client";
+import { PageBreadcrumbs } from "@/components/page-breadcrumbs";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -23,7 +24,7 @@ export default function AgentsPage() {
   if (authLoading || loading) return <main><p>Загружаем агентов…</p></main>;
   if (error) return <main><section><h1>Агенты</h1><p role="alert" className="error">{error}</p></section></main>;
 
-  return <main><section className="wide"><header className="page-header"><div><p className="eyebrow">Команда</p><h1>Агенты</h1></div><Link href="/">На главную</Link></header>
+  return <main><PageBreadcrumbs items={[{ label: "Главная", href: "/" }, { label: "AI сотрудники" }]} /><section className="wide"><header className="page-header"><div><p className="eyebrow">Команда</p><h1>Агенты</h1></div><Link href="/">На главную</Link></header>
     {agents.length === 0 ? <p>Агенты пока не созданы.</p> : <div className="agent-grid">{agents.map((agent) =>
       <Link className="agent-card" href={`/agents/${agent.id}`} key={agent.id}>
         <h2>{agentDisplayName(agent.slug, agent.name)}</h2><p>{agent.name}</p><p>{agent.description}</p>
