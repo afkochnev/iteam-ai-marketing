@@ -344,4 +344,11 @@ form { display: grid; gap: .75rem; }
 @media (max-width: 640px) { .campaign-shell-header { flex-wrap: wrap; } }
 
 .actions + p, p + .actions { margin-top: .75rem; }
-.back-link { display: inline-block; margin-bottom: .5rem; }
+.back-link { display: inline-block; margin-bottom: .75rem; }
+
+.delivery-status { margin-block: 1rem; padding-block: .5rem; }
+.delivery-status > p { margin-block: .5rem 1rem; }
+
+
+.app-shell main > section + section { margin-top: 1.5rem; }
+main > .section-block + .content-stack { margin-top: 1rem; }

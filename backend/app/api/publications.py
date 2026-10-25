@@ -28,6 +28,34 @@ from app.services.publication_service import PublicationService
 router = APIRouter(prefix="/publications", tags=["publications"])
 
 
+@router.get("/delivery-status")
+async def delivery_status(_user: CurrentUser) -> dict[str, str]:
+    from app.workers.availability import queue_has_consumer
+
+    available = await queue_has_consumer("publication")
+    if available is False:
+        return {
+            "state": "WORKER_UNAVAILABLE",
+            "message": (
+                "Исполнитель отправки сейчас не отвечает. План сохранён. "
+                "До назначенного времени администратору нужно проверить сервис отправки."
+            ),
+        }
+    return {
+        "state": "CHECK_UNAVAILABLE",
+        "message": (
+            "Проверка недоступна в полном объёме. "
+            + (
+                "Исполнитель отправки отвечает. "
+                if available
+                else "Нет ответа от сервиса отправки. "
+            )
+            + "Доступ к каналу и работа расписания этой проверкой не подтверждаются. "
+            "План сохранён; повторно планировать публикацию не нужно."
+        ),
+    }
+
+
 @router.post("", response_model=PublicationResponse, status_code=status.HTTP_201_CREATED)
 async def create_publication(
     payload: PublicationCreate, user: CurrentUser, session: SessionDependency

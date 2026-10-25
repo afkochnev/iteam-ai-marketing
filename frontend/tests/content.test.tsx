@@ -212,6 +212,9 @@ describe("Content and approvals UI", () => {
     expect(screen.getByText("claim-1")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Запланировать публикацию" }));
     await waitFor(() => expect(mocks.scheduleContent).toHaveBeenCalledWith("post-1"));
+    expect(await screen.findByText(/Публикация запланирована на.*VK.*утверждённая версия v1/)).toBeInTheDocument();
+    expect(screen.getByText(/Дополнительных действий для планирования не требуется/)).toBeInTheDocument();
+    expect(screen.queryByText(/проверьте publishing runtime/)).not.toBeInTheDocument();
   });
 
   it("warns that a scheduled older version is not replaced by a manual draft", async () => {
@@ -287,4 +290,18 @@ describe("Content and approvals UI", () => {
     expect(screen.getByText(/Обновить серию/)).toBeInTheDocument();
     expect(screen.queryByText("post_05")).not.toBeInTheDocument();
   });
+  it("labels a previous plan and occupied slot before offering editorial decisions", async () => {
+    mocks.get.mockResolvedValue({ ...article, content_type: "SOCIAL_POST", channel: "VK", status: "APPROVED", publication_plan_item_id: "old-slot", approved_version_id: "version-1", current_version_id: "version-1" });
+    const at = "2099-10-28T12:00:00Z";
+    const slot = { id: "old-slot", scheduled_at: at, channel: "VK", topic: "Старый пост", source_content_item_id: "source" };
+    mocks.plansList.mockResolvedValue([{ id: "current-plan", status: "APPROVED", items: [] }, { id: "old-plan", status: "APPROVED", items: [slot] }]);
+    mocks.publicationList.mockResolvedValue([{ id: "other", content_item_id: "other-post", status: "SCHEDULED", channel: "VK", scheduled_at: at }]);
+    render(<ContentDetailPage />);
+    expect(await screen.findByText("Материал прежнего медиаплана")).toBeInTheDocument();
+    expect(screen.getByText(/Время и канал уже заняты/)).toBeInTheDocument();
+    expect(screen.getByText("Прежний медиаплан")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Запланировать публикацию" })).not.toBeInTheDocument();
+    expect(mocks.scheduleContent).not.toHaveBeenCalled();
+  });
+
 });

@@ -529,7 +529,7 @@ function PublicationsWorkspace() {
   if (authLoading) return <LoadingState />;
 
   return <main className="page">
-    <PageBreadcrumbs items={[{ label: "Публикации" }]} />
+    <PageBreadcrumbs items={[{ label: campaignIdFilter ? selectedCampaignName || "Кампания" : "Главная", href: campaignIdFilter ? `/campaigns/${campaignIdFilter}` : "/" }, { label: "Публикации" }]} />
     <header className="page-header">
       <div>
         <p className="eyebrow">Расписание и факт доставки</p>
@@ -541,7 +541,7 @@ function PublicationsWorkspace() {
     {campaignIdFilter && selectedCampaignName && <p className="notice">
       Показана кампания «{selectedCampaignName}». <Link href="/publications">Показать все кампании</Link>
     </p>}
-    <p className="notice">Планирование не означает отправку. Доставка требует отдельного разрешения человека и доступного publishing runtime.</p>
+    <p className="notice">Планирование не означает отправку. Доставка требует отдельного разрешения человека и доступного сервиса отправки.</p>
     {actionNotice && <p className="notice" role="status">{actionNotice}</p>}
     <div className="summary-grid metric-cards">
       <a className="metric-card" href="#ready"><strong>{readyIncomplete ? "—" : ready.length}</strong><span>Готовы к планированию</span></a>

@@ -182,7 +182,7 @@ function KnowledgePageContent() {
   return (
     <main>
       <section className="wide">
-        <PageBreadcrumbs items={[{ label: "Главная", href: "/" }, { label: "База знаний" }]} />
+        <PageBreadcrumbs items={[{ label: campaignId ? "Кампания" : "Главная", href: campaignId ? `/campaigns/${campaignId}` : "/" }, { label: "База знаний" }]} />
         <header className="page-header">
           <div>
             <p className="eyebrow">Знания iTeam</p>

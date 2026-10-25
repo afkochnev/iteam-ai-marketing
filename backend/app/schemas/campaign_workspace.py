@@ -165,6 +165,7 @@ class CampaignDirectorBrief(BaseModel):
     failed_task_count: int
     blocked_task_count: int
     next_step: WorkspaceNextStep
+    previous_plan_materials: list[WorkspaceNextStep] = Field(default_factory=list)
 
 
 class CampaignWorkspaceResponse(BaseModel):

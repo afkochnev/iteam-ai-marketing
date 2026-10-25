@@ -124,6 +124,9 @@ export default function ContentDetailPage() {
 
   const plan = useMemo(() => plans.find((candidate) => candidate.items.some((planned) => planned.id === item?.publication_plan_item_id)), [plans, item?.publication_plan_item_id]);
   const planItem = plan?.items.find((planned) => planned.id === item?.publication_plan_item_id);
+  const currentPlan = plans.find((candidate) => candidate.status === "APPROVED");
+  const previousPlan = Boolean(plan && currentPlan && plan.id !== currentPlan.id);
+  const occupiedSlot = previousPlan && planItem ? publications.find((candidate) => candidate.content_item_id !== item?.id && ["SCHEDULED", "PUBLISHING"].includes(candidate.status) && candidate.channel === planItem.channel && candidate.scheduled_at && Date.parse(candidate.scheduled_at) === Date.parse(planItem.scheduled_at)) : null;
   const exactApproved = item?.approved_version_id ?? null;
   const publication = publications.find((candidate) => candidate.content_item_id === item?.id && candidate.content_version_id === exactApproved && candidate.status !== "CANCELLED")
     ?? publications.find((candidate) => candidate.content_item_id === item?.id && ["DRAFT", "WAITING_APPROVAL", "APPROVED", "SCHEDULED", "PUBLISHING"].includes(candidate.status))
@@ -179,7 +182,16 @@ export default function ContentDetailPage() {
       setBusy(false);
     }
   }
-  async function schedulePublication() { if (!item) return; setBusy(true); try { const scheduled = await publicationsApi.scheduleContent(item.id); setPublications((rows) => [scheduled, ...rows.filter((row) => row.id !== scheduled.id)]); setNotice("Публикация запланирована по утверждённому плану."); } catch (reason) { setNotice((reason as Error).message); } finally { setBusy(false); } }
+  async function schedulePublication() {
+    if (!item) return;
+    setBusy(true); setNotice(""); setError("");
+    try {
+      const scheduled = await publicationsApi.scheduleContent(item.id);
+      setPublications((rows) => [scheduled, ...rows.filter((row) => row.id !== scheduled.id)]);
+      setNotice(`Публикация запланирована на ${formatDateTime(scheduled.scheduled_at!)} · ${scheduled.channel === "VK" ? "VK" : "Telegram"}. К отправке назначена утверждённая версия v${item.current_version?.version_number}. Дополнительных действий для планирования не требуется.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Не удалось запланировать публикацию."); }
+    finally { setBusy(false); }
+  }
   async function replaceScheduledPublication() {
     if (!publication || !item?.current_version || !publicationVersion) return;
     const confirmed = window.confirm(`Заменить запланированную публикацию версии v${publicationVersion.version_number} на утверждённую v${item.current_version.version_number}? Старая публикация будет отменена, новая сохранит канал и время.`);
@@ -232,6 +244,7 @@ export default function ContentDetailPage() {
       {notice && <p className="notice" role="status">{notice}</p>}
       {item.reuse_source_content_id && <p className="notice">Это отдельная копия <Link href={`/content/${item.reuse_source_content_id}`}>архивного материала</Link>. Она требует собственного согласования. Прежний слот не восстановлен; после утверждения выберите новую дату в <Link href={`/publications?campaign_id=${item.campaign_id}#ready`}>разделе публикаций</Link>.</p>}
       {revisionProgress && revisionMessage && <section className={revisionIsStopped || revisionIsUnavailable ? "warning" : "notice"} aria-live="polite" aria-label="Статус доработки" role="status"><strong>{revisionMessage}</strong><span> · </span><Link href={`/tasks/${revisionProgress.task_id}`}>Открыть задачу</Link>{revisionProgress.agent_run_id && <details><summary>Технические сведения</summary><p>AgentRun: <code>{revisionProgress.agent_run_id}</code></p></details>}</section>}
+          {previousPlan && <aside className="notice"><strong>Материал прежнего медиаплана</strong><p>Согласование текста не добавляет его в текущий план. Чтобы использовать материал, отдельно определите его место и будущую дату в актуальном медиаплане.</p>{occupiedSlot && <p>Время и канал уже заняты другой публикацией. Согласование текста не разрешает совпадение расписания.</p>}<Link href={`/campaigns/${item.campaign_id}/plan`}>Открыть текущий медиаплан</Link></aside>}
       <section className="section-block" aria-label="Сведения о материале">
         <div className="section-heading"><h2>Карточка материала</h2><span className="subtle">{contentStatusHelp(item.status)}</span></div>
         <div className="metadata-grid">
@@ -255,10 +268,10 @@ export default function ContentDetailPage() {
       </section>
 
       {item.content_type === "SOCIAL_POST" && item.publication_plan_item_id && <section id="publication" className="section-block" aria-label="План публикации">
-        <div className="section-heading"><h2>План публикации</h2>{plan && <StatusBadge status={plan.status} label={PLAN_STATUS_LABELS[plan.status]} />}</div>
+        <div className="section-heading"><h2>План публикации</h2>{plan && <StatusBadge status={previousPlan ? "CANCELLED" : plan.status} label={previousPlan ? "Прежний медиаплан" : PLAN_STATUS_LABELS[plan.status]} />}</div>
         {planItem ? <><div className="metadata-grid"><div className="metadata-item"><strong>Канал</strong><span>{planItem.channel === "VK" ? "VK" : "Telegram"}</span></div><div className="metadata-item"><strong>Дата и время</strong><span>{formatDateTime(planItem.scheduled_at)}</span></div><div className="metadata-item"><strong>Тема</strong><span>{planItem.topic}</span></div><div className="metadata-item"><strong>Исходная статья</strong><span><Link href={`/content/${planItem.source_content_item_id}`}>{item.source_content_item_title ?? sourceDerivations[0]?.source_content_item_title ?? "Открыть источник"}</Link></span></div></div>
           {publication?.status === "SCHEDULED" && <PublicationDeliveryNotice providerEnabled={publication.provider_enabled} />}
-          {publication ? <><p className="notice">Публикация: <StatusBadge status={publication.status} label={PUBLICATION_STATUS_LABELS[publication.status]} />{publication.scheduled_at && ` · ${formatDateTime(publication.scheduled_at)} · ${publication.channel === "VK" ? "VK" : "Telegram"}`}</p>{hasPublicationVersionConflict && publication.status === "SCHEDULED" && <p className="warning">Запланирована публикация версии v{publicationVersion?.version_number ?? "?"}. Новая редакция v{item.current_version?.version_number} не заменит её автоматически.</p>}{hasPublicationVersionConflict && publication.status === "PUBLISHED" && <p className="subtle">Опубликованная версия v{publicationVersion?.version_number ?? "?"} сохранена в истории. Заменить опубликованную публикацию нельзя.</p>}{canReplaceScheduledPublication && <button disabled={busy} onClick={() => void replaceScheduledPublication()}>{busy ? "Заменяем…" : "Заменить версию в запланированной публикации"}</button>}</> : cancelledPlanDecision ? <p className="notice">Просроченный слот отменён решением оператора. Внешняя отправка не выполнялась.</p> : planScheduleInPast ? <><p className="warning">Плановая дата уже прошла. Перенос или отмена выполняются в едином разделе публикаций.</p><Link className="button-link" href={`/publications?campaign_id=${item.campaign_id}#plan-content-${item.id}`}>Открыть решение оператора</Link></> : <><p>Публикация: ещё не запланирована</p>{item.status === "APPROVED" && exactApproved && plan?.status === "APPROVED" && <button disabled={busy} onClick={() => void schedulePublication()}>{busy ? "Планируем…" : "Запланировать публикацию"}</button>}</>}
+          {publication ? <><p className="notice">Публикация: <StatusBadge status={publication.status} label={PUBLICATION_STATUS_LABELS[publication.status]} />{publication.scheduled_at && ` · ${formatDateTime(publication.scheduled_at)} · ${publication.channel === "VK" ? "VK" : "Telegram"}`}</p>{hasPublicationVersionConflict && publication.status === "SCHEDULED" && <p className="warning">Запланирована публикация версии v{publicationVersion?.version_number ?? "?"}. Новая редакция v{item.current_version?.version_number} не заменит её автоматически.</p>}{hasPublicationVersionConflict && publication.status === "PUBLISHED" && <p className="subtle">Опубликованная версия v{publicationVersion?.version_number ?? "?"} сохранена в истории. Заменить опубликованную публикацию нельзя.</p>}{canReplaceScheduledPublication && <button disabled={busy} onClick={() => void replaceScheduledPublication()}>{busy ? "Заменяем…" : "Заменить версию в запланированной публикации"}</button>}</> : cancelledPlanDecision ? <p className="notice">Просроченный слот отменён решением оператора. Внешняя отправка не выполнялась.</p> : planScheduleInPast ? <><p className="warning">Плановая дата уже прошла. Перенос или отмена выполняются в едином разделе публикаций.</p><Link className="button-link" href={`/publications?campaign_id=${item.campaign_id}#plan-content-${item.id}`}>Открыть решение оператора</Link></> : <><p>Публикация: ещё не запланирована</p>{item.status === "APPROVED" && exactApproved && !previousPlan && plan?.status === "APPROVED" && <button disabled={busy} onClick={() => void schedulePublication()}>{busy ? "Планируем…" : "Запланировать публикацию"}</button>}</>}
         </> : <p className="warning">Плановый пункт не найден. Обратитесь к странице кампании.</p>}
       </section>}
 

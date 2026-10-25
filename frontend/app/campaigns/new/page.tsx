@@ -1,4 +1,5 @@
 "use client";
+import { PageBreadcrumbs } from "@/components/page-breadcrumbs";
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -13,5 +14,5 @@ export default function NewCampaignPage() {
   useEffect(() => { if (!loading && !user) router.replace("/login"); }, [loading, user, router]);
   if (loading || !user) return <main><p>Проверяем авторизацию…</p></main>;
   async function create(values: CampaignInput) { const campaign = await campaignsApi.create(values); router.push(`/campaigns/${campaign.id}`); }
-  return <main><section className="wide"><header className="page-header"><div><p className="eyebrow">Новая</p><h1>Создать кампанию</h1></div><Link href="/campaigns">Отмена</Link></header><CampaignForm submitLabel="Создать кампанию" onSubmit={create} /></section></main>;
+  return <main><PageBreadcrumbs items={[{ label: "Кампании", href: "/campaigns" }, { label: "Новая кампания" }]} /><section className="wide"><header className="page-header"><div><p className="eyebrow">Новая</p><h1>Создать кампанию</h1></div><Link href="/campaigns">Отмена</Link></header><CampaignForm submitLabel="Создать кампанию" onSubmit={create} /></section></main>;
 }

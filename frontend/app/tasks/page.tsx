@@ -67,7 +67,7 @@ export default function TasksPage() {
   const clearFilters = () => setFilters({});
 
   return <main className="page">
-    <PageBreadcrumbs items={[{ label: "Задачи" }]} />
+    <PageBreadcrumbs items={[{ label: filters.campaign_id ? campaigns.find((campaign) => campaign.id === filters.campaign_id)?.name || "Кампания" : "Главная", href: filters.campaign_id ? `/campaigns/${filters.campaign_id}` : "/" }, { label: "Задачи" }]} />
     <header className="page-header"><div><p className="eyebrow">Рабочий процесс</p><h1>Задачи</h1><p className="page-subtitle">Сначала показываем то, что требует решения, затем готовую и текущую работу. Завершённые задачи доступны в истории.</p></div><Link className="button-link" href="/tasks/new">Новая задача</Link></header>
     <div className="summary-grid" aria-label="Сводка по задачам">
       <a className="metric-card" href="#tasks-attention" title="Ошибки и задачи, ожидающие зависимость"><strong>{tasks.filter((task) => task.classification === "actionable" && attention.has(task.status)).length}</strong><span>Требуют внимания</span></a>

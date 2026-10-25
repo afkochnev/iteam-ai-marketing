@@ -372,6 +372,7 @@ class CampaignWorkspaceService:
             post_actions,
             change_state,
             optimization,
+            plan_item_by_id,
         )
 
         return CampaignWorkspaceResponse(
@@ -818,6 +819,7 @@ class CampaignWorkspaceService:
         post_actions: dict[UUID, WorkspacePostAction],
         change_state: CampaignChangeState,
         optimization: OptimizationState | None = None,
+        all_plan_items: dict[UUID, PublicationPlanItem] | None = None,
     ) -> CampaignDirectorBrief:
         active_items = (
             [
@@ -877,7 +879,63 @@ class CampaignWorkspaceService:
             failed_task_count=len(failed_tasks),
             blocked_task_count=len(blocked_tasks),
             next_step=next_step,
+            previous_plan_materials=self._previous_plan_materials(
+                social_posts, active_items, posts_by_item, publications, all_plan_items or {}
+            ),
         )
+
+    @staticmethod
+    def _previous_plan_materials(
+        posts: list[ContentItem],
+        active_items: list[PublicationPlanItem],
+        posts_by_item: dict[UUID, list[ContentItem]],
+        publications: list[Publication],
+        all_plan_items: dict[UUID, PublicationPlanItem],
+    ) -> list[WorkspaceNextStep]:
+        current_post_ids = {
+            post.id for item in active_items for post in posts_by_item.get(item.id, [])
+        }
+        notices = []
+        for post in posts:
+            if post.id in current_post_ids or post.status is not ContentStatus.WAITING_APPROVAL:
+                continue
+            old_item_id = CampaignWorkspaceService._metadata_uuid(post, "publication_plan_item_id")
+            if old_item_id is None:
+                continue
+            old_item = all_plan_items.get(old_item_id)
+            conflict = old_item is not None and (
+                any(
+                    item.channel == old_item.channel and item.scheduled_at == old_item.scheduled_at
+                    for item in active_items
+                )
+                or any(
+                    pub.channel == old_item.channel
+                    and pub.scheduled_at == old_item.scheduled_at
+                    and pub.content_item_id != post.id
+                    and pub.status in {PublicationStatus.SCHEDULED, PublicationStatus.PUBLISHING}
+                    for pub in publications
+                )
+            )
+            conflict_text = (
+                " Время и канал совпадают с занятым слотом. Выберите другое время "
+                "или отдельно пересмотрите текущий план."
+                if conflict
+                else ""
+            )
+            notices.append(
+                WorkspaceNextStep(
+                    title="Материал прежнего плана — решить, использовать ли позже",
+                    description=(
+                        post.title + ". Сначала подготовьте текущий медиаплан. "
+                        "Согласование текста не назначает дату и не заменяет публикацию."
+                        + conflict_text
+                    ),
+                    href=f"/content/{post.id}",
+                    entity_type="social_post",
+                    entity_id=post.id,
+                )
+            )
+        return notices
 
     def _next_step(
         self,
@@ -950,6 +1008,32 @@ class CampaignWorkspaceService:
                 href=f"{campaign_url}/strategy",
                 entity_type="campaign",
                 entity_id=campaign.id,
+            )
+        current_post_ids = {
+            post.id
+            for item in active_items
+            for post in posts_by_item.get(item.id, [])
+            if post.status is ContentStatus.APPROVED
+        }
+        scheduled_current = sorted(
+            (
+                pub
+                for pub in publications
+                if pub.status is PublicationStatus.SCHEDULED
+                and pub.content_item_id in current_post_ids
+                and pub.scheduled_at is not None
+            ),
+            key=lambda pub: pub.scheduled_at.isoformat() if pub.scheduled_at else "",
+        )
+        if scheduled_current:
+            pub = scheduled_current[0]
+            return WorkspaceNextStep(
+                title="Проверить готовность запланированной публикации",
+                description="Публикация текущего медиаплана уже назначена. "
+                "Проверьте её версию и сервис отправки; повторное планирование не нужно.",
+                href=f"/publications?campaign_id={campaign.id}#publication-{pub.id}",
+                entity_type="publication",
+                entity_id=pub.id,
             )
         waiting_content: WorkspaceArticle | ContentItem | None = next(
             (x for x in articles if x.status is ContentStatus.WAITING_APPROVAL), None

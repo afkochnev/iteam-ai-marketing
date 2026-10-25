@@ -145,6 +145,7 @@ describe("publication calendar", () => {
     mocks.calendar.mockResolvedValue([]);
     render(<PublicationsPage />);
     expect(await screen.findByText(/Показана кампания «Вторая»/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "← Вторая" })).toHaveAttribute("href", "/campaigns/campaign-2");
     expect(mocks.calendar).toHaveBeenCalledTimes(1);
     expect(mocks.calendar).toHaveBeenCalledWith("campaign-2", expect.any(String), expect.any(String));
     expect(screen.getByRole("link", { name: "Показать все кампании" })).toHaveAttribute("href", "/publications");
@@ -274,7 +275,7 @@ describe("publication operator actions", () => {
     render(<PublicationsPage />);
     expect(await screen.findByText(/результат ещё не подтверждён/)).toHaveAttribute("role", "status");
     const section = screen.getByRole("region", { name: "Требуют действия / В процессе" });
-    expect(within(section).queryByRole("button")).not.toBeInTheDocument();
+    expect(within(section).queryByRole("button", { name: /Отправить|Повторить|Перенести|Отменить/ })).not.toBeInTheDocument();
   });
 
   it("cancels an overdue publication on the canonical page without provider publishing", async () => {
