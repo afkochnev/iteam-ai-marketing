@@ -543,3 +543,40 @@ async def test_rescheduled_plan_slot_fails_closed_after_schedule_tampering(
         await service.claim_for_publish(result.id, user)
     assert error.value.code == "PUBLICATION_PLAN_SCHEDULE_MISMATCH"
     assert row.execution_token is None
+
+
+async def test_future_plan_move_preserves_plan_and_authorizes_only_replacement(db_session):
+    user, _campaign, post, _version, item = await plan_post(db_session)
+    service = PublicationService(db_session)
+    original = await service.schedule_content(post.id, user)
+    original_time = item.scheduled_at
+    moved = await service.replan(original.id, original_time + timedelta(days=2), user)
+    assert moved.id != original.id
+    assert (await db_session.get(Publication, original.id)).status is PublicationStatus.CANCELLED
+    await db_session.refresh(item)
+    assert item.scheduled_at == original_time
+    row = await db_session.get(Publication, moved.id)
+    assert await service._valid_plan_schedule_override(row, item)
+    await service._ensure_plan_snapshot(row, post)
+
+
+async def test_replan_from_previous_plan_requires_current_plan_decision(db_session):
+    user, campaign, post, _version, item = await plan_post(db_session)
+    service = PublicationService(db_session)
+    original = await service.schedule_content(post.id, user)
+    await service.cancel(original.id, user)
+    old = await db_session.get(PublicationPlan, item.publication_plan_id)
+    old.created_at = datetime.now(UTC) - timedelta(days=1)
+    db_session.add(
+        PublicationPlan(
+            campaign_id=campaign.id,
+            status=PublicationPlanStatus.APPROVED,
+            planning_horizon_start=datetime.now(UTC),
+            planning_horizon_end=datetime.now(UTC) + timedelta(days=30),
+            created_by_user_id=user.id,
+        )
+    )
+    await db_session.commit()
+    with pytest.raises(AppError) as error:
+        await service.replan(original.id, datetime.now(UTC) + timedelta(days=2), user)
+    assert error.value.code == "PUBLICATION_PLAN_NOT_CURRENT"

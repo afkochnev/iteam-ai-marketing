@@ -123,6 +123,16 @@ async def schedule_publication(
     return await PublicationService(session).schedule(publication_id, payload.scheduled_at, user)
 
 
+@router.post("/{publication_id}/replan", response_model=PublicationResponse)
+async def replan_publication(
+    publication_id: UUID,
+    payload: PublicationScheduleRequest,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> PublicationResponse:
+    return await PublicationService(session).replan(publication_id, payload.scheduled_at, user)
+
+
 @router.post("/{publication_id}/cancel", response_model=PublicationResponse)
 async def cancel_publication(
     publication_id: UUID, user: CurrentUser, session: SessionDependency

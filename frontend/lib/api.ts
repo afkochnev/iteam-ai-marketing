@@ -48,7 +48,7 @@ export interface ContentVersionSummary { id: string; version_number: number; cha
 export interface ContentDerivation { source_content_item_id: string; source_content_item_title: string; source_content_version_id: string; source_version_number: number; section_key: string; }
 export interface ContentVersion extends ContentVersionSummary { content: string; structured_content: Record<string, unknown>; sources: ContentSource[]; derivations?: ContentDerivation[]; }
 export interface ContentApprovalHistory { id: string; subject_version: number; status: string; comment: string | null; reviewed_by_user_id: string | null; created_at: string; resolved_at: string | null; }
-export interface ContentListItem { current_version_id?: string | null; publication_plan_item_id?: string | null; plan_channel?: "TELEGRAM" | "VK" | null; plan_scheduled_at?: string | null; approved_version_id?: string | null; approved_version_number?: number | null; source_content_item_id?: string | null; source_content_item_title?: string | null; id: string; campaign_id: string; content_type: ContentType; title: string; status: ContentStatus; current_version_number: number | null; created_at: string; updated_at: string; parent_content_item_id?: string | null; channel?: "TELEGRAM" | "VK" | null; }
+export interface ContentListItem { reuse_source_content_id?: string | null; current_version_id?: string | null; publication_plan_item_id?: string | null; plan_channel?: "TELEGRAM" | "VK" | null; plan_scheduled_at?: string | null; approved_version_id?: string | null; approved_version_number?: number | null; source_content_item_id?: string | null; source_content_item_title?: string | null; id: string; campaign_id: string; content_type: ContentType; title: string; status: ContentStatus; current_version_number: number | null; created_at: string; updated_at: string; parent_content_item_id?: string | null; channel?: "TELEGRAM" | "VK" | null; }
 export interface Content extends ContentListItem { source_task_id: string; author_agent_id: string; parent_content_item_id?: string | null; channel?: "TELEGRAM" | "VK" | null; approved_version_id?: string | null; current_version: ContentVersion | null; versions: ContentVersionSummary[]; approval_history?: ContentApprovalHistory[]; }
 export interface ContentRevisionProgress { executor_available?: boolean | null; task_id: string; task_status: TaskStatus; agent_run_id: string | null; agent_run_status: AgentRunStatus | null; error_code: string | null; error_message: string | null; base_content_version_id: string; created_content_version_id: string | null; created_at: string; updated_at: string; }
 export type PublicationStatus = "DRAFT" | "WAITING_APPROVAL" | "APPROVED" | "SCHEDULED" | "PUBLISHING" | "PUBLISHED" | "FAILED" | "CANCELLED";
@@ -183,6 +183,7 @@ export const knowledgePacksApi = {
   get: (id: string) => request<KnowledgePack>(`/knowledge-packs/${id}`),
 };
 export const contentApi = {
+  reuse: (id: string) => request<Content>(`/content/${id}/reuse`, { method: "POST" }),
   list: (filters: Record<string, string | undefined> = {}) => { const query = new URLSearchParams(Object.entries(filters).filter((entry): entry is [string, string] => Boolean(entry[1]))); return request<ContentListItem[]>(`/content${query.size ? `?${query}` : ""}`); },
   get: (id: string) => request<Content>(`/content/${id}`),
   versions: (id: string) => request<ContentVersionSummary[]>(`/content/${id}/versions`),
@@ -200,6 +201,7 @@ export const publicationsApi = {
   calendar: (campaignId: string, from: string, to: string) => request<PublicationCalendarItem[]>(`/publications/campaign/${campaignId}/calendar?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
   create: (payload: { content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK" }) => request<Publication>("/publications", { method: "POST", body: JSON.stringify(payload) }),
   approve: (id: string) => request<Publication>(`/publications/${id}/approve`, { method: "POST" }),
+  replan: (id: string, scheduled_at: string) => request<Publication>(`/publications/${id}/replan`, { method: "POST", body: JSON.stringify({ scheduled_at }) }),
   schedule: (id: string, scheduled_at: string) => request<Publication>(`/publications/${id}/schedule`, { method: "POST", body: JSON.stringify({ scheduled_at }) }),
   cancel: (id: string) => request<Publication>(`/publications/${id}/cancel`, { method: "POST" }),
   replaceScheduledVersion: (id: string) => request<Publication>(`/publications/${id}/replace-scheduled-version`, { method: "POST" }),

@@ -1127,6 +1127,124 @@ class PublicationService:
         await self.session.refresh(publication)
         return await self._response(publication)
 
+    async def replan(
+        self, publication_id: UUID, scheduled_at: datetime, user: User
+    ) -> PublicationResponse:
+        """Human-authorized new delivery; preserve cancelled records and approved plans."""
+        if scheduled_at.tzinfo is None or scheduled_at.utcoffset() is None:
+            raise AppError("PUBLICATION_TIMEZONE_REQUIRED", "Укажите часовой пояс.", 422)
+        if scheduled_at <= utc_now():
+            raise AppError("PUBLICATION_TIME_IN_PAST", "Выберите будущую дату.", 422)
+        source = await self.session.get(Publication, publication_id)
+        if source is None:
+            raise AppError("PUBLICATION_NOT_FOUND", "Публикация не найдена.", 404)
+        # Serialize all replans of the same material, including different cancelled slots.
+        item = await self.session.scalar(
+            select(ContentItem)
+            .where(ContentItem.id == source.content_item_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        source = await self._locked(publication_id)
+        await self.session.refresh(source, with_for_update=True)
+        if source.status not in {PublicationStatus.CANCELLED, PublicationStatus.SCHEDULED}:
+            raise AppError("PUBLICATION_INVALID_TRANSITION", "Перенос недоступен.", 409)
+        if source.execution_token is not None or source.failure_code in {
+            "VK_RECONCILIATION_REQUIRED",
+            "TELEGRAM_RECONCILIATION_REQUIRED",
+        }:
+            raise AppError(
+                "PUBLICATION_RECONCILIATION_REQUIRED", "Сначала проверьте результат отправки.", 409
+            )
+        if item is None or item.current_version_id is None:
+            raise AppError("CONTENT_NOT_FOUND", "Материал не найден.", 404)
+        await self._ensure_content_version_approved(
+            item.id, item.current_version_id, source.channel
+        )
+        plan_item = await self._plan_item(item)
+        if plan_item is not None:
+            current = await self.session.scalar(
+                select(PublicationPlan)
+                .where(
+                    PublicationPlan.campaign_id == item.campaign_id,
+                    PublicationPlan.status == PublicationPlanStatus.APPROVED,
+                )
+                .order_by(PublicationPlan.created_at.desc(), PublicationPlan.id.desc())
+                .limit(1)
+            )
+            if current is None or current.id != plan_item.publication_plan_id:
+                raise AppError(
+                    "PUBLICATION_PLAN_NOT_CURRENT", "Добавьте материал в текущий медиаплан.", 409
+                )
+        duplicate = await self.session.scalar(
+            select(Publication.id)
+            .where(
+                Publication.content_item_id == item.id,
+                Publication.channel == source.channel,
+                Publication.id != source.id,
+                or_(
+                    Publication.status.in_(ACTIVE_PUBLICATION_STATUSES),
+                    Publication.status == PublicationStatus.PUBLISHED,
+                    Publication.failure_code.in_(
+                        ["VK_RECONCILIATION_REQUIRED", "TELEGRAM_RECONCILIATION_REQUIRED"]
+                    ),
+                ),
+            )
+            .limit(1)
+        )
+        if duplicate is not None:
+            raise AppError(
+                "PUBLICATION_ALREADY_EXISTS",
+                "У материала уже есть активная или опубликованная запись.",
+                409,
+            )
+        if source.status is PublicationStatus.SCHEDULED:
+            source.status = PublicationStatus.CANCELLED
+            await ActivityLogService(self.session).record(
+                "PUBLICATION_CANCELLED",
+                operation_key=f"publication-cancelled:{source.id}",
+                campaign_id=item.campaign_id,
+                user_id=user.id,
+                content_item_id=item.id,
+                metadata={"publication_id": str(source.id)},
+            )
+        replacement = Publication(
+            campaign_id=item.campaign_id,
+            content_item_id=item.id,
+            content_version_id=item.current_version_id,
+            channel=source.channel,
+            status=PublicationStatus.SCHEDULED,
+            scheduled_at=scheduled_at.astimezone(UTC),
+            approved_for_publish_at=utc_now(),
+            approved_for_publish_by=user.id,
+        )
+        self.session.add(replacement)
+        await self.session.flush()
+        if plan_item is not None:
+            await self._record_plan_schedule_override(
+                replacement,
+                plan_item,
+                user,
+                reason="Явное повторное планирование оператором",
+                source_publication_id=source.id,
+            )
+        assert replacement.scheduled_at is not None
+        await ActivityLogService(self.session).record(
+            "PUBLICATION_REPLANNED",
+            operation_key=f"publication-replanned:{replacement.id}",
+            campaign_id=item.campaign_id,
+            user_id=user.id,
+            content_item_id=item.id,
+            metadata={
+                "publication_id": str(replacement.id),
+                "source_publication_id": str(source.id),
+                "content_version_id": str(replacement.content_version_id),
+                "scheduled_at": replacement.scheduled_at.isoformat(),
+            },
+        )
+        await self.session.commit()
+        return await self._response(replacement)
+
     async def cancel(self, publication_id: UUID, user: User) -> PublicationResponse:
         publication = await self._locked(publication_id)
         if PublicationStatus.CANCELLED not in PUBLICATION_ALLOWED_TRANSITIONS[publication.status]:

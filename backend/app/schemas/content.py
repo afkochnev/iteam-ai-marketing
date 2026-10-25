@@ -81,6 +81,7 @@ class ContentApprovalHistory(BaseModel):
 
 
 class ContentListItem(BaseModel):
+    reuse_source_content_id: UUID | None = None
     id: UUID
     campaign_id: UUID
     content_type: ContentType

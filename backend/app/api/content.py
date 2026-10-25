@@ -12,6 +12,7 @@ from app.api.dependencies import CurrentUser, SessionDependency
 from app.core.errors import AppError as ContentAppError
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.approval import Approval, ApprovalObjectType, ApprovalStatus
+from app.models.campaign import Campaign, CampaignStatus
 from app.models.content import (
     ContentDerivation,
     ContentItem,
@@ -240,6 +241,7 @@ async def list_content(
             source_by_derived_version.setdefault(derived_version_id, (source_item_id, source_title))
     return [
         ContentListItem(
+            reuse_source_content_id=(item.metadata_ or {}).get("reuse_source_content_id"),
             id=item.id,
             campaign_id=item.campaign_id,
             content_type=item.content_type,
@@ -794,3 +796,105 @@ async def request_revision(
     await session.commit()
     await TaskDispatcherService(session).dispatch_ready_tasks()
     return _response(await ContentService(session).get(content_id))
+
+
+@router.post("/{content_id}/reuse", response_model=ContentResponse)
+async def reuse_archived_content(
+    content_id: UUID, user: CurrentUser, session: SessionDependency
+) -> ContentResponse:
+    original = await session.scalar(
+        select(ContentItem).where(ContentItem.id == content_id).with_for_update()
+    )
+    if (
+        original is None
+        or original.status is not ContentStatus.ARCHIVED
+        or original.content_type is not ContentType.SOCIAL_POST
+    ):
+        raise ContentAppError(
+            "CONTENT_REUSE_NOT_ALLOWED", "Копирование доступно для архивного поста.", 409
+        )
+    campaign = await session.get(Campaign, original.campaign_id)
+    if campaign is None or campaign.status is CampaignStatus.ARCHIVED:
+        raise ContentAppError("CAMPAIGN_ARCHIVED", "Сначала выберите действующую кампанию.", 409)
+    previous = await session.get(ContentVersion, original.current_version_id)
+    if previous is None:
+        raise ContentAppError("CONTENT_VERSION_NOT_FOUND", "Версия материала не найдена.", 409)
+    existing = await session.scalar(
+        select(ContentItem)
+        .where(ContentItem.metadata_["reuse_source_version_id"].as_string() == str(previous.id))
+        .limit(1)
+    )
+    if existing is not None:
+        return await get_content(existing.id, user, session)
+    item = ContentItem(
+        campaign_id=original.campaign_id,
+        source_task_id=original.source_task_id,
+        content_type=ContentType.SOCIAL_POST,
+        title=original.title,
+        status=ContentStatus.WAITING_APPROVAL,
+        author_agent_id=original.author_agent_id,
+        channel=original.channel,
+        metadata_={
+            "reuse_source_content_id": str(original.id),
+            "reuse_source_version_id": str(previous.id),
+        },
+    )
+    session.add(item)
+    await session.flush()
+    version = ContentVersion(
+        content_item_id=item.id,
+        version_number=1,
+        content=previous.content,
+        structured_content=deepcopy(previous.structured_content),
+        created_by_user_id=user.id,
+        change_description="Копия архивного материала для нового согласования",
+    )
+    session.add(version)
+    await session.flush()
+    for source in await session.scalars(
+        select(ContentVersionSource).where(ContentVersionSource.content_version_id == previous.id)
+    ):
+        session.add(
+            ContentVersionSource(
+                content_version_id=version.id,
+                knowledge_pack_item_id=source.knowledge_pack_item_id,
+                section_key=source.section_key,
+                position=source.position,
+            )
+        )
+    for origin in await session.scalars(
+        select(ContentDerivation).where(ContentDerivation.derived_content_version_id == previous.id)
+    ):
+        session.add(
+            ContentDerivation(
+                derived_content_version_id=version.id,
+                source_content_version_id=origin.source_content_version_id,
+                source_section_key="reuse_source_article"
+                if origin.source_section_key == "publication_plan_item"
+                else origin.source_section_key,
+            )
+        )
+    item.current_version_id = version.id
+    await ApprovalService(session).create_content_approval(
+        item.id,
+        1,
+        {
+            "content_item_id": str(item.id),
+            "content_version_id": str(version.id),
+            "version_number": 1,
+        },
+        None,
+    )
+    await ActivityLogService(session).record(
+        "CONTENT_REUSED_FROM_ARCHIVE",
+        operation_key=f"content-reused:{version.id}",
+        campaign_id=item.campaign_id,
+        user_id=user.id,
+        content_item_id=item.id,
+        metadata={
+            "source_content_id": str(original.id),
+            "source_content_version_id": str(previous.id),
+        },
+    )
+    await session.commit()
+    return await get_content(item.id, user, session)
