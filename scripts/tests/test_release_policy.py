@@ -46,6 +46,42 @@ class PolicyTests(unittest.TestCase):
             backup.private_file(link)
         self.assertEqual(key.read_text(), "fixture")
 
+    def test_worker_readiness_requires_each_current_container_and_queue(self):
+        runtime = ops.Runtime(self.root)
+        expected = {
+            "celery@" + name: True for name in ops.WORKERS if name.endswith("_worker")
+        }
+        with (
+            patch.object(
+                runtime,
+                "inspect",
+                side_effect=lambda name: {"Config": {"Hostname": name}},
+            ),
+            patch.object(runtime, "compose", return_value=json.dumps(expected)),
+        ):
+            runtime.workers_ready()
+        expected["celery@publication_worker"] = False
+        with (
+            patch.object(
+                runtime,
+                "inspect",
+                side_effect=lambda name: {"Config": {"Hostname": name}},
+            ),
+            patch.object(runtime, "compose", return_value=json.dumps(expected)),
+            patch.object(ops.time, "sleep"),
+            self.assertRaisesRegex(ops.ReleaseError, "QUEUES_NOT_READY"),
+        ):
+            runtime.workers_ready()
+
+    def test_frontend_http_failure_is_a_deployment_failure(self):
+        runtime = ops.Runtime(self.root)
+        with (
+            patch.object(ops.urllib.request, "urlopen", side_effect=OSError("fixture")),
+            patch.object(ops.time, "sleep"),
+            self.assertRaisesRegex(ops.ReleaseError, "FRONTEND_READINESS_TIMEOUT"),
+        ):
+            runtime.frontend_ready()
+
     def gate_data(self):
         return {
             "branches/main/protection": {

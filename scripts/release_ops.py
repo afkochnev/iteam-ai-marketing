@@ -640,6 +640,56 @@ class Runtime:
             time.sleep(1)
         raise ReleaseError("READINESS_TIMEOUT")
 
+    def frontend_ready(self) -> None:
+        for _ in range(90):
+            try:
+                with urllib.request.urlopen(
+                    "http://127.0.0.1:3000/publications", timeout=3
+                ) as response:
+                    if response.status == 200:
+                        return
+            except OSError:
+                pass
+            time.sleep(1)
+        raise ReleaseError("FRONTEND_READINESS_TIMEOUT")
+
+    def workers_ready(self) -> None:
+        expected = {
+            "celery@" + self.inspect(name)["Config"]["Hostname"]: name.removesuffix(
+                "_worker"
+            )
+            for name in WORKERS
+            if name.endswith("_worker")
+        }
+        code = """
+import json,sys
+from app.workers.celery_app import celery_app
+expected=json.loads(sys.argv[1])
+actual=celery_app.control.inspect(timeout=3).active_queues() or {}
+print(json.dumps({name:any(entry.get('name')==queue for entry in actual.get(name,[])) for name,queue in expected.items()}))
+"""
+        for _ in range(24):
+            try:
+                result = json.loads(
+                    self.compose(
+                        "exec",
+                        "-T",
+                        "backend",
+                        "python",
+                        "-c",
+                        code,
+                        json.dumps(expected),
+                    )
+                )
+                if result.keys() == expected.keys() and all(
+                    value is True for value in result.values()
+                ):
+                    return
+            except (ReleaseError, ValueError):
+                pass
+            time.sleep(2)
+        raise ReleaseError("WORKER_QUEUES_NOT_READY")
+
     def restart(self, *, migration_check: bool = True) -> None:
         if migration_check:
             self.compose(
@@ -652,11 +702,13 @@ class Runtime:
         self.compose(
             "up", "-d", "--no-deps", "--no-build", "--force-recreate", "frontend"
         )
+        self.frontend_ready()
         self.snapshot()
         self.compose(
             "up", "-d", "--no-deps", "--no-build", "--force-recreate", *WORKERS
         )
         self.ready()
+        self.workers_ready()
 
 
 def compare(before: dict[str, Any], after: dict[str, Any], sha: str) -> None:

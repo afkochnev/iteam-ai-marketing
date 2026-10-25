@@ -63,6 +63,22 @@ class DrillRuntime(Runtime):
             time.sleep(1)
         raise ReleaseError("DRILL_READINESS_TIMEOUT")
 
+    def frontend_ready(self) -> None:
+        for _ in range(60):
+            try:
+                self.compose(
+                    "exec",
+                    "-T",
+                    "frontend",
+                    "node",
+                    "-e",
+                    "fetch('http://127.0.0.1:3000/publications').then(r=>{if(r.status!==200)process.exit(1)}).catch(()=>process.exit(1))",
+                )
+                return
+            except ReleaseError:
+                time.sleep(1)
+        raise ReleaseError("DRILL_FRONTEND_READINESS_TIMEOUT")
+
     def data_hash(self) -> str:
         result = self.compose(
             "exec",
