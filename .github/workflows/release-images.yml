@@ -1,0 +1,82 @@
+name: Release images
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: release-images-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+jobs:
+  images:
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        component: [backend, frontend]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+      - name: Verify accepted release
+        env:
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$RELEASE_SHA"
+          git fetch origin main
+          git merge-base --is-ancestor "$RELEASE_SHA" origin/main
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build immutable release
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: ${{ matrix.component }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ghcr.io/${{ github.repository }}-${{ matrix.component }}:sha-${{ github.event.workflow_run.head_sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.event.workflow_run.head_sha }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          build-args: |
+            BUILD_SHA=${{ github.event.workflow_run.head_sha }}
+            NEXT_PUBLIC_API_URL=http://localhost:8000/api/v1
+          provenance: mode=max
+          sbom: true
+      - uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - name: Sign image digest and record release
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ghcr.io/${{ github.repository }}-${{ matrix.component }}
+          RELEASE_SHA: ${{ github.event.workflow_run.head_sha }}
+          COMPONENT: ${{ matrix.component }}
+        run: |
+          cosign sign --yes "$IMAGE@$DIGEST"
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          Path('release-' + os.environ['COMPONENT'] + '.json').write_text(json.dumps({
+              'release_sha': os.environ['RELEASE_SHA'],
+              'image': os.environ['IMAGE'] + '@' + os.environ['DIGEST'],
+              'platforms': ['linux/amd64', 'linux/arm64'],
+              'frontend_api_url': 'http://localhost:8000/api/v1',
+          }, indent=2) + '\n')
+          PYCODE
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.component }}-${{ github.event.workflow_run.head_sha }}
+          path: release-${{ matrix.component }}.json
+          if-no-files-found: error

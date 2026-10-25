@@ -5,8 +5,10 @@ RUN npm ci
 
 FROM node:22-alpine AS builder
 WORKDIR /app
+ARG BUILD_SHA=unknown
 ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_PUBLIC_BUILD_SHA=$BUILD_SHA
 COPY --from=dependencies /app/node_modules ./node_modules
 COPY . .
 RUN npm run build
