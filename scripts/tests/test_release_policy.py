@@ -127,6 +127,7 @@ class PolicyTests(unittest.TestCase):
                 "required_conversation_resolution": {"enabled": True},
             },
             "environments/production": {
+                "can_admins_bypass": False,
                 "deployment_branch_policy": {"protected_branches": True},
                 "protection_rules": [
                     {
@@ -171,6 +172,21 @@ class PolicyTests(unittest.TestCase):
                 self.subTest(change=change),
                 patch.object(ops, "gh", side_effect=lambda path: data[path]),
                 self.assertRaises(ops.ReleaseError),
+            ):
+                ops.gates()
+
+    def test_environment_admin_bypass_must_be_explicitly_disabled(self):
+        for value in (True, None, "false", "missing"):
+            data = self.gate_data()
+            env = data["environments/production"]
+            if value == "missing":
+                del env["can_admins_bypass"]
+            else:
+                env["can_admins_bypass"] = value
+            with (
+                self.subTest(value=value),
+                patch.object(ops, "gh", side_effect=lambda path: data[path]),
+                self.assertRaisesRegex(ops.ReleaseError, "PRODUCTION_ADMIN_BYPASS"),
             ):
                 ops.gates()
 

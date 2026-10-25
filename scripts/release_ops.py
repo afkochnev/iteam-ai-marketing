@@ -274,6 +274,7 @@ def gates() -> None:
         "UNRESOLVED_CONVERSATIONS_ALLOWED",
     )
     environment = gh("environments/production")
+    require(environment.get("can_admins_bypass") is False, "PRODUCTION_ADMIN_BYPASS")
     require(
         (environment.get("deployment_branch_policy") or {}).get("protected_branches"),
         "PRODUCTION_BRANCH_GATE_MISSING",
