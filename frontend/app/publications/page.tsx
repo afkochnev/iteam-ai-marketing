@@ -540,7 +540,7 @@ function PublicationsWorkspace() {
       </div>
       <Link className="button-link secondary" href="/campaigns">К кампаниям</Link>
     </header>
-    {!rowsIncomplete && <PublicationReplanningPreview rows={rows.filter((row) => ["SCHEDULED", "APPROVED"].includes(row.status))} />}
+    {!rowsIncomplete && <PublicationReplanningPreview onApplied={load} rows={rows.filter((row) => ["SCHEDULED", "APPROVED"].includes(row.status))} />}
     {campaignIdFilter && selectedCampaignName && <p className="notice">
       Показана кампания «{selectedCampaignName}». <Link href="/publications">Показать все кампании</Link>
     </p>}

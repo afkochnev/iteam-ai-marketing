@@ -19,4 +19,22 @@ describe("replanning preview", () => {
     fireEvent.change(screen.getByLabelText("Новый канал"), { target: { value: "VK" } });
     await waitFor(() => expect(screen.queryByText("Расписание не изменено")).not.toBeInTheDocument());
   });
+  it("requires explicit acknowledgement before confirming dates", async () => {
+    call.mockReset();
+    call.mockResolvedValueOnce({ mode: "PREVIEW_ONLY", snapshot_version: "a".repeat(64), can_confirm_dates: true, message: "Проверьте даты", items: [] }).mockResolvedValueOnce({ replacements: { one: "new" } });
+    render(<PublicationReplanningPreview rows={[row]} />);
+    fireEvent.click(screen.getByRole("button", { name: "Предпросмотр перепланирования" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Включить в предпросмотр" }));
+    fireEvent.click(screen.getByRole("button", { name: "Проверить изменения без сохранения" }));
+    const confirm = await screen.findByRole("button", { name: "Подтвердить перенос дат" });
+    expect(confirm).toBeDisabled();
+    expect(call).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("checkbox", { name: /Подтверждаю новые даты/ }));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(call).toHaveBeenCalledTimes(2));
+    expect(call.mock.calls[1][0]).toBe("/publications/campaign/campaign/replanning-confirm");
+    expect(JSON.parse(call.mock.calls[1][1].body).confirmed).toBe(true);
+    expect(await screen.findByText(/Перенос дат сохранён/)).toBeInTheDocument();
+  });
+
 });

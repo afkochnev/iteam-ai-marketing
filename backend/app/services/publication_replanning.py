@@ -94,4 +94,10 @@ def preview_replanning(
         for row in sorted(snapshots, key=lambda row: str(row.publication_id))
     ]
     digest = hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode()).hexdigest()
-    return ReplanningPreviewResponse(snapshot_version=digest, generated_at=now, items=items)
+    return ReplanningPreviewResponse(
+        snapshot_version=digest,
+        generated_at=now,
+        items=items,
+        can_confirm_dates=not any(item.blockers for item in items)
+        and any(item.original_scheduled_at != item.proposed_scheduled_at for item in items),
+    )
