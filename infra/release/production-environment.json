@@ -1,4 +1,5 @@
 {
+  "can_admins_bypass": false,
   "wait_timer": 0,
   "prevent_self_review": false,
   "reviewers": [{"type": "User", "id": 186186368}],
