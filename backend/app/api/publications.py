@@ -21,6 +21,11 @@ from app.schemas.publication import (
     PublicationResponse,
     PublicationScheduleRequest,
 )
+from app.schemas.publication_channel_change import (
+    ChannelChangeConfirm,
+    ChannelChangePrepare,
+    ChannelChangePrepared,
+)
 from app.schemas.publication_replanning import (
     ReplanningConfirmRequest,
     ReplanningConfirmResponse,
@@ -29,6 +34,7 @@ from app.schemas.publication_replanning import (
 )
 from app.services.activity_log_service import ActivityLogService
 from app.services.metrics_service import MetricsService
+from app.services.publication_channel_change import PublicationChannelChangeService
 from app.services.publication_service import PublicationService
 
 router = APIRouter(prefix="/publications", tags=["publications"])
@@ -59,6 +65,37 @@ async def delivery_status(_user: CurrentUser) -> dict[str, str]:
             + "Доступ к каналу и работа расписания этой проверкой не подтверждаются. "
             "План сохранён; повторно планировать публикацию не нужно."
         ),
+    }
+
+
+@router.get("/{publication_id}/channel-change", response_model=ChannelChangePrepared | None)
+async def pending_channel_change(
+    publication_id: UUID, _user: CurrentUser, session: SessionDependency
+) -> ChannelChangePrepared | None:
+    return await PublicationChannelChangeService(session).pending(publication_id)
+
+
+@router.post("/{publication_id}/channel-change/prepare", response_model=ChannelChangePrepared)
+async def prepare_channel_change(
+    publication_id: UUID,
+    payload: ChannelChangePrepare,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> ChannelChangePrepared:
+    return await PublicationChannelChangeService(session).prepare(publication_id, payload, user)
+
+
+@router.post("/{publication_id}/channel-change/confirm")
+async def confirm_channel_change(
+    publication_id: UUID,
+    payload: ChannelChangeConfirm,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> dict[str, UUID]:
+    return {
+        "publication_id": await PublicationChannelChangeService(session).confirm(
+            publication_id, payload, user
+        )
     }
 
 
