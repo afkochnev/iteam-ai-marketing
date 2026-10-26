@@ -1,0 +1,41 @@
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { PublicationChannelChange } from "../components/publication-channel-change";
+const mocks = vi.hoisted(() => ({ request: vi.fn(), get: vi.fn() }));
+vi.mock("@/lib/api", () => ({ request: mocks.request, contentApi: { get: mocks.get } }));
+const row = { publication_id: "source", content_item_id: "post", content_version_id: "v1", title: "Пост", channel: "VK" as const, scheduled_at: "2030-10-29T10:00:00Z", operational_data_complete: true };
+beforeEach(() => vi.resetAllMocks());
+describe("channel replacement", () => {
+  it("requires new approval and explicit confirmation", async () => {
+    mocks.request.mockResolvedValueOnce({ content_item_id: "adapted", content_version_id: "v2", channel: "TELEGRAM" }).mockResolvedValueOnce({ publication_id: "new" });
+    mocks.get.mockResolvedValue({ status: "APPROVED", approved_version_id: "v2", current_version: { id: "v2" } });
+    const applied = vi.fn().mockResolvedValue(undefined);
+    render(<PublicationChannelChange rows={[row]} onApplied={applied} />);
+    fireEvent.click(screen.getByRole("button", { name: "Изменить канал публикации" }));
+    fireEvent.change(screen.getByLabelText("Выберите публикацию"), { target: { value: "source" } });
+    fireEvent.change(screen.getByLabelText("Текст для нового канала"), { target: { value: "Адаптированный текст" } });
+    fireEvent.click(screen.getByRole("button", { name: "Подготовить текст для согласования" }));
+    expect(await screen.findByRole("link", { name: "Открыть текст и согласовать" })).toHaveAttribute("href", "/content/adapted");
+    expect(screen.queryByRole("button", { name: "Подтвердить замену канала" })).not.toBeInTheDocument();
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(mocks.request.mock.calls[0][1].body).channel).toBe("TELEGRAM");
+    fireEvent.click(screen.getByRole("button", { name: "Проверить согласование текста" }));
+    const confirm = await screen.findByRole("button", { name: "Подтвердить замену канала" });
+    expect(confirm).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox"));
+    fireEvent.click(confirm);
+    await waitFor(() => expect(applied).toHaveBeenCalledTimes(1));
+    expect(mocks.request.mock.calls[1][0]).toBe("/publications/source/channel-change/confirm");
+    expect(JSON.parse(mocks.request.mock.calls[1][1].body).expected_content_version_id).toBe("v2");
+  });
+  it("recovers an adaptation without creating another copy", async () => {
+    mocks.request.mockResolvedValue({ content_item_id: "adapted", content_version_id: "v2", channel: "TELEGRAM" });
+    render(<PublicationChannelChange rows={[row]} onApplied={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Изменить канал публикации" }));
+    fireEvent.change(screen.getByLabelText("Выберите публикацию"), { target: { value: "source" } });
+    fireEvent.click(screen.getByRole("button", { name: "Найти ранее подготовленный текст" }));
+    expect(await screen.findByRole("link", { name: "Открыть текст и согласовать" })).toBeInTheDocument();
+    expect(mocks.request).toHaveBeenCalledWith("/publications/source/channel-change");
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+  });
+});

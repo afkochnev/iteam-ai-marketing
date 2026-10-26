@@ -552,6 +552,7 @@ class PublicationService:
         channel: object,
         *,
         require_integrity_hash: bool = False,
+        allow_pending_channel_change: bool = False,
     ) -> ContentItem:
         item = (
             await self.session.execute(
@@ -560,6 +561,16 @@ class PublicationService:
         ).scalar_one_or_none()
         if item is None:
             raise AppError("CONTENT_NOT_FOUND", "Материал не найден.", 404)
+        if (
+            (item.metadata_ or {}).get("channel_change_source_publication_id")
+            and not (item.metadata_ or {}).get("channel_change_applied")
+            and not allow_pending_channel_change
+        ):
+            raise AppError(
+                "CHANNEL_CHANGE_CONFIRMATION_REQUIRED",
+                "Сначала подтвердите замену исходной отправки.",
+                409,
+            )
         if item.content_type is not ContentType.SOCIAL_POST:
             raise AppError(
                 "PUBLICATION_CONTENT_TYPE_INVALID",
@@ -685,7 +696,12 @@ class PublicationService:
         retry_allowed = retry_allowed and not await self.has_canary_retry(publication.id)
         content_item = await self.session.get(ContentItem, publication.content_item_id)
         raw_plan_item = (
-            (content_item.metadata_ or {}).get("publication_plan_item_id") if content_item else None
+            (
+                (content_item.metadata_ or {}).get("publication_plan_item_id")
+                or (content_item.metadata_ or {}).get("channel_change_origin_plan_item_id")
+            )
+            if content_item
+            else None
         )
         try:
             plan_item_id = UUID(str(raw_plan_item)) if raw_plan_item else None

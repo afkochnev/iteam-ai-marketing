@@ -437,6 +437,8 @@ class CampaignWorkspaceService:
     @staticmethod
     def _metadata_uuid(item: ContentItem | None, key: str) -> UUID | None:
         raw = (item.metadata_ or {}).get(key) if item else None
+        if item and key == "publication_plan_item_id" and not raw:
+            raw = (item.metadata_ or {}).get("channel_change_origin_plan_item_id")
         try:
             return UUID(str(raw)) if raw else None
         except (TypeError, ValueError):
