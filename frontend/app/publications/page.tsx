@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "@/components/hash-link";
+import { PublicationReplanningPreview } from "@/components/publication-replanning-preview";
 import { cancelledCards } from "@/lib/publication-schedule";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
@@ -539,6 +540,7 @@ function PublicationsWorkspace() {
       </div>
       <Link className="button-link secondary" href="/campaigns">К кампаниям</Link>
     </header>
+    {!rowsIncomplete && <PublicationReplanningPreview rows={rows.filter((row) => ["SCHEDULED", "APPROVED"].includes(row.status))} />}
     {campaignIdFilter && selectedCampaignName && <p className="notice">
       Показана кампания «{selectedCampaignName}». <Link href="/publications">Показать все кампании</Link>
     </p>}

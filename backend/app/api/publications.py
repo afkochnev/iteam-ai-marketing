@@ -21,6 +21,7 @@ from app.schemas.publication import (
     PublicationResponse,
     PublicationScheduleRequest,
 )
+from app.schemas.publication_replanning import ReplanningPreviewRequest, ReplanningPreviewResponse
 from app.services.activity_log_service import ActivityLogService
 from app.services.metrics_service import MetricsService
 from app.services.publication_service import PublicationService
@@ -54,6 +55,54 @@ async def delivery_status(_user: CurrentUser) -> dict[str, str]:
             "План сохранён; повторно планировать публикацию не нужно."
         ),
     }
+
+
+@router.post("/campaign/{campaign_id}/replanning-preview")
+async def replanning_preview(
+    campaign_id: UUID,
+    payload: "ReplanningPreviewRequest",
+    _user: CurrentUser,
+    session: SessionDependency,
+) -> "ReplanningPreviewResponse":
+    from datetime import UTC
+
+    from sqlalchemy import select
+
+    from app.models.campaign import Campaign, CampaignStatus
+    from app.models.content import ContentItem, ContentStatus
+    from app.services.publication_replanning import ScheduleSnapshot, preview_replanning
+
+    campaign = await session.get(Campaign, campaign_id)
+    if campaign is None or campaign.status is CampaignStatus.ARCHIVED:
+        raise AppError("CAMPAIGN_NOT_ACTIVE", "Выберите действующую кампанию.", 409)
+    rows = (
+        await session.execute(
+            select(Publication, ContentItem)
+            .join(ContentItem, ContentItem.id == Publication.content_item_id)
+            .where(Publication.campaign_id == campaign_id)
+        )
+    ).all()
+    snapshots = [
+        ScheduleSnapshot(
+            publication_id=row.id,
+            content_version_id=row.content_version_id,
+            channel=row.channel.value,
+            status=row.status.value,
+            scheduled_at=row.scheduled_at,
+            updated_at=row.updated_at,
+            blocked=(
+                row.execution_token is not None
+                or content.status is ContentStatus.ARCHIVED
+                or row.failure_code
+                in {"VK_RECONCILIATION_REQUIRED", "TELEGRAM_RECONCILIATION_REQUIRED"}
+            ),
+        )
+        for row, content in rows
+    ]
+    ids = {row.publication_id for row in snapshots}
+    if any(change.publication_id not in ids for change in payload.changes):
+        raise AppError("PUBLICATION_NOT_FOUND", "Публикация не найдена в этой кампании.", 404)
+    return preview_replanning(payload, snapshots, now=datetime.now(UTC))
 
 
 @router.post("", response_model=PublicationResponse, status_code=status.HTTP_201_CREATED)
