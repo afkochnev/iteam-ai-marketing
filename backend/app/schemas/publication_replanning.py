@@ -49,10 +49,21 @@ class ReplanningPreviewItem(BaseModel):
 
 class ReplanningPreviewResponse(BaseModel):
     mode: Literal["PREVIEW_ONLY"] = "PREVIEW_ONLY"
+    can_confirm_dates: bool = False
     snapshot_version: str
     generated_at: datetime
     items: list[ReplanningPreviewItem]
     message: str = (
         "Предпросмотр не изменяет расписание. Смена канала требует адаптации и нового "
-        "согласования текста. Подтверждение изменений пока недоступно."
+        "согласования текста. Перенос дат требует отдельного подтверждения."
     )
+
+
+class ReplanningConfirmRequest(ReplanningPreviewRequest):
+    snapshot_version: str = Field(pattern=r"^[0-9a-f]{64}$")
+    confirmed: Literal[True]
+
+
+class ReplanningConfirmResponse(BaseModel):
+    replacements: dict[UUID, UUID]
+    already_applied: bool = False

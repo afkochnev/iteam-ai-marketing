@@ -21,7 +21,12 @@ from app.schemas.publication import (
     PublicationResponse,
     PublicationScheduleRequest,
 )
-from app.schemas.publication_replanning import ReplanningPreviewRequest, ReplanningPreviewResponse
+from app.schemas.publication_replanning import (
+    ReplanningConfirmRequest,
+    ReplanningConfirmResponse,
+    ReplanningPreviewRequest,
+    ReplanningPreviewResponse,
+)
 from app.services.activity_log_service import ActivityLogService
 from app.services.metrics_service import MetricsService
 from app.services.publication_service import PublicationService
@@ -55,6 +60,18 @@ async def delivery_status(_user: CurrentUser) -> dict[str, str]:
             "План сохранён; повторно планировать публикацию не нужно."
         ),
     }
+
+
+@router.post("/campaign/{campaign_id}/replanning-confirm", response_model=ReplanningConfirmResponse)
+async def replanning_confirm(
+    campaign_id: UUID,
+    payload: ReplanningConfirmRequest,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> ReplanningConfirmResponse:
+    from app.services.publication_replanning_confirmation import confirm_replanning
+
+    return await confirm_replanning(session, campaign_id, payload, user)
 
 
 @router.post("/campaign/{campaign_id}/replanning-preview")
@@ -92,7 +109,7 @@ async def replanning_preview(
             updated_at=row.updated_at,
             blocked=(
                 row.execution_token is not None
-                or content.status is ContentStatus.ARCHIVED
+                or content.status is not ContentStatus.APPROVED
                 or row.failure_code
                 in {"VK_RECONCILIATION_REQUIRED", "TELEGRAM_RECONCILIATION_REQUIRED"}
             ),
