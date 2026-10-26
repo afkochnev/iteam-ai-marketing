@@ -230,18 +230,18 @@ describe("publication operator actions", () => {
       content_item_id: "post-active",
       content_version_id: "exact-v4",
       status: "SCHEDULED",
-      scheduled_at: "2026-10-26T10:00:00Z",
+      scheduled_at: "2030-10-26T10:00:00Z",
       publication_plan_item_id: null,
     }));
     render(<PublicationsPage />);
     const scheduleButton = await screen.findByRole("button", { name: "Назначить время" });
     fireEvent.click(scheduleButton);
     const input = await screen.findByLabelText("Дата и время публикации");
-    fireEvent.change(input, { target: { value: "2026-10-26T10:00" } });
+    fireEvent.change(input, { target: { value: "2030-10-26T10:00" } });
     fireEvent.click(screen.getByRole("button", { name: "Запланировать" }));
     await waitFor(() => expect(mocks.schedule).toHaveBeenCalledWith(
       "active",
-      new Date("2026-10-26T10:00").toISOString(),
+      new Date("2030-10-26T10:00").toISOString(),
     ));
   });
 
@@ -470,6 +470,17 @@ describe("publication operator actions", () => {
       new Date("2026-10-27T10:00").toISOString(),
     ));
     expect(within(section).getByRole("button", { name: "Отменить" })).toBeInTheDocument();
+  });
+
+  it("shows one cancelled card per material and channel while keeping every history record", async () => {
+    mocks.publications.mockResolvedValue([
+      publication({ id: "cancel-a", status: "CANCELLED", scheduled_at: "2026-10-20T10:00:00Z" }),
+      publication({ id: "cancel-b", status: "CANCELLED", scheduled_at: "2026-10-21T10:00:00Z" }),
+    ]);
+    render(<PublicationsPage />);
+    const section = await screen.findByRole("region", { name: "Отменённые" });
+    await waitFor(() => expect(within(section).getAllByRole("article")).toHaveLength(1));
+    expect(screen.getByText("История отменённых публикаций · 2")).toBeInTheDocument();
   });
 
   it("replans a cancelled post once and moves the old record to history", async () => {

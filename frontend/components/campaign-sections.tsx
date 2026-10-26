@@ -1,4 +1,5 @@
 "use client";
+import { currentPublication } from "@/lib/publication-schedule";
 import { PerformanceAnalysisDetails } from "@/components/performance-analysis";
 import { CampaignKPIBlock, PublicationPerformanceTable } from "@/components/campaign-kpis";
 
@@ -206,15 +207,23 @@ export default function CampaignSections({ section = "overview" }: { section?: C
         const source = articles.find((article) => article.id === item.source_content_item_id);
         const childPostRef = workspaceItem?.social_posts[0];
         const childPost = childPostRef ? socialPosts.find((post) => post.id === childPostRef.id) : socialPosts.find((post) => post.publication_plan_item_id === item.id);
-        const downstreamPublication = workspaceItem?.publications[0] ? publications.find((publication) => publication.id === workspaceItem.publications[0].id && publication.status !== "CANCELLED") : publications.find((publication) => publication.publication_plan_item_id === item.id && publication.status !== "CANCELLED") ?? (childPost ? getPublication(childPost) : undefined);
+        const linkedIds = new Set(workspaceItem?.publications.map((publication) => publication.id) ?? []);
+        const downstreamPublication = currentPublication(publications.filter((publication) =>
+          linkedIds.has(publication.id) || publication.publication_plan_item_id === item.id
+          || (childPost && publication.content_item_id === childPost.id)
+        ));
+        const effectiveDate = downstreamPublication?.scheduled_at ?? item.scheduled_at;
+        const effectiveChannel = downstreamPublication?.channel ?? item.channel;
+        const moved = Date.parse(effectiveDate) !== Date.parse(item.scheduled_at);
+
         return <li key={item.id} id={`plan-item-${item.id}`} tabIndex={-1} className="plan-item">
-          <div className="plan-item-main"><strong>{formatDateTime(item.scheduled_at)}</strong><StatusBadge label={item.channel} /><h4>{item.topic}</h4>
+          <div className="plan-item-main"><strong>{formatDateTime(effectiveDate)}</strong><StatusBadge label={effectiveChannel} />{moved && <p className="muted">Перенесено с {formatDateTime(item.scheduled_at)}. Исходный утверждённый план сохранён в истории.</p>}<h4>{item.topic}</h4>
             <p>{item.purpose} · {item.format}</p><p className="muted">{item.message_brief}</p>
             <p>Исходная статья: {source ? <Link href={`/content/${source.id}`}>{workspaceItem?.source_content_item_title ?? source.title}</Link> : "Связь не зафиксирована"} · версия {workspaceItem?.source_version_number ? `v${workspaceItem.source_version_number}` : "не определена"}</p>
             <p className="muted">Точная версия источника: {workspaceItem?.source_version_number ? `v${workspaceItem.source_version_number}` : "связь не подтверждена"} · {workspaceItem?.source_version_number && workspaceItem.source_claim_ids?.length ? `подтверждений: ${workspaceItem.source_claim_ids.length}` : "claim-связи не подтверждены"}</p>
             {workspaceItem?.source_version_number && (workspaceItem.source_support_summary ?? item.source_support_summary) && <p className="muted">Основание: {workspaceItem.source_support_summary ?? item.source_support_summary}</p>}
             {childPost ? <p>Пост: <Link href={`/content/${childPost.id}`}>{childPost.title}</Link></p> : <p className="muted">Пост для этого пункта ещё не создан.</p>}
-            {workspaceItem && <ol className="workflow-pipeline" aria-label={`Цепочка пункта ${item.position}`}>{workspaceItem.pipeline.map((stage) => <li key={stage.label} className={`pipeline-stage pipeline-${stage.status}`}><span>{stage.href ? <Link href={stage.href}>{stage.label}</Link> : stage.label}</span><small>{stage.action_label ?? stage.status}</small></li>)}</ol>}
+            {workspaceItem && <ol className="workflow-pipeline" aria-label={`Цепочка пункта ${item.position}`}>{workspaceItem.pipeline.map((stage) => <li key={stage.label} className={`pipeline-stage pipeline-${stage.status}`}><span>{stage.href ? <Link href={stage.href}>{stage.label}</Link> : stage.label}</span><small>{downstreamPublication?.status === "PUBLISHED" && stage.label === "Запланировано" ? "План выполнен" : stage.action_label ?? stage.status}</small></li>)}</ol>}
             {plan.status === "APPROVED" && workspaceItem && !workspaceItem.social_posts.length && !archived && (
               (postJobs[item.id]?.taskId ?? workspaceItem.post_action.existing_task_id)
                 ? <AutonomousPostProgress taskId={(postJobs[item.id]?.taskId ?? workspaceItem.post_action.existing_task_id)!} onComplete={() => { void load(); void loadPlans(); }} />
@@ -222,7 +231,7 @@ export default function CampaignSections({ section = "overview" }: { section?: C
                   ? <button disabled={archived || postBusyItemId === item.id} onClick={() => void createPostForPlanItem(workspaceItem, plan.id)}>{postBusyItemId === item.id ? "Создаём задачу…" : "Создать пост"}</button>
                   : <div className="friendly-error"><p><strong>Пост пока нельзя создать.</strong></p><p><strong>Почему:</strong> {workspaceItem.post_action.reason ?? "Не выполнены условия запуска."}</p><p><strong>Что сделать:</strong> {workspaceItem.post_action.next_action ?? "Проверьте пункт медиаплана."}</p></div>
             )}
-            {downstreamPublication ? <p>Дальше: {PUBLICATION_STATUS_LABELS[downstreamPublication.status]}{downstreamPublication.scheduled_at ? ` · ${formatDateTime(downstreamPublication.scheduled_at)}` : ""}</p> :
+            {downstreamPublication ? <p>{downstreamPublication.status === "PUBLISHED" ? "Опубликовано" : PUBLICATION_STATUS_LABELS[downstreamPublication.status]} · {downstreamPublication.channel}{(downstreamPublication.published_at ?? downstreamPublication.scheduled_at) ? ` · ${formatDateTime((downstreamPublication.published_at ?? downstreamPublication.scheduled_at)!)}` : ""}{downstreamPublication.external_url && <> · <a href={downstreamPublication.external_url} target="_blank" rel="noreferrer">Открыть публикацию</a></>}</p> :
               childPost?.status === "APPROVED" && !archived ? <button disabled={archived || publicationBusy === childPost.id} onClick={() => preparePublication(childPost)}>Запланировать публикацию</button> :
                 childPost && <p className="muted">Публикация станет доступна после утверждения поста.</p>}
           </div>

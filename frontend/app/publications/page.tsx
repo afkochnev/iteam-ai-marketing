@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "@/components/hash-link";
+import { cancelledCards } from "@/lib/publication-schedule";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useCallback, useEffect, useRef, useState } from "react";
 
@@ -439,9 +440,9 @@ function PublicationsWorkspace() {
   const cancelledHistory = rows.filter((item) => item.status === "CANCELLED");
   const hasReplacement = (item: CalendarRow) => rows.some((other) => {
     const copy = cache.current.get(other.campaign.id)?.content?.find((content) => content.id === other.content_item_id);
-    return (other.content_item_id === item.content_item_id || copy?.reuse_source_content_id === item.content_item_id) && other.publication_id !== item.publication_id && ["SCHEDULED", "PUBLISHING", "PUBLISHED"].includes(other.status);
+    return other.channel === item.channel && (other.content_item_id === item.content_item_id || copy?.reuse_source_content_id === item.content_item_id) && other.publication_id !== item.publication_id && ["SCHEDULED", "PUBLISHING", "PUBLISHED"].includes(other.status);
   });
-  const cancelled = cancelledHistory.filter((item) => !hasReplacement(item));
+  const cancelled = cancelledCards(cancelledHistory.filter((item) => !hasReplacement(item)));
   const attention = rows.filter((item) => (
     item.status !== "CANCELLED" && (item.status === "FAILED" || item.failure_code)
   ));
@@ -676,7 +677,7 @@ function PublicationsWorkspace() {
             <h3><Link href={`/content/${item.content_item_id}`}>{item.title}</Link></h3>
             <p className="row-meta"><Link href={`/campaigns/${item.campaign.id}`}>{item.campaign.name}</Link><span>{item.channel === "VK" ? "VK" : "Telegram"}{item.scheduled_at ? ` · ${formatDateTime(item.scheduled_at)}` : ""}</span>{version(item)}</p>
           </div><StatusBadge status={item.status} label={PUBLICATION_STATUS_LABELS[item.status]} /></div>
-          <p>Внешняя отправка не выполняется. Запись сохранена в истории публикаций.</p>
+          <p>Внешняя отправка не выполняется. Запись сохранена в истории публикаций.</p><details><summary>История этого материала</summary>{cancelledHistory.filter((entry) => entry.content_item_id === item.content_item_id && entry.channel === item.channel).map((entry) => <p key={entry.publication_id}>{entry.scheduled_at ? formatDateTime(entry.scheduled_at) : "Без даты"} · Отменена</p>)}</details>
           {!publicationSourceArchived(item) && <div className="actions"><Link href={`/content/${item.content_item_id}#edit`}>Редактировать материал</Link><button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => schedulePublication(item)}>Запланировать заново</button></div>}
           {publicationScheduleEditor(item)}{actionFeedback(item)}
           {item.content_status === "ARCHIVED" && <><p className="subtle">Архивный оригинал сохраняется. Копия потребует отдельного согласования и нового выбора времени.</p><button disabled={busyKey === `publication:${item.publication_id}`} onClick={() => void reuseArchived(item)}>Создать копию для новой публикации</button></>}
