@@ -206,18 +206,19 @@ export default function CampaignSections({ section = "overview" }: { section?: C
         const workspaceItem = planWorkspace?.items.find((planned) => planned.id === item.id);
         const source = articles.find((article) => article.id === item.source_content_item_id);
         const childPostRef = workspaceItem?.social_posts[0];
-        const childPost = childPostRef ? socialPosts.find((post) => post.id === childPostRef.id) : socialPosts.find((post) => post.publication_plan_item_id === item.id);
+        const fallbackChildPost = childPostRef ? socialPosts.find((post) => post.id === childPostRef.id) : socialPosts.find((post) => post.publication_plan_item_id === item.id);
         const linkedIds = new Set(workspaceItem?.publications.map((publication) => publication.id) ?? []);
         const downstreamPublication = currentPublication(publications.filter((publication) =>
           linkedIds.has(publication.id) || publication.publication_plan_item_id === item.id
-          || (childPost && publication.content_item_id === childPost.id)
+          || (fallbackChildPost && publication.content_item_id === fallbackChildPost.id)
         ));
+        const childPost = (downstreamPublication ? socialPosts.find((post) => post.id === downstreamPublication.content_item_id) : undefined) ?? fallbackChildPost;
         const effectiveDate = downstreamPublication?.scheduled_at ?? item.scheduled_at;
         const effectiveChannel = downstreamPublication?.channel ?? item.channel;
         const moved = Date.parse(effectiveDate) !== Date.parse(item.scheduled_at);
 
         return <li key={item.id} id={`plan-item-${item.id}`} tabIndex={-1} className="plan-item">
-          <div className="plan-item-main"><strong>{formatDateTime(effectiveDate)}</strong><StatusBadge label={effectiveChannel} />{moved && <p className="muted">Перенесено с {formatDateTime(item.scheduled_at)}. Исходный утверждённый план сохранён в истории.</p>}<h4>{item.topic}</h4>
+          <div className="plan-item-main"><strong>{formatDateTime(effectiveDate)}</strong><StatusBadge label={effectiveChannel} />{effectiveChannel !== item.channel && <p className="muted">Канал изменён с {item.channel}. Исходный утверждённый план сохранён в истории.</p>}{moved && <p className="muted">Перенесено с {formatDateTime(item.scheduled_at)}. Исходный утверждённый план сохранён в истории.</p>}<h4>{item.topic}</h4>
             <p>{item.purpose} · {item.format}</p><p className="muted">{item.message_brief}</p>
             <p>Исходная статья: {source ? <Link href={`/content/${source.id}`}>{workspaceItem?.source_content_item_title ?? source.title}</Link> : "Связь не зафиксирована"} · версия {workspaceItem?.source_version_number ? `v${workspaceItem.source_version_number}` : "не определена"}</p>
             <p className="muted">Точная версия источника: {workspaceItem?.source_version_number ? `v${workspaceItem.source_version_number}` : "связь не подтверждена"} · {workspaceItem?.source_version_number && workspaceItem.source_claim_ids?.length ? `подтверждений: ${workspaceItem.source_claim_ids.length}` : "claim-связи не подтверждены"}</p>

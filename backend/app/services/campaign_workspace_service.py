@@ -519,6 +519,33 @@ class CampaignWorkspaceService:
                 continue
             posts = posts_by_item.get(item.id, [])
             pubs = publications_by_item.get(item.id, [])
+            priority = {
+                PublicationStatus.PUBLISHING: 0,
+                PublicationStatus.SCHEDULED: 1,
+                PublicationStatus.PUBLISHED: 2,
+                PublicationStatus.FAILED: 3,
+                PublicationStatus.APPROVED: 4,
+                PublicationStatus.WAITING_APPROVAL: 5,
+                PublicationStatus.DRAFT: 6,
+            }
+            current_pub = next(
+                iter(
+                    sorted(
+                        (pub for pub in pubs if pub.status is not PublicationStatus.CANCELLED),
+                        key=lambda pub: (
+                            priority.get(pub.status, 9),
+                            -pub.created_at.timestamp(),
+                            str(pub.id),
+                        ),
+                    )
+                ),
+                None,
+            )
+            if current_pub is not None:
+                posts = sorted(posts, key=lambda post: post.id != current_pub.content_item_id)
+            current_posts = [
+                post for post in posts if current_pub and post.id == current_pub.content_item_id
+            ] or posts
             source = item.source_content_item
             source_version = item.source_content_version
             source_version_matches_article = bool(
@@ -557,7 +584,7 @@ class CampaignWorkspaceService:
                     else "Связь не зафиксирована"
                 ),
             )
-            post_stage_status = self._post_stage_status(posts)
+            post_stage_status = self._post_stage_status(current_posts)
             post_stage = WorkspacePipelineStage(
                 label="Пост",
                 status=post_stage_status,
@@ -577,14 +604,19 @@ class CampaignWorkspaceService:
                 label="Согласование",
                 status=(
                     "approved"
-                    if any(post.status is ContentStatus.APPROVED for post in posts)
+                    if any(post.status is ContentStatus.APPROVED for post in current_posts)
                     else "waiting"
-                    if any(post.status is ContentStatus.WAITING_APPROVAL for post in posts)
+                    if any(post.status is ContentStatus.WAITING_APPROVAL for post in current_posts)
                     else "not_started"
                 ),
                 href=f"/content/{posts[0].id}#approval" if posts else None,
             )
-            publication_stages = self._publication_stages(publication_refs, item_anchor)
+            publication_stages = self._publication_stages(
+                [ref for ref in publication_refs if current_pub and ref.id == current_pub.id]
+                if current_pub
+                else publication_refs,
+                item_anchor,
+            )
             items.append(
                 WorkspacePlanItem(
                     id=item.id,
