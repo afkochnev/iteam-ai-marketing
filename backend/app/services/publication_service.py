@@ -1174,9 +1174,12 @@ class PublicationService:
             )
         if item is None or item.current_version_id is None:
             raise AppError("CONTENT_NOT_FOUND", "Материал не найден.", 404)
-        await self._ensure_content_version_approved(
-            item.id, item.current_version_id, source.channel
+        version_id = (
+            source.content_version_id
+            if source.status is PublicationStatus.SCHEDULED
+            else item.current_version_id
         )
+        await self._ensure_content_version_approved(item.id, version_id, source.channel)
         plan_item = await self._plan_item(item)
         if plan_item is not None:
             current = await self.session.scalar(
@@ -1227,7 +1230,7 @@ class PublicationService:
         replacement = Publication(
             campaign_id=item.campaign_id,
             content_item_id=item.id,
-            content_version_id=item.current_version_id,
+            content_version_id=version_id,
             channel=source.channel,
             status=PublicationStatus.SCHEDULED,
             scheduled_at=scheduled_at.astimezone(UTC),
