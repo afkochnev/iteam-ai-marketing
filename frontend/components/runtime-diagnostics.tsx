@@ -34,12 +34,27 @@ function signalLabel(process: RuntimeProcess, expired: boolean): string {
   }[process.state];
 }
 
+function snapshotLifetimeMs(snapshot: RuntimeSnapshot): number {
+  const seconds = snapshot.stale_after_seconds;
+  const threshold = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
+  let lifetime = threshold;
+  for (const process of snapshot.processes) {
+    if (process.state !== "recent") continue;
+    const age = process.age_seconds;
+    const remaining = typeof age === "number" && Number.isFinite(age) && age >= 0
+      ? Math.max(0, threshold - age) : 0;
+    lifetime = Math.min(lifetime, remaining);
+  }
+  return lifetime * 1000;
+}
+
 function RuntimeDiagnosticsPanel() {
   const [snapshot, setSnapshot] = useState<RuntimeSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [expired, setExpired] = useState(false);
   const requestId = useRef(0);
+  const expiryDeadline = useRef(0);
   const controller = useRef<AbortController | null>(null);
 
   useEffect(() => () => {
@@ -49,16 +64,8 @@ function RuntimeDiagnosticsPanel() {
 
   useEffect(() => {
     if (!snapshot) return;
-    const seconds = snapshot.stale_after_seconds;
-    let expirySeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0;
-    for (const process of snapshot.processes) {
-      if (process.state !== "recent") continue;
-      const age = process.age_seconds;
-      const remaining = typeof age === "number" && Number.isFinite(age) && age >= 0
-        ? Math.max(0, seconds - age) : 0;
-      expirySeconds = Math.min(expirySeconds, remaining);
-    }
-    const timer = window.setTimeout(() => setExpired(true), expirySeconds * 1000);
+    const remainingMs = Math.max(0, expiryDeadline.current - performance.now());
+    const timer = window.setTimeout(() => setExpired(true), remainingMs);
     return () => window.clearTimeout(timer);
   }, [snapshot]);
 
@@ -71,9 +78,15 @@ function RuntimeDiagnosticsPanel() {
     setError("");
     setSnapshot(null);
     setExpired(false);
+    const startedAt = performance.now();
     try {
       const result = await systemApi.runtime(nextController.signal);
-      if (id === requestId.current) setSnapshot(result);
+      if (id === requestId.current) {
+        // Conservatively include the entire request without relying on server/client clock alignment.
+        expiryDeadline.current = startedAt + snapshotLifetimeMs(result);
+        setExpired(expiryDeadline.current <= performance.now());
+        setSnapshot(result);
+      }
     } catch {
       if (id === requestId.current) setError("Диагностика недоступна. Повторите проверку.");
     } finally {

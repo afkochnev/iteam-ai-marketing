@@ -174,6 +174,47 @@ describe("Manual runtime diagnostics", () => {
     expect(mocks.runtime).toHaveBeenCalledTimes(1);
   });
 
+  it.each([-86_400_000, 86_400_000])("expires a delayed response on arrival despite server clock skew %s", async (clockSkew) => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    const data = snapshot();
+    data.sampled_at = new Date(Date.now() + clockSkew).toISOString();
+    data.processes[0].age_seconds = 59;
+    let finish!: (value: RuntimeSnapshot) => void;
+    mocks.runtime.mockReturnValueOnce(new Promise<RuntimeSnapshot>((resolve) => { finish = resolve; }));
+    render(<RuntimeDiagnostics />);
+    check();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+      finish(data);
+    });
+    expect(screen.getByRole("alert")).toHaveTextContent("Срок проверки истёк");
+    expect(screen.queryByText("Свежий сигнал")).not.toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "ai —" })).toBeInTheDocument();
+    expect(mocks.runtime).toHaveBeenCalledTimes(1);
+  });
+
+  it("subtracts request latency from the remaining lifetime without polling", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date", "performance"] });
+    const data = snapshot();
+    data.processes[0].age_seconds = 57;
+    let finish!: (value: RuntimeSnapshot) => void;
+    mocks.runtime.mockReturnValueOnce(new Promise<RuntimeSnapshot>((resolve) => { finish = resolve; }));
+    render(<RuntimeDiagnostics />);
+    check();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+      finish(data);
+    });
+    expect(screen.getByText("Свежий сигнал")).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(999); });
+    expect(screen.getByText("Свежий сигнал")).toBeInTheDocument();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    expect(screen.getByRole("alert")).toHaveTextContent("Срок проверки истёк");
+    expect(screen.queryByText("Свежий сигнал")).not.toBeInTheDocument();
+    expect(screen.getByRole("row", { name: "ai —" })).toBeInTheDocument();
+    expect(mocks.runtime).toHaveBeenCalledTimes(1);
+  });
+
   it.each([null, -1, Infinity, NaN])("expires a recent signal with invalid age %s immediately", async (age) => {
     vi.useFakeTimers();
     const data = snapshot();
