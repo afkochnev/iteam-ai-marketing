@@ -14,11 +14,18 @@ from app.models.approval import Approval, ApprovalStatus
 from app.models.marketing_feedback import MarketingFeedbackAnalysis
 from app.models.publication import Publication, PublicationStatus
 from app.models.task import Task, TaskStatus, TaskType
+from app.schemas.runtime_diagnostics import RuntimeDiagnostics
 from app.services.reconciliation_integrity import reconciliation_integrity_report
+from app.services.runtime_diagnostics_service import collect_runtime_diagnostics
 
 EXPECTED_MIGRATION_HEAD = "20261009_0028"
 
 router = APIRouter(prefix="/system", tags=["system"])
+
+
+@router.get("/runtime", response_model=RuntimeDiagnostics)
+async def runtime_diagnostics(_admin: AdminUser) -> RuntimeDiagnostics:
+    return await collect_runtime_diagnostics()
 
 
 @router.get("/status")

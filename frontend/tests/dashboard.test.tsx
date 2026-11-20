@@ -82,7 +82,7 @@ describe("Protected dashboard", () => {
     expect(screen.getByText(/неподтверждённая доставка/)).toBeInTheDocument();
     expect(screen.getByText(/READY AI-задачи долго/)).toBeInTheDocument();
     expect(screen.getByText(/Provider отключён для запланированных/)).toBeInTheDocument();
-    expect(screen.getByText(/Runtime heartbeat не подтверждён/)).toBeInTheDocument();
+    expect(screen.getByText(/Эти флаги не подтверждают состояние исполнителей/)).toBeInTheDocument();
   });
 
 });
