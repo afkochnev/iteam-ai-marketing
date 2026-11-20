@@ -1,0 +1,40 @@
+{
+  "recorded_on": "2026-11-20",
+  "timezone": "Europe/Budapest",
+  "base_commit": "95aadda8b92ff7ce92c2270afba696a3e595d708",
+  "base_pull_request": 62,
+  "branch": "codex/runtime-diagnostics",
+  "scope": "Local development validation; not deployment or live worker acceptance",
+  "environment": {
+    "postgres": "New empty iteam_runtime_test database on tmpfs",
+    "redis": "Separate Redis, logical database 15 and unique test key prefixes",
+    "source": "Pinned public base plus SHA256-verified development overlays",
+    "network": "External bridge disconnected before tests",
+    "runtime_volumes_or_credentials_mounted": false,
+    "application_servers_or_celery_workers_started": false
+  },
+  "backend": {
+    "command": "python -m pytest app/tests/test_runtime_diagnostics.py app/tests/test_runtime_heartbeat.py app/tests/test_health.py app/tests/test_delivery_status.py app/tests/test_celery_routing.py -q",
+    "result": "93 passed, 2 existing deprecation warnings",
+    "real_redis": "PASS: writer/reader, two instances, own-member removal and unchanged synthetic queue body/count",
+    "ruff_check": "PASS",
+    "ruff_format": "PASS: 235 app files",
+    "mypy": "PASS: 171 production source files",
+    "alembic_upgrade": "PASS: 20261009_0028",
+    "alembic_check": "PASS: no new upgrade operations detected"
+  },
+  "frontend": {
+    "command": "npm test -- --run tests/runtime-diagnostics.test.tsx tests/dashboard.test.tsx",
+    "result": "25 passed",
+    "lint": "PASS",
+    "production_build": "PASS",
+    "coverage": "Admin/manual GET; unknown/error states; expiry based on remaining signal freshness; abort and role changes"
+  },
+  "temporary_test_containers_and_network_removed": true,
+  "accepted_runtime_or_configuration_changed": false,
+  "live_provider_or_ai_calls": 0,
+  "new_schema_migration": false,
+  "live_worker_and_beat_acceptance": "NOT_RUN",
+  "github_full_ci": "NOT_RUN at recording",
+  "production_deploy": "NOT_PERFORMED"
+}

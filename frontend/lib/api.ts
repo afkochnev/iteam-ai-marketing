@@ -80,6 +80,20 @@ export interface WorkspaceFeedbackState { new_feedback_count: number; new_metric
 export interface CampaignDirectorBrief { strategy_status: ApprovalStatus | CampaignStatus; article_count: number; approved_article_count: number; plan_status: PublicationPlanStatus | null; plan_item_count: number; plan_items_with_posts: number; plan_items_without_posts: number; social_post_count: number; posts_waiting_approval: number; scheduled_publication_count: number; published_count: number; failed_task_count: number; blocked_task_count: number; next_step: WorkspaceNextStep; previous_plan_materials?: WorkspaceNextStep[]; }
 export interface CampaignWorkspace { superseded_legacy_analysis_ids?: string[]; campaign: Campaign; director: CampaignDirectorBrief; knowledge: WorkspaceKnowledgeState; articles: WorkspaceArticle[]; social_posts: WorkspaceContentReference[]; publication_plan: WorkspacePlan | null; other_plans: WorkspacePlan[]; publications: WorkspacePublicationReference[]; attention_tasks: WorkspaceTask[]; feedback: WorkspaceFeedbackState; change_state?: CampaignChangeState; }
 export interface SystemStatus { due_publications?: number; overdue_publications?: number; scheduled_publications?: number; publishing_providers_enabled?: { telegram: boolean; vk: boolean }; ready_auto_ai_tasks?: number; stalled_ready_auto_ai_tasks?: number; running_agent_runs?: number; publications?: { failed: number; reconciliation_required: number; provider_disabled: number }; tasks: Record<string, number>; agent_runs: Record<string, number>; stuck_tasks: number; pending_approvals: number; last_activity_at: string | null; }
+export type RuntimeBrokerState = "ok" | "partial" | "unavailable" | "unsupported" | "disabled";
+export type RuntimeProcessState = "recent" | "stale" | "unobserved" | "unknown";
+export type RuntimeRole = "ai" | "ai_control" | "publication" | "publication_control" | "metrics";
+export interface RuntimeQueue { name: string; waiting_messages: number | null; }
+export interface RuntimeProcess {
+  id: string; kind: "worker" | "scheduler"; role: RuntimeRole; state: RuntimeProcessState;
+  last_seen_at: string | null; age_seconds: number | null;
+  observed_instances: number | null; fresh_instances: number | null;
+  queues: string[]; build_mismatch: boolean | null;
+}
+export interface RuntimeSnapshot {
+  sampled_at: string; broker_state: RuntimeBrokerState; stale_after_seconds: number;
+  queues: RuntimeQueue[]; processes: RuntimeProcess[];
+}
 export class ApiError extends Error { constructor(message: string, public status: number, public code?: string) { super(message); } }
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
@@ -242,7 +256,10 @@ export const publicationPlansApi = {
   reorder: (id: string, itemIds: string[]) => request<PublicationPlan>(`/publication-plans/${id}/reorder`, { method: "POST", body: JSON.stringify({ item_ids: itemIds }) }),
 };
 export const activitiesApi = { list: (campaignId?: string) => request<Activity[]>(`/activities${campaignId ? `?campaign_id=${campaignId}` : ""}`) };
-export const systemApi = { status: () => request<SystemStatus>("/system/status") };
+export const systemApi = {
+  status: () => request<SystemStatus>("/system/status"),
+  runtime: (signal?: AbortSignal) => request<RuntimeSnapshot>("/system/runtime", { method: "GET", signal }),
+};
 
 export type OptimizationActionStatus = "PROPOSED" | "APPROVED" | "REJECTED" | "APPLIED" | "FAILED";
 export type OptimizationActionType = "CONTENT_REVISION" | "PUBLICATION_PLAN_REVISION" | "STRATEGY_REVIEW" | "EXPERIMENT" | "NO_CHANGE";
