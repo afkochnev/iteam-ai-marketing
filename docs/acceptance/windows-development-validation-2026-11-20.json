@@ -1,0 +1,40 @@
+{
+  "recorded_on": "2026-11-20",
+  "timezone": "Europe/Budapest",
+  "baseline_release_sha": "ee7e1e0b61f2e0c63ea5d0a01c2d91e0ff64cb15",
+  "scope": "Development validation; not a production release or campaign acceptance",
+  "backend": {
+    "environment": "Disposable accepted backend image with development overlay; Python 3.12",
+    "development_overlay_sha256_verified": true,
+    "database": "Dedicated empty PostgreSQL iteam_replan_test on tmpfs",
+    "redis": "Dedicated Redis logical database 15",
+    "test_network": "Internal; external bridge disconnected before migrations and tests",
+    "migration_upgrade": "PASS: 20261009_0028",
+    "alembic_check": "PASS: no new upgrade operations detected",
+    "pytest_command": "python -m pytest app/tests/test_publication_replan_versions.py app/tests/test_publications.py app/tests/test_plan_publication_scheduling.py -q",
+    "pytest": "92 passed in 29.92s",
+    "ruff_check_changed_files": "PASS",
+    "ruff_format_changed_files": "PASS: 2 files",
+    "mypy": "PASS: 167 production source files"
+  },
+  "windows_review": {
+    "unit_command": "python -B -m unittest discover -s scripts/windows_review/tests -v",
+    "unit_tests": "13 PASS; synthetic config and inspect data, no Docker calls",
+    "actual_effective_compose_config": "PASS; config read only, values not printed",
+    "new_wrappers_installed": false,
+    "actual_launcher_startup": "NOT_RUN"
+  },
+  "campaign_acceptance": {
+    "scenario": "campaign-e2e-windows.md",
+    "status": "NOT_RUN"
+  },
+  "boundaries": {
+    "accepted_source_hash_unchanged": true,
+    "accepted_runtime_started": false,
+    "runtime_database_or_credentials_mounted_in_tests": false,
+    "runtime_env_or_permissions_changed": false,
+    "live_ai_or_publication_providers_called": false,
+    "temporary_test_containers_and_network_removed": true,
+    "production_deploy": "NOT_PERFORMED"
+  }
+}
