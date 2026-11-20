@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import PublicationsPage from "../app/publications/page";
 
@@ -154,6 +154,8 @@ describe("publication calendar", () => {
 
 describe("publication operator actions", () => {
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-21T12:00:00Z"));
     vi.clearAllMocks();
     mocks.searchParams = new URLSearchParams();
     mocks.campaigns.mockResolvedValue([{ id: "campaign-1", name: "Запуск", status: "ACTIVE" }]);
@@ -163,6 +165,7 @@ describe("publication operator actions", () => {
     mocks.plans.mockResolvedValue([]);
     vi.spyOn(window, "confirm").mockReturnValue(true);
   });
+  afterEach(() => vi.useRealTimers());
 
   it("routes an exact approved unscheduled post to content scheduling and cancelled delivery does not block it", async () => {
     mocks.content.mockResolvedValue([{
@@ -665,3 +668,4 @@ describe("partial read failures", () => {
     expect(screen.queryByText("exact-v1")).not.toBeInTheDocument();
   });
 });
+
