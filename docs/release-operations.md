@@ -49,7 +49,7 @@ Backup использует единый repeatable-read snapshot: pg_dump ср�
 
 До остановки сервисов проверяются отсутствие PUBLISHING, просроченных/близких (30 минут) SCHEDULED и RUNNING AgentRuns, canary gate, схема, текущие image revisions, credentials owner/mode и отсутствие static VK publishing token. Проверяются команды, переменные, пользователи, порты, сети, resource/security policies и mounts. VK volume допустим только у publication worker и credentials admin, включая случаи другого target mount path.
 
-Образы скачиваются только по digest. Сначала проверяются их OCI revision, backend BUILD_SHA и Alembic head. Текущий первый протокол разрешает только неизменную схему `20261009_0028` и неизменный docker-compose.yml; изменение миграций или topology требует отдельной доработки/проверки. Автоматического downgrade нет. Старые работающие образы закрепляются локальными immutable image IDs для точного аварийного возврата, включая первый переход с прежней схемы локальных сборок. Это не пересборка старой версии.
+Образы скачиваются только по digest. Сначала проверяются их OCI revision, backend BUILD_SHA и Alembic head. `prepare` запускает подписанный backend-образ с `network=none` только для чтения `alembic heads`; образ с другой схемой блокируется до создания или подписания release manifest. Текущий первый протокол разрешает только неизменную схему `20261009_0028` и неизменный docker-compose.yml; изменение миграций или topology требует отдельной доработки/проверки. Автоматического downgrade нет. Старые работающие образы закрепляются локальными immutable image IDs для точного аварийного возврата, включая первый переход с прежней схемы локальных сборок. Это не пересборка старой версии.
 
 Порядок переключения: stop schedulers → drain workers → повторный quiet gate → новый backend/schema check/readiness → frontend/HTTP readiness → workers/проверка каждой очереди по hostname нового контейнера. Используется только `up --no-build`. В `.env` меняются только BUILD_SHA и COMPOSE_FILE; исходные overrides сохраняются, digest overlay находится в приватном state-dir. Production checkout переводится на точный принятый main commit. Изолированный VK volume не заменяется.
 
@@ -57,7 +57,7 @@ Backup использует единый repeatable-read snapshot: pg_dump ср�
 
 ## Репетиция
 
-`release-tools` CI выбирает два последних успешных build run с разными main SHA (ID включаются в proof), запускает unit/failure tests и настоящий disposable Compose-проект: предыдущие подписанные образы → следующие подписанные образы → возврат → искусственный сбой запуска frontend → автоматический возврат.
+`release-tools` CI просматривает последние успешные build run с разными main SHA, пропускает образы, несовместимые с текущей разрешённой схемой, и выбирает две последние совместимые версии (ID включаются в proof). Затем он запускает unit/failure tests и настоящий disposable Compose-проект: предыдущие подписанные образы → следующие подписанные образы → возврат → искусственный сбой запуска frontend → автоматический возврат.
 
 В проекте 11 сервисов, отдельные volumes и internal network, нет опубликованных портов, bind mounts, production credentials и доступа к внешней сети. Publishing/metrics выключены, OpenAI key пуст. Через Alembic создаётся отдельная тестовая БД, штатный seed создаёт непустые fixture-данные. Проверяются encrypted backup/isolated restore, неизменность fixture-данных, schema, SHA, topology, отключённых gates и HTTP frontend после rollback. Project/volumes удаляются; в artifact уходит только metadata proof, не backup или ключ.
 

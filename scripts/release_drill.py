@@ -372,23 +372,32 @@ def drill(first_run: int, second_run: int, output: Path, cosign: str) -> dict:
         return result
 
 
-def recent_build_pair() -> tuple[int, int]:
+def recent_build_pair(cosign: str) -> tuple[int, int]:
     runs = gh(
         "actions/workflows/release-images.yml/runs?branch=main&status=success&per_page=30"
     )
-    selected = []
-    seen = set()
-    for run in runs["workflow_runs"]:
-        if (
-            run["status"] == "completed"
-            and run["conclusion"] == "success"
-            and run["head_sha"] not in seen
-        ):
-            selected.append(run["id"])
+    selected: list[int] = []
+    seen: set[str] = set()
+    with tempfile.TemporaryDirectory(prefix="iteam-compatible-releases-") as directory:
+        root = Path(directory)
+        for run in runs["workflow_runs"]:
+            if (
+                run["status"] != "completed"
+                or run["conclusion"] != "success"
+                or run["head_sha"] in seen
+            ):
+                continue
             seen.add(run["head_sha"])
-        if len(selected) == 2:
-            return selected[1], selected[0]
-    raise ReleaseError("TWO_SUCCESSFUL_RELEASES_REQUIRED")
+            try:
+                prepare(run["id"], root / f"release-{run['id']}.json", cosign)
+            except ReleaseError as error:
+                if str(error) == "IMAGE_SCHEMA_NOT_COMPATIBLE":
+                    continue
+                raise
+            selected.append(run["id"])
+            if len(selected) == 2:
+                return selected[1], selected[0]
+    raise ReleaseError("TWO_SUCCESSFUL_SCHEMA_COMPATIBLE_RELEASES_REQUIRED")
 
 
 def main() -> None:
@@ -406,7 +415,7 @@ def main() -> None:
                 args.from_build_run is None and args.to_build_run is None,
                 "AMBIGUOUS_DRILL_RELEASES",
             )
-            first, second = recent_build_pair()
+            first, second = recent_build_pair(args.cosign)
         else:
             require(
                 args.from_build_run and args.to_build_run, "TWO_BUILD_RUNS_REQUIRED"
