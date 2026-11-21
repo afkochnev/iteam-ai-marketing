@@ -1,7 +1,11 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import PublicationsPage from "../app/publications/page";
+import { PublicationScheduleEditor } from "../components/publication-schedule-editor";
+
+const RealDate = Date;
+const FIXED_TEST_TIME = new Date("2026-10-21T12:00:00Z");
 
 const mocks = vi.hoisted(() => ({
   user: { role: "ADMIN" },
@@ -154,6 +158,11 @@ describe("publication calendar", () => {
 
 describe("publication operator actions", () => {
   beforeEach(() => {
+    expect(vi.isFakeTimers()).toBe(false);
+    expect(Date).toBe(RealDate);
+    // Freeze validation time without replacing RTL's real waiting timers.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(FIXED_TEST_TIME);
     vi.clearAllMocks();
     mocks.searchParams = new URLSearchParams();
     mocks.campaigns.mockResolvedValue([{ id: "campaign-1", name: "Запуск", status: "ACTIVE" }]);
@@ -162,6 +171,41 @@ describe("publication operator actions", () => {
     mocks.content.mockResolvedValue([]);
     mocks.plans.mockResolvedValue([]);
     vi.spyOn(window, "confirm").mockReturnValue(true);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    expect(vi.isFakeTimers()).toBe(false);
+    expect(Date).toBe(RealDate);
+  });
+
+  it.each([
+    ["future", "2026-10-27T09:00", true],
+    ["past", "2026-10-20T09:00", false],
+  ] as const)("validates a %s fixture against the fixed clock", async (_label, fixture, accepted) => {
+    const onSubmit = vi.fn().mockResolvedValue(true);
+    const onClose = vi.fn();
+    expect(Date.now()).toBe(FIXED_TEST_TIME.getTime());
+    render(<PublicationScheduleEditor
+      editorKey="clock-regression"
+      title="Clock regression"
+      submitLabel="Save"
+      busy={false}
+      onClose={onClose}
+      onSubmit={onSubmit}
+    />);
+    fireEvent.change(screen.getByLabelText("Дата и время публикации"), { target: { value: fixture } });
+    // Reach the application's guard even when native input min rejects a past value.
+    fireEvent.submit(screen.getByRole("form", { name: "Clock regression" }));
+    if (accepted) {
+      await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(new Date(fixture).toISOString()));
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } else {
+      expect(screen.getByRole("alert")).toHaveTextContent("Выберите корректные будущие дату и время.");
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+    }
   });
 
   it("routes an exact approved unscheduled post to content scheduling and cancelled delivery does not block it", async () => {
@@ -552,6 +596,13 @@ describe("publication operator actions", () => {
     fireEvent.click(screen.getByRole("button", { name: "Повторить" }));
     expect(await screen.findByRole("link", { name: "Проверить контент и согласования" })).toHaveAttribute("href", "/content");
     expect(mocks.campaigns.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("publication clock isolation", () => {
+  it("starts the next test with real timers and the original Date constructor", () => {
+    expect(vi.isFakeTimers()).toBe(false);
+    expect(Date).toBe(RealDate);
   });
 });
 
