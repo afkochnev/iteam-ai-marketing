@@ -1,13 +1,23 @@
 # iTeam AI Marketing Department
 
-MVP цепочка: Campaign → Strategy Approval → Knowledge → Article → Social Post
+Историческая MVP-цепочка: Campaign → Strategy Approval → Knowledge → Article → Social Post
 Pack, human approvals, revisions, automatic dispatch and resilience controls.
 
 Production references: [deployment](docs/deployment.md), [security](docs/security.md),
 [backup/restore](docs/backup-and-restore.md), [release checklist](docs/release-checklist.md),
 [VK publishing](docs/vk-publishing.md) и [architecture](docs/architecture.md).
 
-Основа web-приложения для управляемого AI-отдела маркетинга iTeam. Репозиторий развивается последовательно по master specification. Текущий scope: **Итерация 6 — Marketing Director и согласование стратегии**.
+## Target architecture: iTeam Marketing OS
+
+**Current production** продолжает работать по действующим runtime-контрактам и
+[эксплуатационной документации](docs/normal-operations.md); PR-A0 не меняет runtime.
+**Target architecture (Proposed)** описывает дальнейшее развитие Marketing OS:
+DISCOVER → DECIDE → CREATE → DELIVER → MEASURE → LEARN.
+Документы: [architecture-v2](docs/architecture-v2/) и [vision / Non-goals](docs/architecture-v2/vision.md),
+[ADR 001–006](docs/adr/), [roadmap и открытые вопросы](docs/architecture-v2/roadmap.md).
+Это проект архитектуры; его возможности не объявляются уже поставленными в production.
+
+Основа web-приложения для управляемого AI-отдела маркетинга iTeam. Текущий production включает управляемые AI-задачи, базу знаний, версии и согласования контента, планирование и доставку в Telegram/VK, read-only метрики, анализ/оптимизацию и immutable release operations. Target architecture расширяет этот контур до Marketing OS, но не считается реализованной до отдельных PR, release и production acceptance.
 
 ## Архитектура
 
