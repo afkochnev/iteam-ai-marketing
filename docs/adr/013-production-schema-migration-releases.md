@@ -1,6 +1,6 @@
 # ADR 013: production-релизы с изменением схемы
 
-- Status: **Proposed**.
+- Status: **Accepted**.
 - Date: 2026-11-21.
 - Scope: release architecture для перехода от schema-static deploy к контролируемым forward migrations.
 
