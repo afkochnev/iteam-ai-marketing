@@ -72,6 +72,7 @@ from app.models.publication_metrics import PublicationMetricsSnapshot  # noqa: E
 from app.models.publication_plan import PublicationPlan, PublicationPlanItem  # noqa: E402
 from app.models.task import Task, TaskDependency  # noqa: E402
 from app.models.user import User  # noqa: E402
+from app.models.workspace import Workspace, WorkspaceMembership  # noqa: E402
 
 
 @pytest.fixture
@@ -118,6 +119,8 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.execute(delete(CampaignKPI))
         await session.execute(delete(Campaign))
         await session.execute(delete(Agent))
+        await session.execute(delete(WorkspaceMembership))
+        await session.execute(delete(Workspace))
         await session.execute(delete(User))
         await session.commit()
         yield session
@@ -162,6 +165,8 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.execute(delete(CampaignKPI))
         await session.execute(delete(Campaign))
         await session.execute(delete(Agent))
+        await session.execute(delete(WorkspaceMembership))
+        await session.execute(delete(Workspace))
         await session.execute(delete(User))
         await session.commit()
     await engine.dispose()

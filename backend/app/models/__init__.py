@@ -36,6 +36,7 @@ from app.models.publication_plan import (
 )
 from app.models.task import Task, TaskDependency, TaskPriority, TaskStatus, TaskType
 from app.models.user import User, UserRole
+from app.models.workspace import Workspace, WorkspaceMembership, WorkspaceRole
 
 __all__ = [
     "MarketingExperiment",
@@ -95,6 +96,9 @@ __all__ = [
     "ToolCallStatus",
     "User",
     "UserRole",
+    "Workspace",
+    "WorkspaceMembership",
+    "WorkspaceRole",
 ]
 
 from app.models.campaign_kpi import CampaignKPI

@@ -18,7 +18,7 @@ from app.schemas.runtime_diagnostics import RuntimeDiagnostics
 from app.services.reconciliation_integrity import reconciliation_integrity_report
 from app.services.runtime_diagnostics_service import collect_runtime_diagnostics
 
-EXPECTED_MIGRATION_HEAD = "20261009_0028"
+EXPECTED_MIGRATION_HEAD = "20261121_0029"
 
 router = APIRouter(prefix="/system", tags=["system"])
 
