@@ -83,9 +83,16 @@ class PolicyTests(unittest.TestCase):
         ):
             runtime.frontend_ready()
 
-    def test_ci_drill_uses_two_distinct_recent_builds_not_expiring_fixed_ids(self):
+    def test_ci_drill_uses_two_distinct_schema_compatible_builds(self):
+        incompatible = "3" * 40
         data = {
             "workflow_runs": [
+                {
+                    "id": 31,
+                    "head_sha": incompatible,
+                    "status": "completed",
+                    "conclusion": "success",
+                },
                 {
                     "id": 30,
                     "head_sha": NEW,
@@ -106,14 +113,42 @@ class PolicyTests(unittest.TestCase):
                 },
             ]
         }
-        with patch.object(drill, "gh", return_value=data):
-            self.assertEqual(drill.recent_build_pair(), (28, 30))
-        data["workflow_runs"] = data["workflow_runs"][:2]
+
+        def prepare(run_id, output, cosign):
+            self.assertEqual(cosign, "cosign")
+            if run_id == 31:
+                raise ops.ReleaseError("IMAGE_SCHEMA_NOT_COMPATIBLE")
+            output.write_text("{}")
+            return {}
+
         with (
             patch.object(drill, "gh", return_value=data),
-            self.assertRaises(ops.ReleaseError),
+            patch.object(drill, "prepare", side_effect=prepare),
         ):
-            drill.recent_build_pair()
+            self.assertEqual(drill.recent_build_pair("cosign"), (28, 30))
+        data["workflow_runs"] = data["workflow_runs"][:1]
+        with (
+            patch.object(drill, "gh", return_value=data),
+            patch.object(drill, "prepare", side_effect=prepare),
+            self.assertRaisesRegex(
+                ops.ReleaseError, "SCHEMA_COMPATIBLE_RELEASES_REQUIRED"
+            ),
+        ):
+            drill.recent_build_pair("cosign")
+
+    def test_image_schema_gate_pulls_and_requires_exact_head(self):
+        ref = manifest()["images"]["backend"]
+        with patch.object(ops, "command", side_effect=["", ops.SCHEMA + " (head)"]) as cmd:
+            ops.require_image_schema(ref, ops.SCHEMA)
+        self.assertEqual(cmd.call_args_list[0].args[0], ["docker", "pull", ref])
+        self.assertIn("none", cmd.call_args_list[1].args[0])
+        with (
+            patch.object(
+                ops, "command", side_effect=["", "20261121_0029 (head)"]
+            ),
+            self.assertRaisesRegex(ops.ReleaseError, "IMAGE_SCHEMA_NOT_COMPATIBLE"),
+        ):
+            ops.require_image_schema(ref, ops.SCHEMA)
 
     def gate_data(self):
         return {

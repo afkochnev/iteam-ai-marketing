@@ -77,6 +77,7 @@ def failure_code(error: Exception) -> str:
         "CREDENTIAL_VOLUME_MISSING",
         "CREDENTIAL_MOUNT_LEAK",
         "INVALID_ENVIRONMENT_METADATA",
+        "IMAGE_SCHEMA_NOT_COMPATIBLE",
         "INJECTED_FRONTEND_FAILURE",
         "INJECTED_FAILURE",
         "DRILL_READINESS_TIMEOUT",
@@ -415,6 +416,28 @@ def verify_image(component: str, ref: str, sha: str, cosign: str) -> None:
             )
 
 
+def require_image_schema(
+    ref: str, expected: str, *, pull: bool = True
+) -> None:
+    image_ref("backend", ref)
+    if pull:
+        command(["docker", "pull", ref])
+    head = command(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--entrypoint",
+            "alembic",
+            ref,
+            "heads",
+        ]
+    )
+    require(head == expected + " (head)", "IMAGE_SCHEMA_NOT_COMPATIBLE")
+
+
 def prepare(build_run_id: int, output: Path, cosign: str) -> dict[str, Any]:
     info = run_info(build_run_id, "release-images.yml", "workflow_run")
     sha = info["head_sha"]
@@ -446,6 +469,9 @@ def prepare(build_run_id: int, output: Path, cosign: str) -> dict[str, Any]:
             )
             images[component] = record["image"]
             verify_image(component, images[component], sha, cosign)
+    # The current production protocol is deliberately schema-static. Reject a
+    # migration image before it can enter a prepared or approved manifest.
+    require_image_schema(images["backend"], SCHEMA)
     value = {
         "version": 1,
         "repository": REPO,
@@ -886,20 +912,7 @@ def pull_and_validate(runtime: Runtime, value: dict[str, Any]) -> None:
                 "BUILD_SHA=" + value["release_sha"] in data["Config"]["Env"],
                 "PULLED_IMAGE_BUILD_SHA_MISMATCH",
             )
-            head = command(
-                [
-                    "docker",
-                    "run",
-                    "--rm",
-                    "--network",
-                    "none",
-                    "--entrypoint",
-                    "alembic",
-                    ref,
-                    "heads",
-                ]
-            )
-            require(head == SCHEMA + " (head)", "IMAGE_SCHEMA_NOT_COMPATIBLE")
+            require_image_schema(ref, value["alembic_head"], pull=False)
 
 
 def switch(
