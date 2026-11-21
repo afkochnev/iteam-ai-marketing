@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     app_env: str = "development"
     worker_role: str | None = None
     scheduler_role: str | None = None
+    runtime_diagnostics_enabled: bool = True
     app_secret: str = "development-only-change-me"
     database_url: str = "postgresql+asyncpg://iteam:iteam@postgres:5432/iteam"
     redis_url: str = "redis://redis:6379/0"

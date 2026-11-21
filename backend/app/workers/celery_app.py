@@ -2,6 +2,7 @@ from celery import Celery
 from kombu import Queue
 
 from app.core.config import settings
+from app.workers.runtime_heartbeat import register_runtime_heartbeat
 from app.workers.scheduler_config import build_beat_schedule
 
 settings.validate_worker_capabilities()
@@ -68,3 +69,4 @@ celery_app.conf.update(
     result_expires=86400,
 )
 celery_app.conf.beat_schedule = build_beat_schedule(settings.scheduler_role, settings)
+register_runtime_heartbeat(celery_app, settings)
