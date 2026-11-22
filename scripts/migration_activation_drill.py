@@ -533,6 +533,23 @@ def _helpers_removed(operation: str) -> None:
         ops.require(not remaining, "ACTIVATION_DRILL_CLEANUP_FAILED")
 
 
+def accept_expected_failure(name: str, observations: dict, error) -> None:
+    """Only the committed-work fault with proven containment is expected."""
+    outcome = error.result
+    state = outcome.get("activation_state")
+    if not (
+        name == "failure" and "committed" in observations
+        and outcome.get("error_code") == "INJECTED_POST_ACTIVATION_FAILURE"
+        and outcome.get("status") == "CONTAINED" and outcome.get("recovery_error_code") is None
+        and outcome.get("observer_cleanup_verified") is True
+        and type(state) is dict and state.get("phase") == "CONTAINED"
+        and state.get("state_durability") == "CONFIRMED"
+    ):
+        # Retain the controller's closed primary/recovery codes. Replacing them
+        # with a fixture assertion would hide a real recreate/start failure.
+        raise error
+
+
 def scenario(request: dict, name: str, images: dict, *, progress=None) -> dict:
     """One lock, unchanged source quiet gates, and the real activation controller."""
     # Lazy imports keep CLI help and fixture-payload contract tests independent
@@ -622,9 +639,7 @@ def scenario(request: dict, name: str, images: dict, *, progress=None) -> dict:
                             progress=mark, after_active=after_active)
                     ops.require(name == "success", "ACTIVATION_DRILL_CONTAINMENT_MISMATCH")
                 except ActivationFailure as error:
-                    ops.require(name == "failure" and "committed" in observations
-                                and error.result.get("error_code") == "INJECTED_POST_ACTIVATION_FAILURE",
-                                "ACTIVATION_DRILL_CONTAINMENT_MISMATCH")
+                    accept_expected_failure(name, observations, error)
                 summary = activation.summary()
                 preactivation_evidence(journal, initial)
                 ops.require(summary["phase"] == ("ACTIVE" if name == "success" else "CONTAINED")
@@ -749,6 +764,50 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def failure_report(error: Exception, phase: str) -> dict:
+    """Expose closed diagnostics only, never an arbitrary controller payload."""
+    from migration_activation_apply import ERROR_CODES as controller_errors, ActivationFailure
+    from migration_activation_journal import ERROR_CODES as state_errors
+    from migration_activation_runtime import ERROR_CODES as runtime_errors, RECREATE_STEPS
+
+    failed_phase = getattr(error, "_activation_drill_failure_phase", phase)
+    if type(failed_phase) is not str or failed_phase not in _PHASES:
+        failed_phase = phase if type(phase) is str and phase in _PHASES else "unknown"
+    safe = (ERROR_CODES | contract.ERROR_CODES | admission.ERRORS | controller_errors | state_errors
+            | runtime_errors | apply_drill._SAFE_ERROR_CODES | rehearsal._DIAGNOSTIC_ERROR_CODES)
+    code = (str(error) if isinstance(error, (ops.ReleaseError, admission.DrillError))
+            and str(error) in safe else "ACTIVATION_DRILL_FAILED")
+    result = {"status": "FAIL", "phase": failed_phase, "automatic_retry": False, "error_code": code}
+    if isinstance(error, ActivationFailure):
+        outcome = error.result
+        if type(outcome.get("status")) is str and outcome["status"] in {"CONTAINED", "OPERATOR_RECOVERY_REQUIRED"}:
+            result["operation_status"] = outcome["status"]
+        for source, target in (("error_code", "controller_error_code"), ("recovery_error_code", "recovery_error_code")):
+            if source in outcome and (outcome[source] is None
+                                      or type(outcome[source]) is str and outcome[source] in safe):
+                result[target] = outcome[source]
+        controller_phase = outcome.get("controller_phase")
+        if type(controller_phase) is str and controller_phase in {
+            "passive_postflight", "handoff", "recreate", "reconnect", "start", "postflight", "finalize", "close",
+        }:
+            result["controller_phase"] = controller_phase
+        step = outcome.get("recreate_step")
+        if controller_phase == "recreate" and type(step) is str and step in RECREATE_STEPS:
+            result["recreate_step"] = step
+        state = outcome.get("activation_state")
+        if type(state) is dict:
+            if type(state.get("phase")) is str and state["phase"] in {
+                "NEW", "PASSIVE_VERIFIED", "ACTIVATION_REQUESTED", "ACTIVATION_STARTED",
+                "ACTIVE", "CONTAINMENT_REQUESTED", "CONTAINED", "OPERATOR_RECOVERY_REQUIRED",
+            }:
+                result["activation_phase"] = state["phase"]
+            if type(state.get("state_durability")) is str and state["state_durability"] in {"CONFIRMED", "UNKNOWN"}:
+                result["state_durability"] = state["state_durability"]
+            if type(state.get("error_code")) is str and state["error_code"] in safe:
+                result["state_error_code"] = state["error_code"]
+    return result
+
+
 def main() -> None:
     args = build_parser().parse_args()
     os.umask(0o077)
@@ -765,18 +824,7 @@ def main() -> None:
         print(json.dumps(result, sort_keys=True))
     except (ManifestContractError, ops.ReleaseError, admission.DrillError, OSError, ValueError, KeyError,
             TypeError, subprocess.SubprocessError) as error:
-        failed_phase = getattr(error, "_activation_drill_failure_phase", phase)
-        if failed_phase not in _PHASES:
-            failed_phase = phase
-        from migration_activation_apply import ERROR_CODES as controller_errors
-        from migration_activation_journal import ERROR_CODES as state_errors
-        from migration_activation_runtime import ERROR_CODES as runtime_errors
-        safe = (ERROR_CODES | contract.ERROR_CODES | admission.ERRORS | controller_errors | state_errors
-                | runtime_errors | apply_drill._SAFE_ERROR_CODES | rehearsal._DIAGNOSTIC_ERROR_CODES)
-        code = (str(error) if isinstance(error, (ops.ReleaseError, admission.DrillError))
-                and str(error) in safe else "ACTIVATION_DRILL_FAILED")
-        print(json.dumps({"status": "FAIL", "phase": failed_phase,
-                          "automatic_retry": False, "error_code": code}))
+        print(json.dumps(failure_report(error, phase)))
         raise SystemExit(1) from None
 
 

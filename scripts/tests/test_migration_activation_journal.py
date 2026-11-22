@@ -553,6 +553,19 @@ class ActivationControllerTests(ActivationCase):
         self.assertEqual(result["recovery_error_code"], "ACTIVATION_CONTAINMENT_FAILED")
         self.assert_no_authority(result)
 
+    def test_closed_runtime_code_survives_the_controller_failure_boundary(self):
+        self.runtime.failures["recreate"] = ops.ReleaseError("ACTIVATION_TARGET_POLICY_CHANGED")
+        self.runtime.recreate_step = SECRET
+        with self.assertRaises(controller.ActivationFailure) as caught:
+            self.execute()
+        result = caught.exception.result
+        self.assertEqual(result["error_code"], "ACTIVATION_TARGET_POLICY_CHANGED")
+        self.assertEqual(result["status"], "CONTAINED")
+        self.assertEqual(result["controller_phase"], "recreate")
+        self.assertIsNone(result["recreate_step"])
+        self.assertTrue(self.runtime.contained)
+        self.assert_no_authority(result)
+
     def test_state_loss_during_final_cleanup_never_reports_active(self):
         self.runtime.hooks["activation_close"] = lambda: self.state.path.write_text(SECRET)
         with self.assertRaises(controller.ActivationFailure) as caught:

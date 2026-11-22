@@ -51,6 +51,11 @@ FIXTURE_PROJECT = re.compile(r"iteam-activation-drill-[0-9a-f]{10}\Z")
 FIXTURE_DIRECTORY = re.compile(r"iteam-migration-activation-drill-[a-z0-9_-]{8}\Z")
 WORKERS = tuple(name for name in ops.APP if name.endswith("_worker"))
 MUTATING_EVENTS = {"start", "restart", "die", "destroy", "kill", "pause", "unpause", "update", "rename"}
+RECREATE_STEPS = frozenset({
+    "permit", "data_identity", "redis_restart_policy", "checkout",
+    "staged_environment", "compose_create", "target_identity", "event_sync",
+    "fenced_topology", "complete",
+})
 
 FULL_SNAPSHOT_CODE = r'''
 import asyncio,hashlib,json,os,re
@@ -265,13 +270,16 @@ class TargetAudit(EventAudit):
     """Sticky lifecycle witness with narrowly registered activation transitions."""
 
     def __init__(self, operation: str, project: str, source_ids: set[str], data_ids: set[str], helpers: set[str],
-                 target_networks: dict[str, set[str]] | None = None):
+                 target_networks: dict[str, set[str]] | None = None,
+                 recreations: dict[str, dict[str, str]] | None = None):
         super().__init__(operation + "-target", source_ids | data_ids, next(iter(data_ids)), helpers)
         self.project, self.operation = project, operation
         self.data_ids = data_ids
         self.old_ids = source_ids
         self.target_ids: set[str] = set()
         self.target_networks = target_networks or {}
+        self.recreations = copy.deepcopy(recreations or {})
+        self.rename_permits: dict[str, tuple[str, str, str]] = {}
         self.expected: set[tuple[str, str, str]] = set()
         self.creating: set[str] = set()
         self.removing_old = False
@@ -316,13 +324,30 @@ class TargetAudit(EventAudit):
                 key = (kind, action, identifier)
                 if action == "create" and attributes.get("com.docker.compose.project") == self.project:
                     service = attributes.get("com.docker.compose.service")
-                    if service not in self.creating or attributes.get(LABEL) != self.operation:
+                    recreation = self.recreations.get(service)
+                    temporary = (recreation["source_id"][:12] + "_" + recreation["final_name"]) if recreation else None
+                    if (not self.removing_old or service not in self.creating or attributes.get(LABEL) != self.operation
+                            or recreation is None or attributes.get("name") != temporary):
                         self.healthy = False
                     else:
                         self.creating.discard(service)
                         self.target_ids.add(identifier)
+                        # Compose creates a stopped replacement under a
+                        # temporary name, removes the source, then renames the
+                        # replacement once. This is not permission to rename a
+                        # started target or any other container.
+                        self.rename_permits[identifier] = (temporary, recreation["final_name"], service)
                         self.expected.update(("network", "connect", network + ":" + identifier)
                                              for network in self.target_networks.get(service, set()))
+                elif action == "rename" and identifier in self.rename_permits:
+                    temporary, final, service = self.rename_permits[identifier]
+                    if (self.removing_old and attributes.get("com.docker.compose.project") == self.project
+                            and attributes.get("com.docker.compose.service") == service
+                            and attributes.get(LABEL) == self.operation
+                            and attributes.get("oldName") == "/" + temporary and attributes.get("name") == final):
+                        del self.rename_permits[identifier]
+                    else:
+                        self.healthy = False
                 elif action in MUTATING_EVENTS:
                     if identifier in self.allowed_helpers:
                         pass
@@ -379,6 +404,7 @@ class MigrationActivationRuntime:
         self._closed = False
         self._close_verified = False
         self._started: set[str] = set()
+        self.recreate_step: str | None = None
         self.target_ids: dict[str, str] = {}
         self.audit: TargetAudit | None = None
         self.target_runtime: apply_runtime.ExplicitRuntime | None = None
@@ -487,6 +513,18 @@ class MigrationActivationRuntime:
                      and host.get("NanoCpus", 0) == cpus, "ACTIVATION_TARGET_POLICY_CHANGED")
             if service.get("pids_limit") is not None:
                 _require(host.get("PidsLimit") == service["pids_limit"], "ACTIVATION_TARGET_POLICY_CHANGED")
+
+    def _target_names(self, configured: dict) -> dict[str, str]:
+        result = {}
+        for name in ops.APP:
+            original = self.source.writer_barrier._raw[name]
+            number = (original["Config"].get("Labels") or {}).get("com.docker.compose.container-number", "")
+            _require(type(number) is str and re.fullmatch(r"[1-9][0-9]*", number), "ACTIVATION_TARGET_CONFIG_INVALID")
+            expected = configured["services"][name].get("container_name") or self.project + "-" + name + "-" + number
+            _require(type(expected) is str and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,254}", expected)
+                     and original.get("Name") == "/" + expected, "ACTIVATION_TARGET_POLICY_CHANGED")
+            result[name] = expected
+        return result
 
     def _namespace_members(self) -> None:
         """Check both data namespaces without requiring retired source IDs."""
@@ -624,6 +662,7 @@ class MigrationActivationRuntime:
             "activation_policy_sha256": hash_json(activation_policy()),
             "target_images": copy.deepcopy(self.source.manifest["target_images"]),
             "target_image_ids": {side: self.source._images[ref] for side, ref in self.source.manifest["target_images"].items()},
+            "target_container_names": self._target_names(target),
             "source_configuration_sha256": hash_json(configured),
             "target_configuration_sha256": hash_json(target),
             "staged_configuration_sha256": hash_json(staged_config),
@@ -763,7 +802,9 @@ class MigrationActivationRuntime:
                                      {self.source.writer_barrier._ids[n] for n in ops.APP},
                                      {value["Id"] for value in self._data.values()}, self.source.writer_barrier.allowed_helpers,
                                      {name: {endpoint["NetworkID"] for endpoint in self.source.writer_barrier._raw[name]["NetworkSettings"].get("Networks", {}).values()}
-                                      for name in ops.APP})
+                                      for name in ops.APP},
+                                     {name: {"source_id": self.source.writer_barrier._ids[name],
+                                             "final_name": self._plan["target_container_names"][name]} for name in ops.APP})
             self.audit.start()
 
     def handoff_boundary(self, state) -> None:
@@ -799,7 +840,8 @@ class MigrationActivationRuntime:
         expected_env = _effective_environment(image, configured)
         expected_cmd = configured.get("command", image.get("Cmd"))
         expected_entry = configured.get("entrypoint", image.get("Entrypoint"))
-        _require(value["Image"] == self._plan["target_image_ids"][side]
+        _require(value.get("Name") == "/" + self._plan["target_container_names"][name]
+                 and value["Image"] == self._plan["target_image_ids"][side]
                  and labels.get("org.opencontainers.image.revision") == self.source.manifest["target_release_sha"]
                  and labels.get("com.docker.compose.project") == self.project
                  and labels.get("com.docker.compose.service") == name and labels.get(LABEL) == self.operation_id
@@ -824,9 +866,12 @@ class MigrationActivationRuntime:
             self._declared_networks(name, value, self._target_config)
 
     def recreate_target_stopped(self, state) -> None:
+        self.recreate_step = "permit"
         self._permit(state)
         _require(not self._recreated, "ACTIVATION_RUNTIME_PHASE_INVALID")
+        self.recreate_step = "data_identity"
         self._verify_data()
+        self.recreate_step = "redis_restart_policy"
         redis_id = self._data["redis"]["Id"]
         self.audit.allow("container", "update", redis_id)
         ops.command(["docker", "update", "--restart=no", redis_id])
@@ -834,30 +879,38 @@ class MigrationActivationRuntime:
                  "ACTIVATION_TARGET_POLICY_CHANGED")
         self._permit(state)
         if not self.fixture:
+            self.recreate_step = "checkout"
             ops.command(["git", "switch", "--detach", self.source.manifest["target_release_sha"]], cwd=self.root)
             _require(ops.command(["git", "rev-parse", "HEAD"], cwd=self.root) == self.source.manifest["target_release_sha"]
                      and not ops.command(["git", "status", "--porcelain"], cwd=self.root), "ACTIVATION_CONFIG_CHANGED")
+        self.recreate_step = "staged_environment"
         self._persist_environment(os.pathsep.join((str(self._base_path), str(self._staged_path))))
         self._permit(state)
+        self.recreate_step = "compose_create"
         with self.audit.condition:
             self.audit.creating = set(ops.APP)
             self.audit.removing_old = True
         self.target_runtime.compose("up", "--no-start", "--no-deps", "--no-build", "--pull", "never", "--force-recreate", *ops.APP)
+        self.recreate_step = "target_identity"
         for name in ops.APP:
             value = self.target_runtime.inspect(name)
             _require(value["Id"] not in self.source.writer_barrier._ids.values(), "ACTIVATION_TARGET_IDENTITY_CHANGED")
             self._validate_target(name, value, running=False)
             self.target_ids[name] = value["Id"]
+        self.recreate_step = "event_sync"
         self.audit.sync()
         self.audit.finish_connections(set(self.target_ids.values()))
-        _require(set(self.target_ids.values()) == self.audit.target_ids and not self.audit.creating,
+        _require(set(self.target_ids.values()) == self.audit.target_ids and not self.audit.creating and not self.audit.rename_permits,
                  "ACTIVATION_TARGET_IDENTITY_CHANGED")
-        self.audit.removing_old = False
+        with self.audit.condition:
+            self.audit.removing_old = False
+        self.recreate_step = "fenced_topology"
         self._verify_data()
         _require(not self._inspect(self._data["postgres"]["Id"])["NetworkSettings"].get("Networks"), "ACTIVATION_DATA_IDENTITY_CHANGED")
         self._project_members()
         self._namespace_members()
         self._recreated = True
+        self.recreate_step = "complete"
 
     def reconnect_data_services(self, state) -> None:
         self._permit(state)

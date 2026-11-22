@@ -311,5 +311,98 @@ class ProofPublicationTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())["error_code"], "ACTIVATION_DRILL_FAILED")
 
 
+class ControllerFailureDiagnosticsTests(unittest.TestCase):
+    def failure(self, code="ACTIVATION_UNEXPECTED_RUNTIME_EVENT", **updates):
+        from migration_activation_apply import ActivationFailure
+        result = {
+            "status": "OPERATOR_RECOVERY_REQUIRED", "error_code": code,
+            "recovery_error_code": "ACTIVATION_CONTAINMENT_FAILED", "observer_cleanup_verified": True,
+            "controller_phase": "recreate", "recreate_step": "event_sync",
+            "activation_state": {"phase": "OPERATOR_RECOVERY_REQUIRED", "state_durability": "CONFIRMED",
+                                 "error_code": code},
+        }
+        result.update(updates)
+        return ActivationFailure(result)
+
+    def test_success_scenario_preserves_exact_controller_error_in_cli(self):
+        error = self.failure()
+        error._activation_drill_failure_phase = "success_activation_recreate"
+
+        def execute_success(*args, **kwargs):
+            # This is the same handler used by scenario('success'). An
+            # unexpected controller error must not become a fixture mismatch.
+            drill.accept_expected_failure("success", {}, error)
+
+        with (mock.patch.object(sys, "argv", ["drill", "--request", "request.json", "--output", "proof.json"]),
+              mock.patch.object(ops, "load", return_value=request()),
+              mock.patch.object(drill, "run_drill", side_effect=execute_success),
+              contextlib.redirect_stdout(io.StringIO()) as output):
+            with self.assertRaises(SystemExit):
+                drill.main()
+        report = json.loads(output.getvalue())
+        self.assertEqual(report, {
+            "status": "FAIL", "phase": "success_activation_recreate", "automatic_retry": False,
+            "error_code": "ACTIVATION_UNEXPECTED_RUNTIME_EVENT",
+            "controller_error_code": "ACTIVATION_UNEXPECTED_RUNTIME_EVENT",
+            "operation_status": "OPERATOR_RECOVERY_REQUIRED",
+            "recovery_error_code": "ACTIVATION_CONTAINMENT_FAILED",
+            "controller_phase": "recreate", "recreate_step": "event_sync",
+            "activation_phase": "OPERATOR_RECOVERY_REQUIRED", "state_durability": "CONFIRMED",
+            "state_error_code": "ACTIVATION_UNEXPECTED_RUNTIME_EVENT",
+        })
+
+    def test_failure_before_committed_hook_preserves_original_exception(self):
+        error = self.failure("ACTIVATION_TARGET_IDENTITY_CHANGED")
+        with self.assertRaises(type(error)) as caught:
+            drill.accept_expected_failure("failure", {}, error)
+        self.assertIs(caught.exception, error)
+        self.assertEqual(str(caught.exception), "ACTIVATION_TARGET_IDENTITY_CHANGED")
+
+    def test_injected_fault_requires_committed_work_and_proven_containment(self):
+        error = self.failure("INJECTED_POST_ACTIVATION_FAILURE", status="CONTAINED", recovery_error_code=None,
+                             activation_state={"phase": "CONTAINED", "state_durability": "CONFIRMED"})
+        drill.accept_expected_failure("failure", {"committed": {}}, error)
+        for name, observations, changes in (
+            ("success", {"committed": {}}, {}),
+            ("failure", {}, {}),
+            ("failure", {"committed": {}}, {"status": "OPERATOR_RECOVERY_REQUIRED"}),
+            ("failure", {"committed": {}}, {"recovery_error_code": "ACTIVATION_CONTAINMENT_FAILED"}),
+            ("failure", {"committed": {}}, {"observer_cleanup_verified": False}),
+            ("failure", {"committed": {}}, {"activation_state": {"phase": "CONTAINED", "state_durability": "UNKNOWN"}}),
+        ):
+            with self.subTest(name=name, changes=changes):
+                rejected = self.failure(**{**error.result, **changes})
+                with self.assertRaises(type(rejected)) as caught:
+                    drill.accept_expected_failure(name, observations, rejected)
+                self.assertIs(caught.exception, rejected)
+
+    def test_arbitrary_controller_payload_and_invalid_fields_are_not_printed(self):
+        error = self.failure("unsafe-secret-text", status={"secret": "uri"}, recovery_error_code="secret-token",
+                             controller_phase={"secret": True}, recreate_step="secret-recreate",
+                             activation_state={"phase": ["secret"], "state_durability": {"secret": True},
+                                               "error_code": "secret-state", "environment": {"token": "secret"}},
+                             environment={"uri": "secret-uri"})
+        error._activation_drill_failure_phase = {"secret": True}
+        report = drill.failure_report(error, "success_activation_recreate")
+        self.assertEqual(report, {"status": "FAIL", "phase": "success_activation_recreate",
+                                  "automatic_retry": False, "error_code": "ACTIVATION_DRILL_FAILED"})
+        self.assertNotIn("secret", json.dumps(report))
+
+    def test_recreate_step_is_typed_allowlisted_and_scoped_to_recreate(self):
+        from migration_activation_runtime import RECREATE_STEPS
+        for step in RECREATE_STEPS:
+            with self.subTest(step=step):
+                report = drill.failure_report(self.failure(recreate_step=step), "success_activation_recreate")
+                self.assertEqual(report["controller_phase"], "recreate")
+                self.assertEqual(report["recreate_step"], step)
+        for phase, step in (("start", "event_sync"), ("recreate", "secret"),
+                            ("recreate", ["event_sync"]), ("secret", "event_sync")):
+            with self.subTest(phase=phase, step=step):
+                report = drill.failure_report(self.failure(controller_phase=phase, recreate_step=step),
+                                              "success_activation_recreate")
+                self.assertNotIn("recreate_step", report)
+                self.assertNotIn("secret", json.dumps(report))
+
+
 if __name__ == "__main__":
     unittest.main()

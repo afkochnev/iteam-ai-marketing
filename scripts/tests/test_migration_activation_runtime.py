@@ -144,13 +144,65 @@ class TargetConfigurationTests(unittest.TestCase):
 class TargetAuditTests(unittest.TestCase):
     def setUp(self):
         self.old = "1" * 64
-        self.audit = activation.TargetAudit(OPERATION, PROJECT, {self.old}, {POSTGRES, REDIS}, set(), {"backend": {NETWORK}})
+        self.final_name = PROJECT + "-backend-1"
+        self.temporary_name = self.old[:12] + "_" + self.final_name
+        self.audit = activation.TargetAudit(OPERATION, PROJECT, {self.old}, {POSTGRES, REDIS}, set(), {"backend": {NETWORK}},
+                                            {"backend": {"source_id": self.old, "final_name": self.final_name}})
         self.audit.process = types.SimpleNamespace(poll=lambda: None)
 
     def create_target(self):
         self.audit.creating = {"backend"}
+        self.audit.removing_old = True
         self.audit.observe(event("container", "create", TARGET, **{
-            "com.docker.compose.project": PROJECT, "com.docker.compose.service": "backend", activation.LABEL: OPERATION}))
+            "com.docker.compose.project": PROJECT, "com.docker.compose.service": "backend", activation.LABEL: OPERATION,
+            "name": self.temporary_name}))
+
+    def rename_target(self, **overrides):
+        attributes = {"com.docker.compose.project": PROJECT, "com.docker.compose.service": "backend",
+                      activation.LABEL: OPERATION, "oldName": "/" + self.temporary_name, "name": self.final_name}
+        attributes.update(overrides)
+        self.audit.observe(event("container", "rename", TARGET, **attributes))
+
+    def test_compose_recreate_allows_exactly_one_registered_temporary_to_final_rename(self):
+        self.create_target()
+        self.audit.observe(event("container", "destroy", self.old))
+        self.rename_target()
+        self.audit.check()
+        self.assertFalse(self.audit.rename_permits)
+        self.rename_target()
+        with self.assertRaises(ops.ReleaseError):
+            self.audit.check()
+
+    def test_recreate_rename_cannot_change_destination_source_service_or_operation(self):
+        changes = (
+            {"name": "unapproved-name"}, {"oldName": "/unapproved-source"},
+            {"com.docker.compose.service": "ai_worker"},
+            {"com.docker.compose.project": "another-project"}, {activation.LABEL: "0" * 32},
+        )
+        for change in changes:
+            with self.subTest(change=change):
+                self.setUp()
+                self.create_target()
+                self.rename_target(**change)
+                with self.assertRaises(ops.ReleaseError):
+                    self.audit.check()
+
+    def test_target_rename_is_rejected_after_recreate_window_closes(self):
+        self.create_target()
+        self.audit.removing_old = False
+        self.rename_target()
+        with self.assertRaises(ops.ReleaseError):
+            self.audit.check()
+
+    def test_create_under_an_unapproved_name_cannot_obtain_a_rename_permit(self):
+        self.audit.creating = {"backend"}
+        self.audit.removing_old = True
+        self.audit.observe(event("container", "create", TARGET, **{
+            "com.docker.compose.project": PROJECT, "com.docker.compose.service": "backend", activation.LABEL: OPERATION,
+            "name": "arbitrary-temporary-name"}))
+        self.assertFalse(self.audit.rename_permits)
+        with self.assertRaises(ops.ReleaseError):
+            self.audit.check()
 
     def test_target_requires_registered_role_operation_and_explicit_start(self):
         self.create_target()
@@ -162,6 +214,7 @@ class TargetAuditTests(unittest.TestCase):
 
     def test_known_target_and_data_transitions_are_single_use(self):
         self.create_target()
+        self.rename_target()
         self.audit.allow("container", "start", TARGET)
         self.audit.observe(event("network", "connect", NETWORK, container=TARGET))
         self.audit.observe(event("container", "start", TARGET))
@@ -230,6 +283,26 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.runtime.operation_id, OPERATION)
         explicit = preapply.ExplicitRuntime(self.root, PROJECT, [self.root / "compose.json"])
         self.assertEqual(explicit.project, PROJECT)
+
+    def test_target_names_are_fixed_by_compose_and_immutable_container_number(self):
+        configured = config()
+        for name in ops.APP:
+            self.source.writer_barrier._raw[name] = {
+                "Name": "/" + PROJECT + "-" + name + "-1",
+                "Config": {"Labels": {"com.docker.compose.container-number": "1"}},
+            }
+        expected = {name: PROJECT + "-" + name + "-1" for name in ops.APP}
+        self.assertEqual(self.runtime._target_names(configured), expected)
+        self.source.writer_barrier._raw["backend"]["Name"] = "/unapproved-name"
+        with self.assertRaisesRegex(ops.ReleaseError, "POLICY_CHANGED"):
+            self.runtime._target_names(configured)
+
+    def test_recreate_step_is_closed_and_does_not_expose_command_error_details(self):
+        self.assertIsNone(self.runtime.recreate_step)
+        with patch.object(self.runtime, "_permit", side_effect=OSError("secret command detail")), self.assertRaises(OSError):
+            self.runtime.recreate_target_stopped(None)
+        self.assertEqual(self.runtime.recreate_step, "permit")
+        self.assertIn(self.runtime.recreate_step, activation.RECREATE_STEPS)
 
     def source_network_configuration(self):
         configured = config()

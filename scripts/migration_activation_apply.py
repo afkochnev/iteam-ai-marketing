@@ -33,8 +33,9 @@ from migration_activation_journal import (
     state_directory,
 )
 from migration_apply_state import Journal, manifest_hash
+import migration_activation_runtime as activation_runtime
 
-ERROR_CODES = STATE_ERRORS | frozenset({
+ERROR_CODES = STATE_ERRORS | activation_runtime.ERROR_CODES | frozenset({
     "ACTIVATION_ARGUMENTS_INVALID", "ACTIVATION_OUTPUT_UNSAFE",
     "ACTIVATION_OPERATION_EXISTS", "ACTIVATION_RUNTIME_BINDING_MISMATCH",
     "ACTIVATION_CONTROLLER_CHECKOUT_MISMATCH", "ACTIVATION_SCOPE_MISMATCH",
@@ -228,6 +229,11 @@ def execute(
         result = _result(
             binding, activation_state, status="OPERATOR_RECOVERY_REQUIRED",
             error_code=original, recovery_error_code=recovery_error,
+            controller_phase=phase,
+            recreate_step=(getattr(runtime, "recreate_step", None)
+                           if phase == "recreate" and type(getattr(runtime, "recreate_step", None)) is str
+                           and getattr(runtime, "recreate_step", None)
+                           in activation_runtime.RECREATE_STEPS else None),
             observer_cleanup_verified=closed,
             physical_containment_sha256=hash_json(physical) if physical is not None else None,
         )
