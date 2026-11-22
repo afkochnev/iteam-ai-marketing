@@ -768,7 +768,7 @@ def failure_report(error: Exception, phase: str) -> dict:
     """Expose closed diagnostics only, never an arbitrary controller payload."""
     from migration_activation_apply import ERROR_CODES as controller_errors, ActivationFailure
     from migration_activation_journal import ERROR_CODES as state_errors
-    from migration_activation_runtime import ERROR_CODES as runtime_errors, RECREATE_STEPS
+    from migration_activation_runtime import ERROR_CODES as runtime_errors, RECREATE_STEPS, TARGET_IDENTITY_FIELDS
 
     failed_phase = getattr(error, "_activation_drill_failure_phase", phase)
     if type(failed_phase) is not str or failed_phase not in _PHASES:
@@ -794,6 +794,12 @@ def failure_report(error: Exception, phase: str) -> dict:
         step = outcome.get("recreate_step")
         if controller_phase == "recreate" and type(step) is str and step in RECREATE_STEPS:
             result["recreate_step"] = step
+        target_service = outcome.get("target_service")
+        if type(target_service) is str and target_service in ops.APP:
+            result["target_service"] = target_service
+        identity_field = outcome.get("target_identity_field")
+        if type(identity_field) is str and identity_field in TARGET_IDENTITY_FIELDS:
+            result["target_identity_field"] = identity_field
         state = outcome.get("activation_state")
         if type(state) is dict:
             if type(state.get("phase")) is str and state["phase"] in {

@@ -304,6 +304,80 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(self.runtime.recreate_step, "permit")
         self.assertIn(self.runtime.recreate_step, activation.RECREATE_STEPS)
 
+    def target_identity_fixture(self):
+        final_name = PROJECT + "-backend-1"
+        image_id = "sha256:" + "7" * 64
+        self.runtime._plan = {"target_container_names": {"backend": final_name}, "target_image_ids": {"backend": image_id}}
+        self.runtime._image_config = {"backend": {"Env": ["PATH=/bin"], "Cmd": ["uvicorn", "app.main:app"],
+                                                  "Entrypoint": ["/entrypoint"]}}
+        self.runtime._staged_config = target_config(config())
+        configured = self.runtime._staged_config["services"]["backend"]
+        configured["environment"]["PRIVATE_TEST_VALUE"] = "must-never-appear-in-diagnostics"
+        value = {
+            "Id": TARGET, "Name": "/" + final_name, "Image": image_id,
+            "Config": {"Labels": {"org.opencontainers.image.revision": self.source.manifest["target_release_sha"],
+                                   "com.docker.compose.project": PROJECT, "com.docker.compose.service": "backend",
+                                   activation.LABEL: OPERATION},
+                       "Env": [key + "=" + item for key, item in activation._effective_environment(self.runtime._image_config["backend"], configured).items()],
+                       "Cmd": ["uvicorn", "app.main:app"], "Entrypoint": ["/entrypoint"], "User": "10001", "WorkingDir": "/app"},
+            "State": {"Running": False, "Paused": False, "Restarting": False, "OOMKilled": False},
+            "Mounts": [], "HostConfig": {"RestartPolicy": {"Name": "no", "MaximumRetryCount": 0}},
+        }
+        self.source.writer_barrier._raw["backend"] = copy.deepcopy(value)
+        self.source.writer_barrier._raw["backend"]["HostConfig"]["RestartPolicy"]["Name"] = "unless-stopped"
+        return configured, value
+
+    def test_absent_and_null_compose_commands_inherit_exact_image_defaults(self):
+        configured, value = self.target_identity_fixture()
+        self.runtime._validate_target("backend", value, running=False)
+        configured.update(command=None, entrypoint=None)
+        self.runtime._validate_target("backend", value, running=False)
+        self.assertIsNone(self.runtime.target_service)
+        self.assertIsNone(self.runtime.target_identity_field)
+
+    def test_explicit_empty_compose_command_and_entrypoint_are_distinct_overrides(self):
+        configured, value = self.target_identity_fixture()
+        configured.update(command=[], entrypoint=[])
+        with self.assertRaisesRegex(ops.ReleaseError, "TARGET_IDENTITY_CHANGED"):
+            self.runtime._validate_target("backend", value, running=False)
+        self.assertEqual(self.runtime.target_identity_field, "command")
+        value["Config"]["Cmd"] = []
+        with self.assertRaisesRegex(ops.ReleaseError, "TARGET_IDENTITY_CHANGED"):
+            self.runtime._validate_target("backend", value, running=False)
+        self.assertEqual(self.runtime.target_identity_field, "entrypoint")
+        value["Config"]["Entrypoint"] = []
+        self.runtime._validate_target("backend", value, running=False)
+
+    def test_identity_diagnostics_report_only_closed_service_and_field_names(self):
+        configured, original = self.target_identity_fixture()
+        changes = (
+            ("name", lambda value: value.update(Name="/wrong")),
+            ("image_id", lambda value: value.update(Image="sha256:" + "8" * 64)),
+            ("image_revision", lambda value: value["Config"]["Labels"].update({"org.opencontainers.image.revision": "0" * 40})),
+            ("compose_project", lambda value: value["Config"]["Labels"].update({"com.docker.compose.project": "wrong"})),
+            ("compose_service", lambda value: value["Config"]["Labels"].update({"com.docker.compose.service": "wrong"})),
+            ("operation", lambda value: value["Config"]["Labels"].update({activation.LABEL: "0" * 32})),
+            ("environment", lambda value: value["Config"]["Env"].append("UNEXPECTED=private-value")),
+            ("command", lambda value: value["Config"].update(Cmd=["unexpected-private-command"])),
+            ("entrypoint", lambda value: value["Config"].update(Entrypoint=["unexpected-private-command"])),
+            ("running", lambda value: value["State"].update(Running=True)),
+            ("paused", lambda value: value["State"].update(Paused=True)),
+            ("restarting", lambda value: value["State"].update(Restarting=True)),
+            ("oom_killed", lambda value: value["State"].update(OOMKilled=True)),
+        )
+        for field, change in changes:
+            with self.subTest(field=field):
+                value = copy.deepcopy(original)
+                change(value)
+                with self.assertRaisesRegex(ops.ReleaseError, "^ACTIVATION_TARGET_IDENTITY_CHANGED$"):
+                    self.runtime._validate_target("backend", value, running=False)
+                self.assertEqual(self.runtime.target_service, "backend")
+                self.assertEqual(self.runtime.target_identity_field, field)
+                self.assertIn(field, activation.TARGET_IDENTITY_FIELDS)
+        self.runtime._validate_target("backend", original, running=False)
+        self.assertIsNone(self.runtime.target_service)
+        self.assertIsNone(self.runtime.target_identity_field)
+
     def source_network_configuration(self):
         configured = config()
         physical = PROJECT + "_default"

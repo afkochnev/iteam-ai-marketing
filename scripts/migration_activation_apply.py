@@ -234,6 +234,13 @@ def execute(
                            if phase == "recreate" and type(getattr(runtime, "recreate_step", None)) is str
                            and getattr(runtime, "recreate_step", None)
                            in activation_runtime.RECREATE_STEPS else None),
+            target_service=(getattr(runtime, "target_service", None)
+                            if type(getattr(runtime, "target_service", None)) is str
+                            and getattr(runtime, "target_service", None) in ops.APP else None),
+            target_identity_field=(getattr(runtime, "target_identity_field", None)
+                                   if type(getattr(runtime, "target_identity_field", None)) is str
+                                   and getattr(runtime, "target_identity_field", None)
+                                   in activation_runtime.TARGET_IDENTITY_FIELDS else None),
             observer_cleanup_verified=closed,
             physical_containment_sha256=hash_json(physical) if physical is not None else None,
         )

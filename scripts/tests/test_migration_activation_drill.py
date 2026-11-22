@@ -379,6 +379,7 @@ class ControllerFailureDiagnosticsTests(unittest.TestCase):
     def test_arbitrary_controller_payload_and_invalid_fields_are_not_printed(self):
         error = self.failure("unsafe-secret-text", status={"secret": "uri"}, recovery_error_code="secret-token",
                              controller_phase={"secret": True}, recreate_step="secret-recreate",
+                             target_service="secret-service", target_identity_field={"secret": "value"},
                              activation_state={"phase": ["secret"], "state_durability": {"secret": True},
                                                "error_code": "secret-state", "environment": {"token": "secret"}},
                              environment={"uri": "secret-uri"})
@@ -401,6 +402,30 @@ class ControllerFailureDiagnosticsTests(unittest.TestCase):
                 report = drill.failure_report(self.failure(controller_phase=phase, recreate_step=step),
                                               "success_activation_recreate")
                 self.assertNotIn("recreate_step", report)
+                self.assertNotIn("secret", json.dumps(report))
+
+    def test_target_identity_diagnostics_preserve_closed_service_and_field(self):
+        from migration_activation_runtime import TARGET_IDENTITY_FIELDS
+        pairs = [(service, "command") for service in ops.APP]
+        pairs += [("backend", field) for field in TARGET_IDENTITY_FIELDS]
+        for service, field in pairs:
+            with self.subTest(service=service, field=field):
+                error = self.failure("ACTIVATION_TARGET_IDENTITY_CHANGED", recreate_step="target_identity",
+                                     target_service=service, target_identity_field=field)
+                report = drill.failure_report(error, "success_activation_recreate")
+                self.assertEqual(report["error_code"], "ACTIVATION_TARGET_IDENTITY_CHANGED")
+                self.assertEqual(report["target_service"], service)
+                self.assertEqual(report["target_identity_field"], field)
+
+    def test_target_identity_diagnostics_reject_unknown_or_untyped_values(self):
+        for invalid in ("secret-value", ["backend"], {"command": "secret"}, None, True, 1):
+            with self.subTest(invalid=invalid):
+                report = drill.failure_report(
+                    self.failure(target_service=invalid, target_identity_field=invalid),
+                    "success_activation_recreate",
+                )
+                self.assertNotIn("target_service", report)
+                self.assertNotIn("target_identity_field", report)
                 self.assertNotIn("secret", json.dumps(report))
 
 

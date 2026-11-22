@@ -556,6 +556,8 @@ class ActivationControllerTests(ActivationCase):
     def test_closed_runtime_code_survives_the_controller_failure_boundary(self):
         self.runtime.failures["recreate"] = ops.ReleaseError("ACTIVATION_TARGET_POLICY_CHANGED")
         self.runtime.recreate_step = SECRET
+        self.runtime.target_service = SECRET
+        self.runtime.target_identity_field = SECRET
         with self.assertRaises(controller.ActivationFailure) as caught:
             self.execute()
         result = caught.exception.result
@@ -563,7 +565,23 @@ class ActivationControllerTests(ActivationCase):
         self.assertEqual(result["status"], "CONTAINED")
         self.assertEqual(result["controller_phase"], "recreate")
         self.assertIsNone(result["recreate_step"])
+        self.assertIsNone(result["target_service"])
+        self.assertIsNone(result["target_identity_field"])
         self.assertTrue(self.runtime.contained)
+        self.assert_no_authority(result)
+
+    def test_closed_target_field_identifies_the_failed_comparison_without_values(self):
+        self.runtime.failures["recreate"] = ops.ReleaseError("ACTIVATION_TARGET_IDENTITY_CHANGED")
+        self.runtime.recreate_step = "target_identity"
+        self.runtime.target_service = "backend"
+        self.runtime.target_identity_field = "command"
+        with self.assertRaises(controller.ActivationFailure) as caught:
+            self.execute()
+        result = caught.exception.result
+        self.assertEqual(result["target_service"], "backend")
+        self.assertEqual(result["target_identity_field"], "command")
+        self.assertEqual(result["recreate_step"], "target_identity")
+        self.assertEqual(result["status"], "CONTAINED")
         self.assert_no_authority(result)
 
     def test_state_loss_during_final_cleanup_never_reports_active(self):

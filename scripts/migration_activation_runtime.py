@@ -56,6 +56,11 @@ RECREATE_STEPS = frozenset({
     "staged_environment", "compose_create", "target_identity", "event_sync",
     "fenced_topology", "complete",
 })
+TARGET_IDENTITY_FIELDS = frozenset({
+    "service_instance", "replacement_id", "name", "image_id", "image_revision",
+    "compose_project", "compose_service", "operation", "environment", "command",
+    "entrypoint", "running", "paused", "restarting", "oom_killed",
+})
 
 FULL_SNAPSHOT_CODE = r'''
 import asyncio,hashlib,json,os,re
@@ -405,6 +410,8 @@ class MigrationActivationRuntime:
         self._close_verified = False
         self._started: set[str] = set()
         self.recreate_step: str | None = None
+        self.target_service: str | None = None
+        self.target_identity_field: str | None = None
         self.target_ids: dict[str, str] = {}
         self.audit: TargetAudit | None = None
         self.target_runtime: apply_runtime.ExplicitRuntime | None = None
@@ -833,23 +840,40 @@ class MigrationActivationRuntime:
         self._environment, self._environment_identity = current, identity
 
     def _validate_target(self, name: str, value: dict, *, running: bool, final: bool = False) -> None:
+        _require(name in ops.APP, "ACTIVATION_RUNTIME_PHASE_INVALID")
+        self.target_service = name
         side = "frontend" if name == "frontend" else "backend"
         image = self._image_config[side]
         configured = (self._target_config if final else self._staged_config)["services"][name]
         labels = value["Config"].get("Labels") or {}
         expected_env = _effective_environment(image, configured)
-        expected_cmd = configured.get("command", image.get("Cmd"))
-        expected_entry = configured.get("entrypoint", image.get("Entrypoint"))
-        _require(value.get("Name") == "/" + self._plan["target_container_names"][name]
-                 and value["Image"] == self._plan["target_image_ids"][side]
-                 and labels.get("org.opencontainers.image.revision") == self.source.manifest["target_release_sha"]
-                 and labels.get("com.docker.compose.project") == self.project
-                 and labels.get("com.docker.compose.service") == name and labels.get(LABEL) == self.operation_id
-                 and _environment(value) == expected_env
-                 and value["Config"].get("Cmd") == expected_cmd and value["Config"].get("Entrypoint") == expected_entry
-                 and value["State"].get("Running") is running and not value["State"].get("Paused")
-                 and not value["State"].get("Restarting") and not value["State"].get("OOMKilled"),
-                 "ACTIVATION_TARGET_IDENTITY_CHANGED")
+        # Compose's resolved JSON retains null for an inherited command or
+        # entrypoint. An explicit empty list is a distinct override.
+        expected_cmd = configured.get("command")
+        if expected_cmd is None:
+            expected_cmd = image.get("Cmd")
+        expected_entry = configured.get("entrypoint")
+        if expected_entry is None:
+            expected_entry = image.get("Entrypoint")
+        checks = (
+            ("name", lambda: value.get("Name") == "/" + self._plan["target_container_names"][name]),
+            ("image_id", lambda: value["Image"] == self._plan["target_image_ids"][side]),
+            ("image_revision", lambda: labels.get("org.opencontainers.image.revision") == self.source.manifest["target_release_sha"]),
+            ("compose_project", lambda: labels.get("com.docker.compose.project") == self.project),
+            ("compose_service", lambda: labels.get("com.docker.compose.service") == name),
+            ("operation", lambda: labels.get(LABEL) == self.operation_id),
+            ("environment", lambda: _environment(value) == expected_env),
+            ("command", lambda: value["Config"].get("Cmd") == expected_cmd),
+            ("entrypoint", lambda: value["Config"].get("Entrypoint") == expected_entry),
+            ("running", lambda: value["State"].get("Running") is running),
+            ("paused", lambda: not value["State"].get("Paused")),
+            ("restarting", lambda: not value["State"].get("Restarting")),
+            ("oom_killed", lambda: not value["State"].get("OOMKilled")),
+        )
+        for field, check in checks:
+            self.target_identity_field = field
+            _require(check(), "ACTIVATION_TARGET_IDENTITY_CHANGED")
+        self.target_identity_field = None
         original = self.source.writer_barrier._raw[name]
         mounts = lambda data: sorted((x.get("Destination"), x.get("Type"), x.get("Name", x.get("Source")), x.get("RW")) for x in data.get("Mounts") or [])
         _require(mounts(value) == mounts(original), "ACTIVATION_TARGET_POLICY_CHANGED")
@@ -864,6 +888,7 @@ class MigrationActivationRuntime:
             actual_networks = {k: v["NetworkID"] for k, v in value["NetworkSettings"].get("Networks", {}).items()}
             _require(actual_networks == expected_networks and value["RestartCount"] == 0, "ACTIVATION_TARGET_POLICY_CHANGED")
             self._declared_networks(name, value, self._target_config)
+        self.target_service = None
 
     def recreate_target_stopped(self, state) -> None:
         self.recreate_step = "permit"
@@ -893,7 +918,9 @@ class MigrationActivationRuntime:
         self.target_runtime.compose("up", "--no-start", "--no-deps", "--no-build", "--pull", "never", "--force-recreate", *ops.APP)
         self.recreate_step = "target_identity"
         for name in ops.APP:
+            self.target_service, self.target_identity_field = name, "service_instance"
             value = self.target_runtime.inspect(name)
+            self.target_identity_field = "replacement_id"
             _require(value["Id"] not in self.source.writer_barrier._ids.values(), "ACTIVATION_TARGET_IDENTITY_CHANGED")
             self._validate_target(name, value, running=False)
             self.target_ids[name] = value["Id"]
