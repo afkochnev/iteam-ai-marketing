@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 import migration_apply_backup as backup
+import migration_operation_inspect as inspection
 import migration_release_apply as engine
 import migration_release_drill as rehearsal
 import release_ops as ops
@@ -52,7 +53,7 @@ PROVIDER_CREDENTIALS = (
 )
 _SCENARIO_PHASES = frozenset({
     "fixture", "infrastructure", "source_migrate", "seed", "source_ready",
-    "source_topology", "source_data", "apply", "held_boundary", "cleanup",
+    "source_topology", "source_data", "apply", "held_boundary", "record_inspection", "cleanup",
     "temporary_cleanup",
 }) | frozenset(ACTION_PHASES)
 _PHASES = frozenset({
@@ -69,6 +70,7 @@ ERROR_CODES = frozenset({
     "APPLY_DRILL_HOST_PORT_NOT_FENCED", "APPLY_DRILL_WRITER_BOUNDARY_OPEN",
     "APPLY_DRILL_SOURCE_STATE_MISMATCH", "APPLY_DRILL_FINAL_STATE_MISMATCH",
     "APPLY_DRILL_OUTCOME_MISMATCH", "APPLY_DRILL_JOURNAL_MISMATCH",
+    "APPLY_DRILL_RECORD_INSPECTION_FAILED",
     "APPLY_DRILL_HELPER_CLEANUP_INCOMPLETE", "APPLY_DRILL_TEMPORARY_CLEANUP_INCOMPLETE",
     "APPLY_DRILL_OUTPUT_EXISTS", "APPLY_DRILL_REQUIRES_6_GIB",
     "APPLY_DRILL_DOWNGRADE_POLICY_REQUIRED", "INVALID_APPLY_DRILL_AUTHORIZATION",
@@ -536,6 +538,25 @@ def _scenario(request: dict, name: str, progress=None) -> dict:
                 }
                 if name == "recovery":
                     result.update(injected_failure="INJECTED_FAILURE", injection_after_readiness=True)
+                # The live observation ends while the apply lock is still held.
+                # A subsequent reader must describe records without reviving it.
+                adapter.close()
+                adapter = None
+            mark("record_inspection")
+            report = inspection.inspect_operation(state, operation)
+            ops.require(
+                report["record_state"] == "CONSISTENT_TERMINAL"
+                and report["recorded_status"] == expected_status
+                and report["error_code"] is None
+                and report["writer_boundary"] == "UNKNOWN"
+                and all(report[key] is False for key in (
+                    "live_runtime_checked", "historical_continuity_verified",
+                    "receipt_signature_verified", "automatic_retry",
+                    "activation_authorized", "schema_downgrade_allowed",
+                )),
+                "APPLY_DRILL_RECORD_INSPECTION_FAILED",
+            )
+            result["post_close_record_inspection"] = report
         except Exception as error:
             if not hasattr(error, "_apply_drill_failure_phase"):
                 error._apply_drill_failure_phase = phase
@@ -597,7 +618,7 @@ def run_drill(request: dict, output: Path, cosign: str, *, progress=None) -> dic
     success = _scenario(request, "success", progress)
     recovery = _scenario(request, "recovery", progress)
     result = {
-        "status": "PASS", "proof_contract_version": 1, "proof_type": PROOF_TYPE,
+        "status": "PASS", "proof_contract_version": 2, "proof_type": PROOF_TYPE,
         "authorization": AUTHORIZATION, "production_approval_verified": False,
         "repository": ops.REPO, **rehearsal.rehearsal_scope(request),
         "compatibility_class": request["compatibility_class"],

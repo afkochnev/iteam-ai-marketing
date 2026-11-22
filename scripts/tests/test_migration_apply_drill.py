@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import fcntl
 import importlib
 import io
 import json
@@ -415,6 +416,23 @@ class MigrationApplyDrillTests(unittest.TestCase):
             FakeAdapter.events.append(("docker_removed", runtime.root))
             if cleanup_failure:
                 raise drill.ops.ReleaseError("MIGRATION_DRILL_CLEANUP_INCOMPLETE")
+        def inspect_records(state, operation):
+            self.assertIn(("adapter_closed", state.parent), FakeAdapter.events)
+            self.assertNotIn(("docker_removed", state.parent), FakeAdapter.events)
+            # The production inspector takes a shared lock. Acquiring exclusive
+            # here also proves that the apply's exclusive lock has been released.
+            with (state / "operation.lock").open("rb") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            journal = drill.ops.load(state / ("operation-" + operation + ".json"))
+            FakeAdapter.events.append(("records_inspected", state.parent))
+            return {
+                "record_state": "CONSISTENT_TERMINAL", "error_code": None,
+                "recorded_status": journal["status"], "recorded_phase": journal["phase"],
+                "writer_boundary": "UNKNOWN", "live_runtime_checked": False,
+                "historical_continuity_verified": False, "receipt_signature_verified": False,
+                "automatic_retry": False, "activation_authorized": False,
+                "schema_downgrade_allowed": False,
+            }
         self.stack.enter_context(patch.object(drill, "create_fixture", side_effect=fixture))
         self.stack.enter_context(patch.object(drill, "MigrationRuntime", FakeAdapter))
         self.stack.enter_context(patch.object(drill, "ReadinessFailureRuntime", FakeRecoveryAdapter))
@@ -422,6 +440,7 @@ class MigrationApplyDrillTests(unittest.TestCase):
         self.stack.enter_context(patch.object(drill, "verify_held_boundary"))
         self.stack.enter_context(patch.object(drill.rehearsal, "seed_fixture"))
         self.stack.enter_context(patch.object(drill.rehearsal, "remove_disposable_project", side_effect=cleanup))
+        self.stack.enter_context(patch.object(drill.inspection, "inspect_operation", side_effect=inspect_records))
         verification = self.stack.enter_context(patch.object(drill.rehearsal, "verify_images"))
         self.stack.enter_context(patch.object(drill.ops, "command", side_effect=command))
         self.stack.enter_context(patch.object(drill.engine.approval, "verify_approved", side_effect=AssertionError("production approval must not run")))
@@ -432,9 +451,17 @@ class MigrationApplyDrillTests(unittest.TestCase):
         verification = self.mocked_live_run()
         phases = []
         output = self.outputs / "proof.json"
-        proof = drill.run_drill(request(), output, "cosign", progress=phases.append)
+        original_close = FakeAdapter.close
+        def close_under_apply_lock(adapter):
+            with (adapter.state / "operation.lock").open("rb") as lock:
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            original_close(adapter)
+        with patch.object(FakeAdapter, "close", close_under_apply_lock):
+            proof = drill.run_drill(request(), output, "cosign", progress=phases.append)
         verification.assert_called_once()
         self.assertEqual(proof["proof_type"], "MIGRATION_PREACTIVATION_DRILL")
+        self.assertEqual(proof["proof_contract_version"], 2)
         self.assertEqual(proof["authorization"], "DISPOSABLE_FIXTURE_ONLY")
         self.assertFalse(proof["production_approval_verified"])
         self.assertFalse(proof["application_external_network"])
@@ -460,6 +487,15 @@ class MigrationApplyDrillTests(unittest.TestCase):
             self.assertFalse(adapter.runtime.root.exists())
             self.assertFalse(adapter.journal["writer_activation_requested"])
             self.assertEqual(adapter.context["authorization"], drill.AUTHORIZATION)
+            events = [event for event, root in FakeAdapter.events if root == adapter.runtime.root]
+            self.assertEqual(events, ["adapter_closed", "records_inspected", "docker_removed"])
+        for name in ("success", "recovery"):
+            report = proof[name]["post_close_record_inspection"]
+            self.assertEqual(report["record_state"], "CONSISTENT_TERMINAL")
+            self.assertEqual(report["recorded_status"], proof[name]["status"])
+            self.assertEqual(report["writer_boundary"], "UNKNOWN")
+            self.assertFalse(report["activation_authorized"])
+            self.assertIn(name + "_record_inspection", phases)
         self.assertIn("success_readiness", phases)
         self.assertIn("recovery_containment", phases)
         self.assertIn("recovery_downgrade", phases)
@@ -467,6 +503,38 @@ class MigrationApplyDrillTests(unittest.TestCase):
         serialized = json.dumps(proof)
         for secret in ("private fixture placeholder", "drill-only", str(success.runtime.root), "DATABASE_URL"):
             self.assertNotIn(secret, serialized)
+
+    def test_inconsistent_inspection_cleans_up_and_never_publishes_pass(self):
+        self.mocked_live_run()
+        output = self.outputs / "proof.json"
+        with patch.object(drill.inspection, "inspect_operation", return_value={"record_state": "INVALID"}):
+            with self.assertRaisesRegex(drill.ops.ReleaseError, "APPLY_DRILL_RECORD_INSPECTION_FAILED") as caught:
+                drill.run_drill(request(), output, "cosign")
+        self.assertEqual(caught.exception._apply_drill_failure_phase, "success_record_inspection")
+        self.assertFalse(output.exists())
+        self.assertFalse(FakeAdapter.instances[0].runtime.root.exists())
+        self.assertEqual([event for event, _ in FakeAdapter.events], ["adapter_closed", "docker_removed"])
+
+    def test_inspection_cannot_promote_saved_records_to_live_authority(self):
+        self.mocked_live_run()
+        valid = {
+            "record_state": "CONSISTENT_TERMINAL", "recorded_status": "PRE_ACTIVATION_READY",
+            "error_code": None, "writer_boundary": "UNKNOWN",
+            **dict.fromkeys(("live_runtime_checked", "historical_continuity_verified",
+                            "receipt_signature_verified", "automatic_retry",
+                            "activation_authorized", "schema_downgrade_allowed"), False),
+        }
+        for key in ("writer_boundary", "live_runtime_checked", "historical_continuity_verified",
+                    "receipt_signature_verified", "automatic_retry", "activation_authorized",
+                    "schema_downgrade_allowed"):
+            with self.subTest(key=key):
+                report = {**valid, key: "PROVEN_CLOSED" if key == "writer_boundary" else True}
+                output = self.outputs / (key + ".json")
+                with patch.object(drill.inspection, "inspect_operation", return_value=report):
+                    with self.assertRaisesRegex(drill.ops.ReleaseError, "APPLY_DRILL_RECORD_INSPECTION_FAILED"):
+                        drill.run_drill(request(), output, "cosign")
+                self.assertFalse(output.exists())
+                self.assertFalse(FakeAdapter.instances[-1].runtime.root.exists())
 
     def test_cleanup_failure_destroys_temporary_files_and_never_publishes_pass(self):
         self.mocked_live_run(cleanup_failure=True)

@@ -208,6 +208,45 @@ class MigrationBackupTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(ops.ReleaseError):
                 backup.database_identity_hash({**identity, "database_oid": value})
 
+    def test_historical_proof_is_inspectable_without_becoming_eligible_for_apply(self):
+        now = datetime.now(UTC)
+        value = proof()
+        created = now - timedelta(days=2)
+        value["created_at"] = created.isoformat()
+        before = copy.deepcopy(value)
+        self.assertEqual(backup.validate_proof_structure(value, binding()), created)
+        self.assertEqual(value, before)
+        with self.assertRaisesRegex(ops.ReleaseError, "INVALID_MIGRATION_BACKUP_PROOF"):
+            backup.validate_proof(value, binding(), now=now)
+
+    def test_structure_and_execution_share_the_same_proof_binding_checks(self):
+        for key, replacement in (
+            ("created_at", "2026-01-01T00:00:00"),
+            ("operation_id", "b" * 32),
+            ("table_counts_match", 1),
+            ("restore_container_removed", False),
+            ("key_path", "/private/DO_NOT_PRINT"),
+        ):
+            value = proof()
+            value[key] = replacement
+            for validator in (backup.validate_proof_structure, backup.validate_proof):
+                with self.subTest(key=key, validator=validator.__name__):
+                    with self.assertRaises(ops.ReleaseError):
+                        validator(value, binding())
+
+    def test_proof_freshness_boundaries_remain_required_for_apply(self):
+        now = datetime.now(UTC)
+        for age in (-1, 0, 3600, 3601):
+            value = proof()
+            value["created_at"] = (now - timedelta(seconds=age)).isoformat()
+            with self.subTest(age=age):
+                backup.validate_proof_structure(value, binding())
+                if 0 <= age <= 3600:
+                    backup.validate_proof(value, binding(), now=now)
+                else:
+                    with self.assertRaises(ops.ReleaseError):
+                        backup.validate_proof(value, binding(), now=now)
+
     def test_proof_binds_operation_database_manifest_and_restored_business_data(self):
         backup.validate_proof(proof(), binding())
         for key in binding():

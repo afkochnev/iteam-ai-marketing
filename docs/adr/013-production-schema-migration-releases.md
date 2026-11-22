@@ -211,6 +211,11 @@ Approval обычного schema-static release нельзя переиспол�
 5. **Post-activation recovery controls** — maintenance/fail-forward, без automatic downgrade.
 6. **First production acceptance** — отдельно разрешённый переход `0028 → 0030` с publishing disabled.
 
+Подготовительная часть этапа 5 — [read-only inspection сохранённой операции](../migration-operation-inspection.md).
+Она проверяет связность journal/marker/runtime/backup metadata и всегда оставляет
+текущую writer boundary неизвестной. Эта часть не реализует activation или
+post-activation recovery и не завершает этап 5.
+
 Ни один PR не должен одновременно добавлять новую business schema и включать её production deployment.
 
 ## Alternatives
