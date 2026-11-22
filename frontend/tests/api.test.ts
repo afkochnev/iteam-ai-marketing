@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { authApi, request } from "../lib/api";
+import { authApi, distributionWorkspaceApi, request } from "../lib/api";
 
 describe("auth API", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -45,5 +45,21 @@ describe("request headers", () => {
     const mock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
     await request("/upload", { method: "POST", body: new FormData() });
     expect(new Headers(mock.mock.calls[0][1]!.headers).has("Content-Type")).toBe(false);
+  });
+});
+
+describe("distribution workspace API", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("encodes a bounded campaign page as one cookie-authenticated GET", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+    await distributionWorkspaceApi.get({ campaign_id: "campaign-1", limit: 50, cursor: "opaque+/=" });
+    const [url, options] = fetchMock.mock.calls[0];
+    const parsed = new URL(String(url));
+    expect(parsed.pathname).toBe("/api/v1/distribution-workspace");
+    expect(Object.fromEntries(parsed.searchParams)).toEqual({ campaign_id: "campaign-1", limit: "50", cursor: "opaque+/=" });
+    expect(options).toEqual(expect.objectContaining({ credentials: "include" }));
+    expect(options?.body).toBeUndefined();
+    expect(new Headers(options?.headers).has("Content-Type")).toBe(false);
   });
 });

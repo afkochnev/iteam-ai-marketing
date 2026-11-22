@@ -56,6 +56,34 @@ export interface PublicationProvenance { content_version_id: string; source_cont
 export interface PublicationReconciliation { id: string; publication_id: string; operator_user_id: string; channel: "TELEGRAM" | "VK"; decision: "CONFIRMED_PUBLISHED" | "CONFIRMED_NOT_PUBLISHED"; external_id: string | null; external_url: string | null; external_published_at: string | null; note: string | null; created_at: string; }
 export interface Publication { is_overdue?: boolean; lateness_seconds?: number; publication_plan_item_id?: string | null; id: string; campaign_id: string; content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK"; provider_enabled?: boolean; status: PublicationStatus; scheduled_at: string | null; approved_for_publish_at: string | null; approved_for_publish_by: string | null; external_id: string | null; provider_target_id?: string | null; external_url: string | null; published_at: string | null; failure_code: string | null; failure_message: string | null; retry_count: number; retry_allowed?: boolean; reconciliation_required?: boolean; reconciliation_history?: PublicationReconciliation[]; created_at: string; updated_at: string; provenance: PublicationProvenance[]; }
 export interface PublicationCalendarItem { is_overdue?: boolean; lateness_seconds?: number; publication_id: string; content_item_id: string; content_version_id: string; title: string; channel: "TELEGRAM" | "VK"; status: PublicationStatus; scheduled_at: string | null; published_at: string | null; external_url: string | null; provider_enabled: boolean; failure_code: string | null; }
+export type DistributionSection = "ready" | "needs_plan" | "overdue" | "active" | "upcoming" | "attention" | "cancelled" | "cancelled_history" | "published";
+export type DistributionPublicationAction = "approve" | "schedule" | "replan" | "cancel" | "publish_now" | "retry" | "reconcile_published" | "reconcile_not_published" | "reuse" | "change_channel" | "batch_replan";
+export type DistributionCandidateAction = "reschedule_plan" | "cancel_plan";
+export interface DistributionCampaign { id: string; name: string; status: CampaignStatus; }
+export interface DistributionPublication {
+  kind: "publication";
+  publication_id: string; content_item_id: string; content_version_id: string;
+  title: string; campaign: DistributionCampaign; channel: "VK" | "TELEGRAM";
+  status: PublicationStatus; scheduled_at: string | null; published_at: string | null;
+  external_url: string | null; publication_plan_item_id: string | null;
+  content_status: ContentStatus | null; content_source_archived: boolean;
+  provider_enabled: boolean; failure_code: string | null; failure_message: string | null;
+  is_overdue: boolean; lateness_seconds: number;
+  sections: DistributionSection[]; has_replacement: boolean;
+  allowed_actions: DistributionPublicationAction[];
+}
+export interface DistributionCandidate {
+  kind: "candidate"; id: string; title: string; campaign: DistributionCampaign;
+  channel: "VK" | "TELEGRAM" | null; plan_channel: "VK" | "TELEGRAM" | null;
+  plan_scheduled_at: string | null; approved_version_id: string; approved_version_number: number;
+  state: "ready" | "needs_plan" | "overdue"; allowed_actions: DistributionCandidateAction[];
+}
+export interface DistributionWorkspace {
+  as_of: string; campaign: DistributionCampaign | null;
+  items: Array<DistributionPublication | DistributionCandidate>;
+  pagination: { limit: number; next_cursor: string | null; has_more: boolean };
+  counts: Record<DistributionSection, number>;
+}
 export interface PublicationMetricsSnapshot { id: string; publication_id: string; channel: "TELEGRAM" | "VK"; observed_at: string; views: number | null; impressions: number | null; reactions: number | null; likes: number | null; comments: number | null; shares: number | null; clicks: number | null; subscribers: number | null; source: "PROVIDER" | "MANUAL"; provider: string | null; created_at: string; }
 export interface PublicationMetrics { publication_id: string; sync_capable: boolean; latest: PublicationMetricsSnapshot | null; history: PublicationMetricsSnapshot[]; }
 export interface CampaignPerformance { total_published: number; with_metrics: number; metric_coverage: Record<string, number>; totals: Record<string, number | null>; campaign_id?: string; period?: { from: string; to: string }; data_quality?: { publication_count: number; publications_with_any_metrics: number; coverage_ratio: number }; derived?: { ctr: number | null; engagement_rate: number | null }; kpis?: KPIEvaluation[]; publications: Array<{ content_title?: string | null; version_number?: number | null; publication_id: string; content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK"; published_at: string | null; latest_metrics_snapshot_id?: string | null; source?: string | null; observed_at?: string | null; views?: number | null; impressions?: number | null; reactions?: number | null; likes?: number | null; comments?: number | null; shares?: number | null; clicks?: number | null; subscribers?: number | null; metrics: PublicationMetricsSnapshot | null }>; }
@@ -207,6 +235,15 @@ export const contentApi = {
   requestRevision: (id: string, comment: string) => request<Content>(`/content/${id}/request-revision`, { method: "POST", body: JSON.stringify({ comment }) }),
   revisionProgress: (id: string) => request<ContentRevisionProgress | null>(`/content/${id}/revision-status`),
   manualEdit: (id: string, payload: { content: string; expected_current_version_id: string; change_description?: string | null }) => request<Content>(`/content/${id}/manual-edit`, { method: "POST", body: JSON.stringify(payload) }),
+};
+export const distributionWorkspaceApi = {
+  get: (filters: { campaign_id?: string; limit?: number; cursor?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (filters.campaign_id) query.set("campaign_id", filters.campaign_id);
+    query.set("limit", String(filters.limit ?? 50));
+    if (filters.cursor) query.set("cursor", filters.cursor);
+    return request<DistributionWorkspace>(`/distribution-workspace?${query}`);
+  },
 };
 export const publicationsApi = {
   deliveryStatus: () => request<{ state: "CHECK_UNAVAILABLE" | "WORKER_UNAVAILABLE"; message: string }>("/publications/delivery-status"),
