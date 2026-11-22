@@ -98,6 +98,18 @@ jobs:
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
         with:
           cosign-release: v3.1.4
+      - name: Isolated schema migration 0028 to 0030 with published images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/migration_release_drill.py \
+            --request scripts/fixtures/migration-0028-to-0030.json \
+            --output migration-drill-proof.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: migration-drill-proof
+          path: migration-drill-proof.json
+          if-no-files-found: error
       - name: Isolated upgrade, rollback and failure recovery with published images
         env:
           GH_TOKEN: ${{ github.token }}
@@ -108,3 +120,4 @@ jobs:
           name: release-drill-proof
           path: release-drill-proof.json
           if-no-files-found: error
+
