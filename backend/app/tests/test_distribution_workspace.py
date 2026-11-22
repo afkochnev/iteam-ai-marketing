@@ -268,11 +268,20 @@ async def _read_session() -> AsyncIterator[AsyncSession]:
 
 
 async def _workspace(
-    user: User, *, campaign_id: UUID | None = None, limit: int = 50, cursor: str | None = None
+    user: User,
+    *,
+    campaign_id: UUID | None = None,
+    publication_id: UUID | None = None,
+    limit: int = 50,
+    cursor: str | None = None,
 ) -> dict[str, Any]:
     async with _read_session() as session:
         result = await DistributionWorkspaceService(session).get(
-            user, campaign_id=campaign_id, limit=limit, cursor=cursor
+            user,
+            campaign_id=campaign_id,
+            publication_id=publication_id,
+            limit=limit,
+            cursor=cursor,
         )
         return result.model_dump(mode="json")
 
@@ -690,7 +699,8 @@ async def test_authentication_and_active_user_are_required(client, db_session):
 
 
 @pytest.mark.parametrize("change", ["revoke", "deactivate"])
-async def test_read_snapshot_rechecks_a_previously_authenticated_user(db_session, change):
+@pytest.mark.parametrize("targeted", [False, True])
+async def test_read_snapshot_rechecks_a_previously_authenticated_user(db_session, change, targeted):
     context = await _campaign(db_session)
     await _post(db_session, context)
     await db_session.commit()
@@ -705,7 +715,7 @@ async def test_read_snapshot_rechecks_a_previously_authenticated_user(db_session
         await writer.commit()
 
     with pytest.raises(AppError) as denied:
-        await _workspace(context.user)
+        await _workspace(context.user, publication_id=uuid4() if targeted else None)
 
     assert denied.value.status_code == (401 if change == "revoke" else 403)
 
@@ -745,6 +755,132 @@ async def test_cursor_pages_have_no_duplicates_and_counts_describe_only_the_page
     assert cursor is None
 
 
+@pytest.mark.parametrize("filtered", [False, True])
+async def test_publication_target_seeks_past_the_first_page_with_bounded_continuation(
+    client, db_session, filtered
+):
+    context = await _campaign(db_session)
+    newest = datetime.now(UTC)
+    publications = []
+    for index in range(58):
+        publications.append(
+            await _publication(
+                db_session,
+                context,
+                await _post(db_session, context),
+                created_at=newest - timedelta(seconds=index),
+            )
+        )
+    await db_session.commit()
+    _authenticate(client, context.user)
+    campaign_id = context.campaign.id if filtered else None
+    first = await _workspace(context.user, campaign_id=campaign_id)
+    target = publications[51]
+    assert len(first["items"]) == 50
+    assert str(target.id) not in {row["publication_id"] for row in first["items"]}
+    parameters: dict[str, str | int] = {"publication_id": str(target.id), "limit": 3}
+    if campaign_id is not None:
+        parameters["campaign_id"] = str(campaign_id)
+
+    response = await client.get(ENDPOINT, params=parameters)
+
+    assert response.status_code == 200
+    page = response.json()
+    assert [row["publication_id"] for row in page["items"]] == [
+        str(publication.id) for publication in publications[51:54]
+    ]
+    assert page["counts"]["upcoming"] == 3
+    assert page["pagination"]["limit"] == 3
+    seen = [row["publication_id"] for row in page["items"]]
+    for expected_slice in (publications[54:57], publications[57:]):
+        cursor = page["pagination"]["next_cursor"]
+        assert cursor is not None
+        page = await _workspace(context.user, campaign_id=campaign_id, limit=3, cursor=cursor)
+        assert [row["publication_id"] for row in page["items"]] == [
+            str(publication.id) for publication in expected_slice
+        ]
+        seen.extend(row["publication_id"] for row in page["items"])
+    assert seen == [str(publication.id) for publication in publications[51:]]
+    assert len(seen) == len(set(seen))
+    assert page["pagination"]["has_more"] is False
+    assert page["pagination"]["next_cursor"] is None
+
+
+async def test_publication_target_preserves_tied_order_and_candidate_continuation(db_session):
+    context = await _campaign(db_session)
+    tied_time = datetime.now(UTC)
+    publications = []
+    for _ in range(3):
+        publications.append(
+            await _publication(
+                db_session,
+                context,
+                await _post(db_session, context),
+                created_at=tied_time,
+            )
+        )
+    preceding_candidate = await _post(db_session, context)
+    preceding_candidate.item.created_at = tied_time
+    following_candidate = await _post(db_session, context)
+    following_candidate.item.created_at = tied_time - timedelta(seconds=1)
+    await db_session.commit()
+    ordered = sorted(publications, key=lambda publication: publication.id, reverse=True)
+
+    page = await _workspace(context.user, publication_id=ordered[1].id, limit=1)
+
+    assert [row["publication_id"] for row in page["items"]] == [str(ordered[1].id)]
+    assert page["pagination"]["next_cursor"] is not None
+    following = await _workspace(context.user, limit=2, cursor=page["pagination"]["next_cursor"])
+    seen = [(row["kind"], row.get("publication_id", row.get("id"))) for row in following["items"]]
+    assert seen == [
+        ("publication", str(ordered[2].id)),
+        ("candidate", str(following_candidate.item.id)),
+    ]
+    assert following["pagination"]["has_more"] is False
+
+
+@pytest.mark.parametrize("missing", [False, True])
+async def test_publication_target_must_exist_in_the_selected_campaign(client, db_session, missing):
+    context = await _campaign(db_session)
+    other = await _campaign(db_session, user=context.user)
+    outside = await _publication(db_session, other, await _post(db_session, other))
+    await db_session.commit()
+    _authenticate(client, context.user)
+
+    response = await client.get(
+        ENDPOINT,
+        params={
+            "campaign_id": str(context.campaign.id),
+            "publication_id": str(uuid4() if missing else outside.id),
+        },
+    )
+
+    assert response.status_code == 404
+    assert "PUBLICATION_NOT_FOUND" in response.text
+    assert str(other.campaign.id) not in response.text
+    assert str(outside.id) not in response.text
+
+
+async def test_publication_target_cannot_be_combined_with_a_cursor(client, db_session):
+    context = await _campaign(db_session)
+    for _ in range(2):
+        await _publication(db_session, context, await _post(db_session, context))
+    await db_session.commit()
+    _authenticate(client, context.user)
+    first = await _workspace(context.user, limit=1)
+
+    response = await client.get(
+        ENDPOINT,
+        params={
+            "publication_id": first["items"][0]["publication_id"],
+            "cursor": first["pagination"]["next_cursor"],
+        },
+    )
+
+    assert response.status_code == 422
+    assert "DISTRIBUTION_PAGE_TARGET_CONFLICT" in response.text
+
+
 async def test_cursor_cannot_be_reused_for_another_campaign(client, db_session):
     first = await _campaign(db_session)
     for _ in range(2):
@@ -769,6 +905,7 @@ async def test_cursor_cannot_be_reused_for_another_campaign(client, db_session):
         {"limit": 0},
         {"limit": 101},
         {"cursor": "invalid"},
+        {"publication_id": "invalid"},
         pytest.param(
             {
                 "cursor": base64.urlsafe_b64encode(
@@ -814,9 +951,16 @@ async def test_invalid_page_parameters_are_rejected(client, db_session, paramete
     assert (await client.get(ENDPOINT, params=parameters)).status_code == 422
 
 
-async def test_query_count_does_not_grow_with_publications_or_campaigns(db_session):
+@pytest.mark.parametrize("targeted", [False, True])
+async def test_query_count_does_not_grow_with_publications_or_campaigns(db_session, targeted):
     context = await _campaign(db_session)
-    await _publication(db_session, context, await _post(db_session, context))
+    publication = await _publication(
+        db_session,
+        context,
+        await _post(db_session, context),
+        created_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    publication_id = publication.id if targeted else None
     await db_session.commit()
     queries: list[str] = []
 
@@ -826,7 +970,7 @@ async def test_query_count_does_not_grow_with_publications_or_campaigns(db_sessi
 
     event.listen(engine.sync_engine, "before_cursor_execute", capture)
     try:
-        await _workspace(context.user, limit=5)
+        await _workspace(context.user, publication_id=publication_id, limit=5)
         small_count = len(queries)
     finally:
         event.remove(engine.sync_engine, "before_cursor_execute", capture)
@@ -838,7 +982,7 @@ async def test_query_count_does_not_grow_with_publications_or_campaigns(db_sessi
     queries.clear()
     event.listen(engine.sync_engine, "before_cursor_execute", capture)
     try:
-        result = await _workspace(context.user, limit=5)
+        result = await _workspace(context.user, publication_id=publication_id, limit=5)
     finally:
         event.remove(engine.sync_engine, "before_cursor_execute", capture)
 
@@ -848,16 +992,22 @@ async def test_query_count_does_not_grow_with_publications_or_campaigns(db_sessi
     assert len(queries) <= small_count + 2
 
 
-async def test_read_only_transaction_holds_one_snapshot_across_concurrent_writes(db_session):
+@pytest.mark.parametrize("targeted", [False, True])
+async def test_read_only_transaction_holds_one_snapshot_across_concurrent_writes(
+    db_session, targeted
+):
     context = await _campaign(db_session)
     publication = await _publication(db_session, context, await _post(db_session, context))
     await db_session.commit()
+    publication_id = publication.id if targeted else None
 
     async with _read_session() as reader:
         assert await reader.scalar(text("SHOW transaction_isolation")) == "repeatable read"
         assert await reader.scalar(text("SHOW transaction_read_only")) == "on"
         service = DistributionWorkspaceService(reader)
-        before = (await service.get(context.user)).model_dump(mode="json")
+        before = (await service.get(context.user, publication_id=publication_id)).model_dump(
+            mode="json"
+        )
         async with async_session_factory() as writer:
             await writer.execute(
                 update(Publication)
@@ -865,9 +1015,11 @@ async def test_read_only_transaction_holds_one_snapshot_across_concurrent_writes
                 .values(status=PublicationStatus.PUBLISHED, published_at=datetime.now(UTC))
             )
             await writer.commit()
-        during = (await service.get(context.user)).model_dump(mode="json")
+        during = (await service.get(context.user, publication_id=publication_id)).model_dump(
+            mode="json"
+        )
 
-    after = await _workspace(context.user)
+    after = await _workspace(context.user, publication_id=publication_id)
     assert _by_publication(before, publication)["status"] == "SCHEDULED"
     assert _by_publication(during, publication)["status"] == "SCHEDULED"
     assert _by_publication(after, publication)["status"] == "PUBLISHED"

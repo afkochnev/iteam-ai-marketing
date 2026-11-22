@@ -382,12 +382,19 @@ class DistributionWorkspaceService:
         user: User,
         *,
         campaign_id: UUID | None = None,
+        publication_id: UUID | None = None,
         limit: int = 50,
         cursor: str | None = None,
     ) -> DistributionWorkspaceResponse:
         if not 1 <= limit <= 100:
             raise AppError(
                 "DISTRIBUTION_LIMIT_INVALID", "Размер страницы должен быть от 1 до 100.", 422
+            )
+        if publication_id is not None and cursor is not None:
+            raise AppError(
+                "DISTRIBUTION_PAGE_TARGET_CONFLICT",
+                "Выберите публикацию или страницу, но не оба параметра одновременно.",
+                422,
             )
         after = _decode_cursor(cursor, campaign_id)
         # CurrentUser authenticates on the request session. Recheck the identity
@@ -429,7 +436,22 @@ class DistributionWorkspaceService:
                 raise AppError("CAMPAIGN_NOT_FOUND", "Кампания не найдена.", 404)
             campaign = DistributionCampaign(**selected)
 
-        keys = await self._page(campaign_id, limit, after)
+        if publication_id is not None:
+            target_query = (
+                select(Publication.id, Publication.created_at)
+                .join(Campaign, Campaign.id == Publication.campaign_id)
+                .where(Publication.id == publication_id)
+            )
+            if campaign_id is not None:
+                target_query = target_query.where(Publication.campaign_id == campaign_id)
+            target = (await self.session.execute(target_query)).mappings().one_or_none()
+            if target is None:
+                raise AppError(
+                    "PUBLICATION_NOT_FOUND", "Публикация не найдена в выбранной области.", 404
+                )
+            after = (target["created_at"], "publication", target["id"])
+
+        keys = await self._page(campaign_id, limit, after, include_start=publication_id is not None)
         has_more = len(keys) > limit
         keys = keys[:limit]
         publication_ids = [row["id"] for row in keys if row["kind"] == "publication"]
@@ -462,6 +484,8 @@ class DistributionWorkspaceService:
         campaign_id: UUID | None,
         limit: int,
         after: tuple[datetime, str, UUID] | None,
+        *,
+        include_start: bool = False,
     ) -> list[Mapping[str, Any]]:
         p, c, v, campaign = (
             Publication.__table__,
@@ -533,7 +557,7 @@ class DistributionWorkspaceService:
                     and_(
                         combined.c.created_at == created,
                         combined.c.kind == kind,
-                        combined.c.id < record_id,
+                        combined.c.id <= record_id if include_start else combined.c.id < record_id,
                     ),
                 )
             )

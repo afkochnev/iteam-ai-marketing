@@ -237,11 +237,12 @@ export const contentApi = {
   manualEdit: (id: string, payload: { content: string; expected_current_version_id: string; change_description?: string | null }) => request<Content>(`/content/${id}/manual-edit`, { method: "POST", body: JSON.stringify(payload) }),
 };
 export const distributionWorkspaceApi = {
-  get: (filters: { campaign_id?: string; limit?: number; cursor?: string } = {}) => {
+  get: (filters: { campaign_id?: string; limit?: number; cursor?: string; publication_id?: string } = {}) => {
     const query = new URLSearchParams();
     if (filters.campaign_id) query.set("campaign_id", filters.campaign_id);
     query.set("limit", String(filters.limit ?? 50));
     if (filters.cursor) query.set("cursor", filters.cursor);
+    if (filters.publication_id) query.set("publication_id", filters.publication_id);
     return request<DistributionWorkspace>(`/distribution-workspace?${query}`);
   },
 };

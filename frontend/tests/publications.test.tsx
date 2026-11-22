@@ -8,6 +8,8 @@ import type { DistributionCandidate, DistributionPublication, DistributionWorksp
 const RealDate = Date;
 const FIXED_TEST_TIME = new Date("2026-10-21T12:00:00Z");
 const campaign = { id: "campaign-1", name: "Запуск", status: "ACTIVE" as const };
+const linkedPublicationId = "11111111-1111-4111-8111-111111111111";
+const otherLinkedPublicationId = "22222222-2222-4222-8222-222222222222";
 
 const mocks = vi.hoisted(() => ({
   user: { role: "ADMIN" } as { role: string } | null,
@@ -84,8 +86,14 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function navigateToPublication(publicationId: string) {
+  window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}#publication-${publicationId}`);
+  fireEvent(window, new HashChangeEvent("hashchange"));
+}
+
 beforeEach(() => {
   vi.resetAllMocks();
+  window.history.replaceState(null, "", "/publications");
   mocks.user = { role: "ADMIN" };
   mocks.searchParams = new URLSearchParams();
   mocks.workspace.mockResolvedValue(workspace());
@@ -95,6 +103,7 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  window.history.replaceState(null, "", "/publications");
 });
 
 describe("distribution workspace", () => {
@@ -487,6 +496,12 @@ describe("snapshot failures and pagination", () => {
     expect(screen.getByText("Страница 2")).toBeInTheDocument();
     expect(screen.getByText("На этой странице нет предстоящих публикаций.")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Следующая страница" })).toBeDisabled();
+    window.history.replaceState(window.history.state, "", "/publications#upcoming");
+    fireEvent(window, new HashChangeEvent("hashchange"));
+    window.history.replaceState(window.history.state, "", "/publications");
+    fireEvent(window, new HashChangeEvent("hashchange"));
+    expect(mocks.workspace).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Страница 2")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Предыдущая страница" }));
     expect(await screen.findByRole("link", { name: "Первая страница" })).toBeInTheDocument();
     expect(screen.queryByText("Вторая страница")).not.toBeInTheDocument();
@@ -527,6 +542,164 @@ describe("snapshot failures and pagination", () => {
     await act(async () => oldRequest.resolve(workspace({ campaign, items: [publication({ title: "Поздний старый ответ" })] })));
     expect(screen.queryByText("Поздний старый ответ")).not.toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Новый контекст" })).toBeInTheDocument();
+  });
+
+  it("opens a deep-linked publication beyond the first fifty rows in one bounded campaign snapshot", async () => {
+    mocks.searchParams = new URLSearchParams("campaign_id=campaign-1");
+    window.history.replaceState(null, "", `/publications?campaign_id=campaign-1#publication-${linkedPublicationId}`);
+    const firstFifty = workspace({ items: Array.from({ length: 50 }, (_, index) => publication({
+      publication_id: `newer-${index}`, title: `Более новая публикация ${index}`,
+    })) });
+    const targetPage = workspace({ campaign, items: [publication({ publication_id: linkedPublicationId, title: "Публикация за первой страницей" })] });
+    mocks.workspace.mockImplementation(({ publication_id }: { publication_id?: string }) => Promise.resolve(
+      publication_id === linkedPublicationId ? targetPage : firstFifty,
+    ));
+    render(<PublicationsPage />);
+    expect(await screen.findByRole("link", { name: "Публикация за первой страницей" })).toBeInTheDocument();
+    expect(mocks.workspace).toHaveBeenCalledExactlyOnceWith({ campaign_id: "campaign-1", limit: 50, cursor: undefined, publication_id: linkedPublicationId });
+    expect(screen.queryByText("Более новая публикация 0")).not.toBeInTheDocument();
+    expect(screen.getByText("Страница 1 от выбранной публикации")).toBeInTheDocument();
+    await waitFor(() => expect(document.activeElement).toHaveAttribute("id", `publication-${linkedPublicationId}`));
+  });
+
+  it("loads a publication outside the current snapshot after native same-page hash navigation", async () => {
+    mocks.workspace.mockResolvedValueOnce(workspace({ items: [publication({ title: "Исходная страница" })] }))
+      .mockResolvedValue(workspace({ items: [publication({ publication_id: linkedPublicationId, title: "Цель ссылки" })] }));
+    render(<PublicationsPage />);
+    await screen.findByRole("link", { name: "Исходная страница" });
+    navigateToPublication(linkedPublicationId);
+    expect(await screen.findByRole("link", { name: "Цель ссылки" })).toBeInTheDocument();
+    expect(screen.queryByText("Исходная страница")).not.toBeInTheDocument();
+    expect(mocks.workspace).toHaveBeenNthCalledWith(2, { campaign_id: undefined, limit: 50, cursor: undefined, publication_id: linkedPublicationId });
+    await waitFor(() => expect(document.activeElement).toHaveAttribute("id", `publication-${linkedPublicationId}`));
+  });
+
+  it("ignores an old target response after a newer publication link has loaded", async () => {
+    const oldTarget = deferred<DistributionWorkspace>();
+    window.history.replaceState(null, "", `/publications#publication-${linkedPublicationId}`);
+    mocks.workspace.mockReturnValueOnce(oldTarget.promise)
+      .mockResolvedValue(workspace({ items: [publication({ publication_id: otherLinkedPublicationId, title: "Новая цель" })] }));
+    render(<PublicationsPage />);
+    await waitFor(() => expect(mocks.workspace).toHaveBeenCalledTimes(1));
+    navigateToPublication(otherLinkedPublicationId);
+    expect(await screen.findByRole("link", { name: "Новая цель" })).toBeInTheDocument();
+    await act(async () => oldTarget.resolve(workspace({ items: [publication({ publication_id: linkedPublicationId, title: "Поздняя старая цель" })] })));
+    expect(screen.queryByText("Поздняя старая цель")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Новая цель" })).toBeInTheDocument();
+    expect(mocks.workspace).toHaveBeenNthCalledWith(2, { campaign_id: undefined, limit: 50, cursor: undefined, publication_id: otherLinkedPublicationId });
+  });
+
+  it("returns to the first page when back navigation removes the hash and ignores the pending target", async () => {
+    const pendingTarget = deferred<DistributionWorkspace>();
+    mocks.workspace.mockResolvedValueOnce(workspace({ items: [publication({ title: "Начальная страница" })] }))
+      .mockReturnValueOnce(pendingTarget.promise)
+      .mockResolvedValue(workspace({ items: [publication({ title: "Возвращённое начало" })] }));
+    render(<PublicationsPage />);
+    await screen.findByRole("link", { name: "Начальная страница" });
+    navigateToPublication(linkedPublicationId);
+    await waitFor(() => expect(mocks.workspace).toHaveBeenCalledTimes(2));
+    window.history.replaceState(window.history.state, "", "/publications");
+    fireEvent(window, new HashChangeEvent("hashchange"));
+    expect(await screen.findByRole("link", { name: "Возвращённое начало" })).toBeInTheDocument();
+    expect(mocks.workspace).toHaveBeenNthCalledWith(3, { campaign_id: undefined, limit: 50, cursor: undefined });
+    await act(async () => pendingTarget.resolve(workspace({ items: [publication({ publication_id: linkedPublicationId, title: "Отменённая навигация" })] })));
+    expect(screen.queryByText("Отменённая навигация")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Возвращённое начало" })).toBeInTheDocument();
+    expect(screen.getByText("Страница 1")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "К началу списка" })).not.toBeInTheDocument();
+  });
+
+  it("keeps the anchor through next and previous pages and explicitly returns to the start", async () => {
+    window.history.replaceState(null, "", `/publications#publication-${linkedPublicationId}`);
+    const anchorPage = workspace({
+      items: [publication({ publication_id: linkedPublicationId, title: "Выбранная публикация" })],
+      pagination: { limit: 50, next_cursor: "after-anchor", has_more: true },
+    });
+    const nextPage = workspace({ items: [publication({ title: "Следующая часть списка" })] });
+    const startPage = workspace({ items: [publication({ title: "Самые новые публикации" })] });
+    mocks.workspace.mockResolvedValueOnce(anchorPage).mockResolvedValueOnce(nextPage)
+      .mockResolvedValueOnce(anchorPage).mockResolvedValue(startPage);
+    render(<PublicationsPage />);
+    await screen.findByRole("link", { name: "Выбранная публикация" });
+    fireEvent.click(screen.getByRole("button", { name: "Следующая страница" }));
+    expect(await screen.findByRole("link", { name: "Следующая часть списка" })).toBeInTheDocument();
+    expect(screen.getByText("Страница 2 от выбранной публикации")).toBeInTheDocument();
+    expect(mocks.workspace).toHaveBeenNthCalledWith(2, { campaign_id: undefined, limit: 50, cursor: "after-anchor" });
+    fireEvent.click(screen.getByRole("button", { name: "Предыдущая страница" }));
+    expect(await screen.findByRole("link", { name: "Выбранная публикация" })).toBeInTheDocument();
+    expect(mocks.workspace).toHaveBeenNthCalledWith(3, { campaign_id: undefined, limit: 50, cursor: undefined, publication_id: linkedPublicationId });
+    fireEvent.click(screen.getByRole("button", { name: "К началу списка" }));
+    expect(await screen.findByRole("link", { name: "Самые новые публикации" })).toBeInTheDocument();
+    expect(window.location.hash).toBe("");
+    expect(screen.getByText("Страница 1")).toBeInTheDocument();
+    expect(screen.queryByText("Страница 1 от выбранной публикации")).not.toBeInTheDocument();
+    expect(mocks.workspace).toHaveBeenNthCalledWith(4, { campaign_id: undefined, limit: 50, cursor: undefined });
+    fireEvent.click(screen.getByRole("button", { name: "Обновить публикации" }));
+    await waitFor(() => expect(mocks.workspace).toHaveBeenCalledTimes(5));
+    expect(mocks.workspace).toHaveBeenNthCalledWith(5, { campaign_id: undefined, limit: 50, cursor: undefined });
+  });
+
+  it("keeps a failed target stale and retries that target on refresh instead of silently returning to the old page", async () => {
+    const oldPage = workspace({ items: [publication({ title: "Сохранённая страница" })] });
+    mocks.workspace.mockResolvedValueOnce(oldPage)
+      .mockRejectedValueOnce(new Error("Публикация не найдена."))
+      .mockRejectedValueOnce(new Error("Публикация не найдена."))
+      .mockResolvedValue(oldPage);
+    render(<PublicationsPage />);
+    await screen.findByRole("link", { name: "Сохранённая страница" });
+    navigateToPublication(linkedPublicationId);
+    expect(await screen.findByRole("alert")).toHaveTextContent("Публикация не найдена.");
+    expect(screen.getByRole("button", { name: "Отменить" })).toBeDisabled();
+    expect(screen.getByText(/свежесть не подтверждена/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Обновить публикации" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Публикация не найдена.");
+    expect(mocks.workspace).toHaveBeenNthCalledWith(3, { campaign_id: undefined, limit: 50, cursor: undefined, publication_id: linkedPublicationId });
+    expect(screen.getByRole("button", { name: "Отменить" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "К началу списка" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Отменить" })).toBeEnabled());
+    expect(window.location.hash).toBe("");
+    expect(mocks.workspace).toHaveBeenNthCalledWith(4, { campaign_id: undefined, limit: 50, cursor: undefined });
+  });
+
+  it("refreshes the latest requested target when a command on the old page finishes", async () => {
+    const command = deferred<object>();
+    const pendingTarget = deferred<DistributionWorkspace>();
+    mocks.approve.mockReturnValue(command.promise);
+    mocks.workspace.mockResolvedValueOnce(workspace({ items: [publication({
+      title: "Публикация до перехода", status: "DRAFT", sections: ["active"], allowed_actions: ["approve"],
+    })] })).mockReturnValueOnce(pendingTarget.promise)
+      .mockResolvedValue(workspace({ items: [publication({ publication_id: linkedPublicationId, title: "Свежая цель после команды" })] }));
+    render(<PublicationsPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "Согласовать публикацию" }));
+    navigateToPublication(linkedPublicationId);
+    await waitFor(() => expect(mocks.workspace).toHaveBeenCalledTimes(2));
+    await act(async () => command.resolve({}));
+    expect(await screen.findByRole("link", { name: "Свежая цель после команды" })).toBeInTheDocument();
+    expect(mocks.workspace).toHaveBeenNthCalledWith(3, { campaign_id: undefined, limit: 50, cursor: undefined, publication_id: linkedPublicationId });
+    await act(async () => pendingTarget.resolve(workspace({ items: [publication({ publication_id: linkedPublicationId, title: "Снимок цели до команды" })] })));
+    expect(screen.queryByText("Снимок цели до команды")).not.toBeInTheDocument();
+    expect(screen.queryByText("Публикация до перехода")).not.toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Свежая цель после команды" })).toBeInTheDocument();
+    expect(mocks.approve).toHaveBeenCalledTimes(1);
+  });
+
+  it("reveals a deep-linked cancelled publication retained only in history", async () => {
+    window.history.replaceState(null, "", `/publications#publication-${linkedPublicationId}`);
+    mocks.workspace.mockResolvedValue(workspace({ items: [publication({
+      publication_id: linkedPublicationId, title: "Историческая отмена", status: "CANCELLED",
+      sections: ["cancelled_history"], has_replacement: true, allowed_actions: [],
+    })] }));
+    render(<PublicationsPage />);
+    await waitFor(() => expect(document.activeElement).toHaveAttribute("id", `publication-${linkedPublicationId}`));
+    expect(document.getElementById("cancelled-history")).toHaveAttribute("open");
+    expect(screen.getByRole("link", { name: "Историческая отмена" })).toBeInTheDocument();
+  });
+
+  it.each(["#publication-not-a-uuid", "#publication-%E0%A4%A", "#ready"])("does not treat %s as a publication target", async (hash) => {
+    window.history.replaceState(null, "", `/publications${hash}`);
+    render(<PublicationsPage />);
+    await waitFor(() => expect(mocks.workspace).toHaveBeenCalledExactlyOnceWith({ campaign_id: undefined, limit: 50, cursor: undefined }));
+    expect(screen.queryByText(/от выбранной публикации/)).not.toBeInTheDocument();
   });
 
   it("does not request the workspace before authentication", async () => {

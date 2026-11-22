@@ -26,10 +26,19 @@ import { formatDateTime } from "@/lib/campaigns";
 import { PUBLICATION_STATUS_LABELS } from "@/lib/presentation";
 
 type ActionFeedback = { tone: "success" | "error"; message: string };
-type PagePosition = { cursor: string | null; previous: Array<string | null> };
+type PagePosition = { cursor: string | null; previous: Array<string | null>; anchorPublicationId: string | null };
 type PageSnapshot = { data: DistributionWorkspace; position: PagePosition };
-const firstPage = (): PagePosition => ({ cursor: null, previous: [] });
+const firstPage = (anchorPublicationId: string | null = null): PagePosition => ({ cursor: null, previous: [], anchorPublicationId });
 const PAGE_LIMIT = 50;
+
+function publicationIdFromHash(): string | null {
+  try {
+    return /^publication-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i
+      .exec(decodeURIComponent(window.location.hash.slice(1)))?.[1].toLowerCase() ?? null;
+  } catch {
+    return null;
+  }
+}
 
 function LoadingState() {
   return <main><p role="status">Загружаем публикации…</p></main>;
@@ -49,6 +58,7 @@ function PublicationsWorkspace({ campaignIdFilter }: { campaignIdFilter: string 
   const router = useRouter();
   const { user, loading: authLoading } = useAuth();
   const [snapshot, setSnapshot] = useState<PageSnapshot | null>(null);
+  const [requestedAnchorPublicationId, setRequestedAnchorPublicationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [stale, setStale] = useState(false);
   const [error, setError] = useState("");
@@ -56,15 +66,15 @@ function PublicationsWorkspace({ campaignIdFilter }: { campaignIdFilter: string 
   const [busyKey, setBusyKey] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Record<string, ActionFeedback>>({});
   const [scheduleEditorKey, setScheduleEditorKey] = useState<string | null>(null);
-  const currentPosition = useRef<PagePosition>(firstPage());
   const requestedPosition = useRef<PagePosition>(firstPage());
   const requestSequence = useRef(0);
   const mounted = useRef(false);
 
-  const load = useCallback(async (position: PagePosition = currentPosition.current): Promise<void> => {
+  const load = useCallback(async (position: PagePosition): Promise<void> => {
     if (!mounted.current) return;
     const sequence = ++requestSequence.current;
     requestedPosition.current = position;
+    setRequestedAnchorPublicationId(position.anchorPublicationId);
     setLoading(true);
     setStale(true);
     setError("");
@@ -74,9 +84,9 @@ function PublicationsWorkspace({ campaignIdFilter }: { campaignIdFilter: string 
         campaign_id: campaignIdFilter ?? undefined,
         limit: PAGE_LIMIT,
         cursor: position.cursor ?? undefined,
+        ...(position.cursor === null && position.anchorPublicationId ? { publication_id: position.anchorPublicationId } : {}),
       });
       if (!mounted.current || sequence !== requestSequence.current) return;
-      currentPosition.current = position;
       setSnapshot({ data, position });
       setStale(false);
     } catch (reason) {
@@ -94,11 +104,22 @@ function PublicationsWorkspace({ campaignIdFilter }: { campaignIdFilter: string 
       router.replace("/login");
       return () => { mounted.current = false; requestSequence.current += 1; };
     }
-    const timer = user ? window.setTimeout(() => void load(firstPage()), 0) : undefined;
+    const initialSequence = requestSequence.current;
+    const timer = user ? window.setTimeout(() => {
+      if (requestSequence.current === initialSequence) void load(firstPage(publicationIdFromHash()));
+    }, 0) : undefined;
+    const navigateToPublication = () => {
+      const publicationId = publicationIdFromHash();
+      const hash = window.location.hash;
+      const leavingAnchor = (hash === "" || hash === "#") && requestedPosition.current.anchorPublicationId !== null;
+      if (user && (publicationId || leavingAnchor)) void load(firstPage(publicationId));
+    };
+    if (user) window.addEventListener("hashchange", navigateToPublication);
     return () => {
       mounted.current = false;
       requestSequence.current += 1;
       if (timer !== undefined) window.clearTimeout(timer);
+      window.removeEventListener("hashchange", navigateToPublication);
     };
   }, [authLoading, user, router, load]);
 
@@ -150,7 +171,7 @@ function PublicationsWorkspace({ campaignIdFilter }: { campaignIdFilter: string 
       setActionNotice(successMessage);
       setFeedback((current) => ({ ...current, [key]: { tone: "success", message: successMessage } }));
       // A command response is not a workspace snapshot. Reload every related fact.
-      await load();
+      await load(requestedPosition.current);
       return true;
     } catch (reason) {
       if (mounted.current) {
@@ -161,6 +182,11 @@ function PublicationsWorkspace({ campaignIdFilter }: { campaignIdFilter: string 
     } finally {
       if (mounted.current) setBusyKey(null);
     }
+  }
+
+  function returnToStart() {
+    window.history.replaceState(window.history.state, "", `${window.location.pathname}${window.location.search}`);
+    void load(firstPage());
   }
 
   function approvePublication(item: DistributionPublication) {
@@ -276,10 +302,12 @@ function PublicationsWorkspace({ campaignIdFilter }: { campaignIdFilter: string 
     {campaignIdFilter && selectedCampaignName && <p className="notice">Показана кампания «{selectedCampaignName}». <Link href="/publications">Показать все кампании</Link></p>}
     <p className="notice">Планирование не означает отправку. Доставка требует отдельного разрешения человека и доступного сервиса отправки.</p>
     <div className="actions">
-      <button className="secondary" disabled={loading || busyKey !== null} onClick={() => void load()}>Обновить публикации</button>
+      <button className="secondary" disabled={loading || busyKey !== null} onClick={() => void load(requestedPosition.current)}>Обновить публикации</button>
+      {(snapshot?.position.anchorPublicationId || requestedAnchorPublicationId) && <button className="secondary" disabled={loading || busyKey !== null} onClick={returnToStart}>К началу списка</button>}
       {workspace && <p>Снимок на {formatDateTime(workspace.as_of)}{stale ? " · свежесть не подтверждена" : ""}</p>}
     </div>
     <p className="subtle">Показатели и списки относятся только к текущей странице. Каждая страница загружается отдельным снимком.</p>
+    {snapshot?.position.anchorPublicationId && <p className="subtle">Список начинается с выбранной публикации. Более новые записи доступны в начале списка.</p>}
     <div className="summary-grid metric-cards" aria-label="Показатели текущей страницы">
       <a className="metric-card" href="#ready"><strong>{count("ready")}</strong><span>Готовы к планированию</span></a>
       <a className="metric-card" href="#active"><strong>{count("active")}</strong><span>Требуют действия / В процессе</span></a>
@@ -298,8 +326,8 @@ function PublicationsWorkspace({ campaignIdFilter }: { campaignIdFilter: string 
     </div>}
     {actionNotice && <p className="notice" role="status">{actionNotice}</p>}
     {!actionsUnavailable && <>
-      <PublicationChannelChange onApplied={load} rows={rows.filter((row) => can(row, "change_channel")).map((row) => ({ ...row, operational_data_complete: true }))} />
-      <PublicationReplanningPreview onApplied={load} rows={rows.filter((row) => can(row, "batch_replan")).map((row) => ({ ...row, operational_data_complete: true }))} />
+      <PublicationChannelChange onApplied={() => load(requestedPosition.current)} rows={rows.filter((row) => can(row, "change_channel")).map((row) => ({ ...row, operational_data_complete: true }))} />
+      <PublicationReplanningPreview onApplied={() => load(requestedPosition.current)} rows={rows.filter((row) => can(row, "batch_replan")).map((row) => ({ ...row, operational_data_complete: true }))} />
     </>}
     <section className="section-block" id="ready" aria-label="Готовы к планированию">
       <h2>Готовы к планированию</h2>
@@ -407,7 +435,7 @@ function PublicationsWorkspace({ campaignIdFilter }: { campaignIdFilter: string 
     </section>
     <details className="disclosure" id="cancelled-history">
       <summary>История отменённых публикаций на странице · {count("cancelled_history")}</summary>
-      <div className="disclosure-body">{cancelledHistory.map((item) => <p key={item.publication_id}><Link href={`/content/${item.content_item_id}`}>{item.title}</Link> · {item.scheduled_at ? formatDateTime(item.scheduled_at) : "Без даты"}{item.has_replacement ? " · Есть новая запланированная или опубликованная запись" : " · Отменена"}</p>)}</div>
+      <div className="disclosure-body">{cancelledHistory.map((item) => <p id={item.sections.includes("cancelled") ? undefined : `publication-${item.publication_id}`} tabIndex={-1} key={item.publication_id}><Link href={`/content/${item.content_item_id}`}>{item.title}</Link> · {item.scheduled_at ? formatDateTime(item.scheduled_at) : "Без даты"}{item.has_replacement ? " · Есть новая запланированная или опубликованная запись" : " · Отменена"}</p>)}</div>
     </details>
     <details className="disclosure" id="published">
       <summary>Опубликованные на странице · {count("published")}</summary>
@@ -421,12 +449,12 @@ function PublicationsWorkspace({ campaignIdFilter }: { campaignIdFilter: string 
     {snapshot && <nav className="actions" aria-label="Страницы публикаций">
       <button className="secondary" disabled={loading || stale || busyKey !== null || !snapshot.position.previous.length} onClick={() => {
         const previous = snapshot.position.previous;
-        void load({ cursor: previous[previous.length - 1], previous: previous.slice(0, -1) });
+        void load({ ...snapshot.position, cursor: previous[previous.length - 1], previous: previous.slice(0, -1) });
       }}>Предыдущая страница</button>
-      <span>Страница {snapshot.position.previous.length + 1}</span>
+      <span>Страница {snapshot.position.previous.length + 1}{snapshot.position.anchorPublicationId ? " от выбранной публикации" : ""}</span>
       <button className="secondary" disabled={loading || stale || busyKey !== null || !workspace?.pagination.has_more || !workspace.pagination.next_cursor} onClick={() => {
         if (!workspace?.pagination.next_cursor) return;
-        void load({ cursor: workspace.pagination.next_cursor, previous: [...snapshot.position.previous, snapshot.position.cursor] });
+        void load({ ...snapshot.position, cursor: workspace.pagination.next_cursor, previous: [...snapshot.position.previous, snapshot.position.cursor] });
       }}>Следующая страница</button>
     </nav>}
   </main>;

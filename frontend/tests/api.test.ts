@@ -62,4 +62,16 @@ describe("distribution workspace API", () => {
     expect(options?.body).toBeUndefined();
     expect(new Headers(options?.headers).has("Content-Type")).toBe(false);
   });
+
+  it("requests a bounded snapshot from an exact publication without a cursor", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
+    const publicationId = "11111111-1111-4111-8111-111111111111";
+    await distributionWorkspaceApi.get({ campaign_id: "campaign-1", limit: 50, publication_id: publicationId });
+    const [url, options] = fetchMock.mock.calls[0];
+    const parsed = new URL(String(url));
+    expect(parsed.pathname).toBe("/api/v1/distribution-workspace");
+    expect(Object.fromEntries(parsed.searchParams)).toEqual({ campaign_id: "campaign-1", limit: "50", publication_id: publicationId });
+    expect(options).toEqual(expect.objectContaining({ credentials: "include" }));
+    expect(options?.body).toBeUndefined();
+  });
 });
