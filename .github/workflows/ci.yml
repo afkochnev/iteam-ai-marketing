@@ -94,7 +94,7 @@ jobs:
           scripts/migration_rehearsal_proof.py scripts/migration_apply_state.py
           scripts/migration_apply_backup.py scripts/migration_writer_barrier.py
           scripts/migration_apply_runtime.py scripts/migration_release_apply.py
-          scripts/migration_apply_drill.py
+          scripts/migration_apply_drill.py scripts/migration_operation_inspect.py
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         with:

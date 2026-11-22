@@ -242,6 +242,12 @@ consume. Новый approval не обходит блокировку; marker н
 Удаление/переименование state files, смена пользователя или обход через другой
 инструмент не являются процедурой recovery.
 
+Сохранённые документы можно проверить отдельной read-only командой
+[`migration_operation_inspect.py`](migration-operation-inspection.md).
+Она не создаёт Journal для исполнения, не проверяет живой runtime и всегда
+возвращает `writer_boundary=UNKNOWN`, даже для согласованного terminal record.
+Её успешный exit code не разрешает resume, activation или downgrade.
+
 ## Допустимый возврат на source schema
 
 После ошибки engine удаляет свои helpers и пытается удержать apps остановленными,
@@ -313,6 +319,13 @@ Production ciphertext `migration-<operation-id>.dump.enc` и соответст�
 `ROLLED_BACK_PRE_ACTIVATION`. Проверяются business hashes/counts, schema,
 отсутствие активации, `restart=no`, пустые PostgreSQL network attachments
 и недоступность прежнего тестового host port.
+
+Затем adapter и event monitor закрываются под operation lock. После освобождения
+lock инспектор читает настоящие сохранённые записи и требует согласованного
+terminal outcome с `writer_boundary=UNKNOWN` и всеми execution-authority flags
+равными `false`. В proof типа `MIGRATION_PREACTIVATION_DRILL` версии 2 это
+отражено отдельным `post_close_record_inspection` для обоих сценариев.
+Ошибка этой проверки запрещает `PASS`; fixture cleanup выполняется и при ней.
 
 Application containers и Redis находятся только на internal bridge. Исходный
 disposable PostgreSQL дополнительно подключён к собственной обычной bridge

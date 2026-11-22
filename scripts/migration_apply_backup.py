@@ -331,7 +331,12 @@ def _remove_helper(name: str, operation_id: str) -> None:
         )
 
 
-def validate_proof(proof: Any, binding: dict[str, Any], *, now: datetime | None = None) -> None:
+def validate_proof_structure(proof: Any, binding: dict[str, Any]) -> datetime:
+    """Validate historical proof structure and bindings, without authorizing use.
+
+    Inspection may read an expired record. Execution must still call
+    validate_proof(), which additionally enforces the original freshness gate.
+    """
     validate_binding(binding)
     fields = _BINDING_FIELDS | {
         "proof_version", "status", "created_at", "encrypted_backup_sha256",
@@ -356,6 +361,14 @@ def validate_proof(proof: Any, binding: dict[str, Any], *, now: datetime | None 
     try:
         created = datetime.fromisoformat(proof["created_at"])
         ops.require(created.utcoffset() is not None, "INVALID_MIGRATION_BACKUP_PROOF")
+        return created
+    except (ValueError, TypeError, OverflowError):
+        raise ops.ReleaseError("INVALID_MIGRATION_BACKUP_PROOF") from None
+
+
+def validate_proof(proof: Any, binding: dict[str, Any], *, now: datetime | None = None) -> None:
+    created = validate_proof_structure(proof, binding)
+    try:
         age = ((now or datetime.now(UTC)) - created).total_seconds()
         ops.require(0 <= age <= 3600, "INVALID_MIGRATION_BACKUP_PROOF")
     except (ValueError, TypeError, OverflowError):
