@@ -78,8 +78,28 @@ restore, после restore, upgrade и проверенного downgrade, ре
 project, проверки отсутствия его containers/volumes/networks и удаления
 временных backup/key files. Ошибка завершает команду без автоматического retry.
 
-Текущий CI запускает новые unit tests и существующий **schema-static**
-`release_drill.py`. Это не live migration rehearsal против опубликованных images.
-Такой прогон, оформление итогового manifest, integration с approval/apply и
-production acceptance остаются отдельными этапами. Запуск этой команды не
-выполняет deployment и не является разрешением на production migration.
+## Live CI
+
+Обязательный job `release-tools` запускает этот migration rehearsal перед
+существующим **schema-static** `release_drill.py`. Request закреплён в
+`scripts/fixtures/migration-0028-to-0030.json`; он использует опубликованные
+образы source build `44937076752` (`f0913e0029e25da58ea95504fd07b0989811dbb9`)
+и target build `44954363133`, attempt `1`
+(`dbd271eb61f14817147466128ed3b20a80fe8287`). Backend/frontend code target build
+совпадает с `main@79a8104817ec609d79086f2bd2b2a038e2e9e4f5`; последующие
+изменения main касались только manifest contract и его tests.
+
+Digests взяты из artifacts этих builds. Migration hashes вычислены из точных
+файлов target commit; runner повторно сверяет их с подписанным backend image.
+Новые builds и `latest` tags не подменяют закреплённую пару автоматически.
+При смене fixture или истечении срока хранения target build artifacts нужно
+отдельно проверить и обновить request. CI не обходит недоступные artifacts.
+
+После успешного прогона сохраняется отдельный artifact `migration-drill-proof`;
+schema-static drill сохраняет собственный `release-drill-proof`. Логи показывают
+безопасные этапы, без command arguments, credentials и business payloads.
+
+Proof относится только к указанной паре images и синтетической fixture.
+Оформление итогового manifest, integration с approval/apply и production
+acceptance остаются отдельными этапами. Запуск этой команды не выполняет
+deployment и не является разрешением на production migration.

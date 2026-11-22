@@ -208,7 +208,10 @@ class MigrationReleaseDrillHardeningTests(unittest.TestCase):
             self.assertNotIn("secret", output.getvalue())
             self.assertEqual(
                 json.loads(output.getvalue()),
-                {"status": "FAIL", "automatic_retry": False},
+                {
+                    "status": "FAIL", "automatic_retry": False,
+                    "phase": "request_load", "error_code": "UNEXPECTED_MIGRATION_ERROR",
+                },
             )
 
 

@@ -17,8 +17,10 @@ import os
 import re
 import secrets
 import subprocess
+import sys
 import tempfile
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -40,6 +42,7 @@ from release_ops import (
     Runtime,
     accepted,
     command,
+    failure_code,
     load,
     require,
     require_image_schema,
@@ -61,6 +64,92 @@ INACTIVE_MANAGER_ID = UUID("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
 SUPPORTED_SOURCE_SCHEMA = "20261009_0028"
 SUPPORTED_TARGET_SCHEMA = "20261121_0030"
 SUPPORTED_REVISIONS = ("20261121_0029", SUPPORTED_TARGET_SCHEMA)
+
+Progress = Callable[[str], None]
+_DIAGNOSTIC_PHASES = frozenset(
+    {
+        "request_load", "preflight", "image_verification",
+        "source_accepted", "target_accepted", "target_build",
+        "target_build_records", "source_schema_head", "target_schema_head",
+        "migration_inventory", "infrastructure", "source_migrate", "seed",
+        "source_ready", "source_data", "backup", "backup_check", "stop",
+        "restore", "restore_checks", "target_migrate", "target_checks",
+        "target_ready", "target_data", "downgrade", "downgrade_checks",
+        "source_ready_after_downgrade", "source_data_after_downgrade",
+        "cleanup", "temporary_cleanup", "publish_proof",
+    }
+    | {
+        f"{side}_{component}_{operation}"
+        for side in ("source", "target")
+        for component in ("backend", "frontend")
+        for operation in ("verify", "pull")
+    }
+)
+_DIAGNOSTIC_ERROR_CODES = frozenset(
+    {
+        "INVALID_REHEARSAL_DIAGNOSTIC_PHASE",
+        "MIGRATION_DRILL_COMPOSE_ENVIRONMENT_OVERRIDE",
+        "MIGRATION_DRILL_OUTPUT_EXISTS",
+        "MIGRATION_DRILL_REQUIRES_6_GIB",
+        "MIGRATION_DRILL_READINESS_TIMEOUT",
+        "MIGRATION_DRILL_FRONTEND_TIMEOUT",
+        "MIGRATION_DRILL_BUILD_SHA_MISMATCH",
+        "MIGRATION_DRILL_PROVIDER_POLICY_MISMATCH",
+        "MIGRATION_DRILL_CONTAINER_OUTSIDE_PROJECT",
+        "MIGRATION_DRILL_PORT_EXPOSED",
+        "MIGRATION_DRILL_NETWORK_NOT_INTERNAL",
+        "MIGRATION_DRILL_NON_DISPOSABLE_MOUNT",
+        "MIGRATION_DRILL_CLEANUP_INCOMPLETE",
+        "SOURCE_SCHEMA_MISMATCH", "RESTORED_SCHEMA_MISMATCH",
+        "TARGET_SCHEMA_MISMATCH", "DOWNGRADE_SCHEMA_MISMATCH",
+        "SOURCE_SCHEMA_OBJECTS_NOT_RESTORED",
+        "BUSINESS_FIXTURE_NOT_REPRESENTATIVE",
+        "BUSINESS_DATA_CHANGED_AFTER_RESTORE",
+        "BUSINESS_DATA_CHANGED_AFTER_UPGRADE",
+        "BUSINESS_DATA_CHANGED_AFTER_DOWNGRADE",
+        "WORKSPACE_COUNT_MISMATCH", "CANONICAL_WORKSPACE_MISMATCH",
+        "DUPLICATE_WORKSPACE_MEMBERSHIP", "ACTIVE_USER_MEMBERSHIP_COVERAGE_MISMATCH",
+        "INACTIVE_USER_HAS_MEMBERSHIP", "UNSUPPORTED_ACTIVE_USER_ROLE",
+        "WORKSPACE_MEMBERSHIP_MISMATCH",
+        "MIGRATION_FIXTURE_RESTORE_FAILED", "MIGRATION_FIXTURE_RESTORE_CLEANUP_FAILED",
+        "MIGRATION_FIXTURE_WRITERS_NOT_STOPPED",
+        "MIGRATION_FIXTURE_CONTAINER_OUTSIDE_PROJECT",
+        "MIGRATION_FIXTURE_BACKUP_OUTSIDE_PROJECT", "MIGRATION_FIXTURE_PROOF_CHANGED",
+        "UNSAFE_MIGRATION_FIXTURE_DATABASE", "UNSAFE_MIGRATION_FIXTURE_PROJECT",
+        "UNSAFE_MIGRATION_FIXTURE_DIRECTORY", "UNSAFE_MIGRATION_FIXTURE_COMPOSE",
+        "BACKUP_RESTORE_GATE_FAILED", "BACKUP_FILE_MISSING_OR_CHANGED",
+        "BACKUP_KEY_UNAVAILABLE", "ENCRYPTED_DUMP_FAILED",
+        "SNAPSHOT_EXPORT_FAILED", "EMPTY_BACKUP_SNAPSHOT", "SNAPSHOT_RELEASE_FAILED",
+        "ISOLATED_RESTORE_START_TIMEOUT", "ISOLATED_RESTORE_FAILED",
+        "RESTORED_ROW_COUNTS_DIFFER", "EXACT_MAIN_CI_NOT_GREEN",
+        "RELEASE_NOT_ON_MAIN", "WORKFLOW_NOT_SUCCESSFUL", "UNTRUSTED_WORKFLOW",
+        "TARGET_BUILD_RUN_MISMATCH", "TARGET_BUILD_IMAGES_MISMATCH",
+        "TARGET_BUILD_RECORD_MISMATCH", "MIGRATION_SCRIPT_MISSING_FROM_IMAGE",
+        "MIGRATION_SCRIPT_IMAGE_MISMATCH", "PROVENANCE_SHA_MISMATCH",
+        "REGISTRY_DIGEST_MISMATCH", "MISSING_ARCHITECTURE", "SBOM_MISSING",
+        "FRONTEND_ENDPOINT_MISMATCH",
+    }
+)
+
+
+def report_phase(progress: Progress | None, phase: str) -> None:
+    """Only closed, payload-free phase names may reach a progress callback."""
+    require(
+        isinstance(phase, str) and phase in _DIAGNOSTIC_PHASES,
+        "INVALID_REHEARSAL_DIAGNOSTIC_PHASE",
+    )
+    if progress is not None:
+        progress(phase)
+
+
+def diagnostic_error_code(error: Exception) -> str:
+    """Never expose arbitrary exception text, including custom ReleaseError text."""
+    safe_code = failure_code(error)
+    if safe_code != "UNEXPECTED_DEPLOYMENT_ERROR":
+        return safe_code
+    if isinstance(error, ReleaseError) and str(error) in _DIAGNOSTIC_ERROR_CODES:
+        return str(error)
+    return "UNEXPECTED_MIGRATION_ERROR"
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
@@ -724,10 +813,15 @@ def target_build_record_images(request: dict[str, Any]) -> dict[str, str]:
     return validate_target_build_records(request, records)
 
 
-def verify_images(request: dict[str, Any], cosign: str) -> None:
+def verify_images(
+    request: dict[str, Any], cosign: str, progress: Progress | None = None
+) -> None:
     validate_rehearsal_request(request)
+    report_phase(progress, "source_accepted")
     accepted(request["source_release_sha"])
+    report_phase(progress, "target_accepted")
     accepted(request["target_release_sha"])
+    report_phase(progress, "target_build")
     build = run_info(
         request["target_build_run_id"], "release-images.yml", "workflow_run"
     )
@@ -736,6 +830,7 @@ def verify_images(request: dict[str, Any], cosign: str) -> None:
         and build["run_attempt"] == request["target_build_attempt"],
         "TARGET_BUILD_RUN_MISMATCH",
     )
+    report_phase(progress, "target_build_records")
     require(
         target_build_record_images(request) == request["target_images"],
         "TARGET_BUILD_IMAGES_MISMATCH",
@@ -744,18 +839,23 @@ def verify_images(request: dict[str, Any], cosign: str) -> None:
         sha = request[f"{side}_release_sha"]
         images = request[f"{side}_images"]
         for component in ("backend", "frontend"):
+            report_phase(progress, f"{side}_{component}_verify")
             verify_image(component, images[component], sha, cosign)
+            report_phase(progress, f"{side}_{component}_pull")
             command(["docker", "pull", images[component]])
+    report_phase(progress, "source_schema_head")
     require_image_schema(
         request["source_images"]["backend"],
         request["source_schema_head"],
         pull=False,
     )
+    report_phase(progress, "target_schema_head")
     require_image_schema(
         request["target_images"]["backend"],
         request["target_schema_head"],
         pull=False,
     )
+    report_phase(progress, "migration_inventory")
     validate_image_migration_inventory(
         request,
         image_migration_inventory(request["target_images"]["backend"]),
@@ -771,7 +871,21 @@ def remove_disposable_project(runtime: MigrationDrillRuntime) -> None:
         require(not remaining, "MIGRATION_DRILL_CLEANUP_INCOMPLETE")
 
 
-def rehearse(request: dict[str, Any], output: Path, cosign: str) -> dict[str, Any]:
+def rehearse(
+    request: dict[str, Any],
+    output: Path,
+    cosign: str,
+    *,
+    progress: Progress | None = None,
+) -> dict[str, Any]:
+    phase = "preflight"
+
+    def mark(next_phase: str) -> None:
+        nonlocal phase
+        report_phase(progress, next_phase)
+        phase = next_phase
+
+    mark("preflight")
     validate_rehearsal_request(request)
     require_clean_compose_environment()
     require(not output.exists() and not output.is_symlink(), "MIGRATION_DRILL_OUTPUT_EXISTS")
@@ -779,7 +893,12 @@ def rehearse(request: dict[str, Any], output: Path, cosign: str) -> dict[str, An
         int(command(["docker", "info", "--format", "{{.MemTotal}}"])) >= 6 * 1024**3,
         "MIGRATION_DRILL_REQUIRES_6_GIB",
     )
-    verify_images(request, cosign)
+    mark("image_verification")
+    if progress is None:
+        # Preserve the original dependency call shape for direct callers.
+        verify_images(request, cosign)
+    else:
+        verify_images(request, cosign, mark)
     with tempfile.TemporaryDirectory(prefix="iteam-migration-drill-") as directory:
         root = Path(directory).resolve()
         project = "iteam-migration-drill-" + secrets.token_hex(5)
@@ -788,46 +907,64 @@ def rehearse(request: dict[str, Any], output: Path, cosign: str) -> dict[str, An
         downgraded_state = None
         result: dict[str, Any]
         try:
+            mark("infrastructure")
             runtime.compose(
                 "up", "-d", "--wait", "--wait-timeout", "120", "postgres", "redis"
             )
+            mark("source_migrate")
             runtime.run_backend("alembic", "upgrade", request["source_schema_head"])
             require(runtime.schema() == request["source_schema_head"], "SOURCE_SCHEMA_MISMATCH")
+            mark("seed")
             seed_fixture(runtime)
+            mark("source_ready")
             runtime.app_ready(request, target=False)
             verify_disposable_topology(runtime, project)
+            mark("source_data")
             baseline = runtime.business_state()
             require_business_fixture(baseline["table_counts"])
+            mark("backup")
             backup_restore(runtime, root / "backups", root / "keys", root / "backup-proof.json")
+            mark("backup_check")
             backup_proof = check_proof(root / "backup-proof.json", request["source_release_sha"])
 
+            mark("stop")
             runtime.stop_app()
+            mark("restore")
             restore_fixture(runtime, backup_proof)
+            mark("restore_checks")
             require(runtime.schema() == request["source_schema_head"], "RESTORED_SCHEMA_MISMATCH")
             runtime.source_schema_restored()
             restored_state = runtime.business_state()
             require(restored_state == baseline, "BUSINESS_DATA_CHANGED_AFTER_RESTORE")
             runtime.run_backend("alembic", "check")
 
+            mark("target_migrate")
             runtime.switch_images(request, target=True)
             runtime.run_backend("alembic", "upgrade", request["target_schema_head"])
+            mark("target_checks")
             require(runtime.schema() == request["target_schema_head"], "TARGET_SCHEMA_MISMATCH")
             runtime.run_backend("alembic", "check")
             validate_workspace_invariants(*runtime.workspace_state())
+            mark("target_ready")
             runtime.app_ready(request, target=True)
             verify_disposable_topology(runtime, project)
+            mark("target_data")
             upgraded_state = runtime.business_state()
             require(upgraded_state == baseline, "BUSINESS_DATA_CHANGED_AFTER_UPGRADE")
 
             if request["pre_activation_rollback_policy"] == "PRE_ACTIVATION_DOWNGRADE":
+                mark("downgrade")
                 runtime.stop_app()
                 runtime.run_backend("alembic", "downgrade", request["source_schema_head"])
                 runtime.switch_images(request, target=False)
+                mark("downgrade_checks")
                 require(runtime.schema() == request["source_schema_head"], "DOWNGRADE_SCHEMA_MISMATCH")
                 runtime.run_backend("alembic", "check")
                 runtime.source_schema_restored()
+                mark("source_ready_after_downgrade")
                 runtime.app_ready(request, target=False)
                 verify_disposable_topology(runtime, project)
+                mark("source_data_after_downgrade")
                 downgraded_state = runtime.business_state()
                 require(downgraded_state == baseline, "BUSINESS_DATA_CHANGED_AFTER_DOWNGRADE")
                 downgrade_tested = True
@@ -867,12 +1004,20 @@ def rehearse(request: dict[str, Any], output: Path, cosign: str) -> dict[str, An
                 "disposable_services": 4,
                 "created_at": datetime.now(UTC).isoformat(),
             }
+        except Exception as error:
+            # Successful cleanup must not replace the phase that actually
+            # failed. A new cleanup exception naturally reports cleanup.
+            error._migration_failure_phase = phase
+            raise
         finally:
+            mark("cleanup")
             remove_disposable_project(runtime)
+            mark("temporary_cleanup")
     # TemporaryDirectory also owns encrypted backup/key files. Publish a PASS
     # proof only after both Docker and filesystem cleanup have succeeded.
     result["disposable_project_removed"] = True
     result["temporary_backup_and_key_removed"] = True
+    mark("publish_proof")
     save(output, result)
     return result
 
@@ -888,9 +1033,25 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     os.umask(0o077)
+    phase = "request_load"
+
+    def progress(next_phase: str) -> None:
+        nonlocal phase
+        require(
+            isinstance(next_phase, str) and next_phase in _DIAGNOSTIC_PHASES,
+            "INVALID_REHEARSAL_DIAGNOSTIC_PHASE",
+        )
+        phase = next_phase
+        print(
+            json.dumps({"status": "RUNNING", "phase": phase}),
+            file=sys.stderr,
+            flush=True,
+        )
+
     try:
         request = load(args.request)
-        print(json.dumps(rehearse(request, args.output, args.cosign), sort_keys=True))
+        result = rehearse(request, args.output, args.cosign, progress=progress)
+        print(json.dumps(result, sort_keys=True))
     except (
         ManifestContractError,
         ReleaseError,
@@ -899,8 +1060,16 @@ def main() -> None:
         KeyError,
         TypeError,
         subprocess.SubprocessError,
-    ):
-        print(json.dumps({"status": "FAIL", "automatic_retry": False}))
+    ) as error:
+        failed_phase = getattr(error, "_migration_failure_phase", phase)
+        if not isinstance(failed_phase, str) or failed_phase not in _DIAGNOSTIC_PHASES:
+            failed_phase = phase
+        print(json.dumps({
+            "status": "FAIL",
+            "automatic_retry": False,
+            "phase": failed_phase,
+            "error_code": diagnostic_error_code(error),
+        }))
         raise SystemExit(1) from None
 
 
