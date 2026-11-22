@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import migration_apply_backup as backup
 import migration_apply_state as state
 import migration_release_apply as apply
+import migration_writer_barrier as barrier
 import release_ops as ops
 from test_release_manifest import manifest
 
@@ -397,6 +398,37 @@ class MigrationReleaseApplyTests(unittest.TestCase):
                         self.assertEqual(runtime.schema_head, runtime.manifest["source_schema_head"])
                         self.assertTrue(runtime.source_config_restored)
 
+    def test_writer_barrier_diagnostics_remain_specific_and_allowlisted(self):
+        for code, expected in (
+            ("WRITER_BARRIER_EVENT_SYNC_FAILED", "WRITER_BARRIER_EVENT_SYNC_FAILED"),
+            ("WRITER_BARRIER_EVENT_MONITOR_FAILED", "WRITER_BARRIER_EVENT_MONITOR_FAILED"),
+            ("WRITER_BARRIER_CONTINUITY_LOST", "WRITER_BARRIER_CONTINUITY_LOST"),
+            ("WRITER_BARRIER_SECRET_PASSWORD", "UNEXPECTED_MIGRATION_APPLY_ERROR"),
+        ):
+            runtime, journal = self.case()
+            runtime.failures[("stop_schedulers", 1, "before")] = ops.ReleaseError(code)
+            result = self.failure(runtime, journal)
+            with self.subTest(code=code):
+                self.assertEqual(result["error_code"], expected)
+                self.assertEqual(journal.data["failure_code"], expected)
+                self.assertEqual(result["status"], "OPERATOR_RECOVERY_REQUIRED")
+                self.assertEqual(runtime.calls["containment"], 1)
+                self.assertTrue(runtime.writers_stopped and runtime.fenced)
+                self.assertNotIn("upgrade", runtime.events)
+                self.assertNotIn("downgrade", runtime.events)
+                self.assertTrue(journal.marker_path.is_file())
+
+    def test_containment_keeps_original_and_specific_barrier_error(self):
+        runtime, journal = self.case()
+        runtime.failures[("readiness", 1, "before")] = RuntimeError("SECRET initial")
+        runtime.failures[("containment", 1, "before")] = ops.ReleaseError("WRITER_BARRIER_CONTINUITY_LOST")
+        result = self.failure(runtime, journal)
+        self.assertEqual(result["error_code"], "MIGRATION_READINESS_FAILED")
+        self.assertEqual(result["recovery_error_code"], "WRITER_BARRIER_CONTINUITY_LOST")
+        self.assertEqual(journal.data["recovery_error_code"], "WRITER_BARRIER_CONTINUITY_LOST")
+        self.assertEqual(result["status"], "OPERATOR_RECOVERY_REQUIRED")
+        self.assertNotIn("downgrade", runtime.events)
+
     def test_target_and_readiness_failures_recheck_signed_target_before_downgrade(self):
         for action in ("target_checks", "readiness"):
             runtime, journal = self.case()
@@ -461,6 +493,51 @@ class MigrationReleaseApplyTests(unittest.TestCase):
                 self.assertEqual(result["writer_boundary"], "UNKNOWN")
                 self.assertNotIn("downgrade", runtime.events)
                 self.assertNotIn("restore_source_configuration", runtime.events)
+
+    def test_event_sync_timeout_remains_ineligible_for_downgrade_after_stream_recovers(self):
+        runtime, journal = self.case()
+        audit = barrier.EventAudit(OPERATION, set(), "a" * 64, set())
+        audit.process = types.SimpleNamespace(poll=lambda: None)
+        delivery = True
+        pending = []
+
+        def command(args):
+            event = {
+                "Type": "volume", "Action": "create" if args[2] == "create" else "destroy",
+                "Actor": {"ID": args[3]},
+            }
+            if delivery:
+                audit.observe(event)
+            else:
+                pending.append(event)
+            return args[3]
+
+        def timeout(value):
+            nonlocal delivery
+            delivery = False
+            audit.sync(timeout=0)
+
+        def recover_stream(value):
+            nonlocal delivery
+            delivery = True
+            for event in pending:
+                audit.observe(event)
+            self.assertIsNone(audit.process.poll())
+
+        runtime.barrier_override = lambda value: audit.sync()
+        runtime.hooks[("readiness", 1, "before")] = timeout
+        runtime.hooks[("containment", 1, "before")] = recover_stream
+        with patch.object(ops, "command", side_effect=command):
+            audit.arm()
+            result = self.failure(runtime, journal)
+        self.assertEqual(result["error_code"], "WRITER_BARRIER_EVENT_SYNC_FAILED")
+        self.assertEqual(result["recovery_error_code"], "WRITER_BARRIER_CONTINUITY_LOST")
+        self.assertEqual(result["status"], "OPERATOR_RECOVERY_REQUIRED")
+        self.assertEqual(result["writer_boundary"], "UNKNOWN")
+        self.assertEqual(runtime.calls["upgrade"], 1)
+        self.assertEqual(runtime.calls["containment"], 1)
+        self.assertNotIn("downgrade", runtime.events)
+        self.assertNotIn("restore_source_configuration", runtime.events)
 
     def test_recovery_preflight_downgrade_or_source_failure_retains_original_error(self):
         failures = (

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import release_ops as ops
+from migration_writer_barrier import ERROR_CODES as WRITER_BARRIER_ERROR_CODES
 from release_manifest import ManifestContractError, validate_migration_manifest
 
 JournalError = ops.ReleaseError
@@ -78,7 +79,7 @@ FAILURE_CODES = frozenset({
     "MIGRATION_SOURCE_CHECKS_FAILED", "MIGRATION_SOURCE_RESTORE_FAILED",
     "MIGRATION_CONTAINMENT_FAILED", "UNEXPECTED_MIGRATION_APPLY_ERROR",
     "INJECTED_FAILURE", "EXTERNAL_COMMAND_FAILED", "TOOL_UNAVAILABLE",
-}) | ERROR_CODES
+}) | ERROR_CODES | WRITER_BARRIER_ERROR_CODES
 
 _OPERATION = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 _SHA = re.compile(r"[0-9a-f]{40}\Z")

@@ -9,6 +9,7 @@ import sys
 import types
 import unittest
 from contextlib import redirect_stdout
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
@@ -306,6 +307,65 @@ class EventAuditTests(unittest.TestCase):
     def event(self, kind, action, identifier, **attributes):
         return {"Type": kind, "Action": action, "Actor": {"ID": identifier, "Attributes": attributes}}
 
+    def test_start_replays_sentinels_emitted_before_docker_subscribes(self):
+        # Deterministically delay subscription until both sentinel events exist.
+        # The live-only control loses them, reproducing the startup race without
+        # depending on thread scheduling or a real Docker daemon.
+        for live_only in (False, True):
+            with self.subTest(live_only=live_only):
+                audit = barrier.EventAudit("startup", {self.postgres_id}, self.postgres_id, set())
+                started_at = datetime(2026, 11, 22, 15, 8, 20, 123456, tzinfo=UTC)
+                history = []
+                order = []
+                subscribe_from = None
+
+                def now(zone):
+                    self.assertIs(zone, UTC)
+                    order.append("timestamp")
+                    return started_at
+
+                def popen(args, **kwargs):
+                    nonlocal subscribe_from
+                    self.assertEqual(order, ["timestamp"])
+                    order.append("spawn")
+                    if "--since" in args and not live_only:
+                        subscribe_from = datetime.fromisoformat(args[args.index("--since") + 1])
+                    return FakeProcess()
+
+                def command(args):
+                    action = "create" if args[2] == "create" else "destroy"
+                    order.append(action)
+                    event_time = started_at + timedelta(microseconds=len(history) + 1)
+                    history.append((event_time, self.event("volume", action, args[3])))
+                    return args[3]
+
+                def subscribe(timeout):
+                    self.assertEqual(order, ["timestamp", "spawn", "create", "destroy"])
+                    order.append("subscribe")
+                    for event_time, event in history:
+                        if subscribe_from is not None and event_time >= subscribe_from:
+                            audit.observe(event)
+
+                with patch.object(barrier, "datetime") as clock, \
+                     patch.object(barrier.subprocess, "Popen", side_effect=popen) as spawn, \
+                     patch.object(barrier.threading, "Thread"), \
+                     patch.object(ops, "command", side_effect=command), \
+                     patch.object(audit.condition, "wait", side_effect=subscribe), \
+                     patch.object(barrier.time, "monotonic", side_effect=[0, 1, 11]):
+                    clock.now.side_effect = now
+                    if live_only:
+                        with self.assertRaisesRegex(ops.ReleaseError, "EVENT_SYNC_FAILED"):
+                            audit.start()
+                    else:
+                        audit.start()
+                        audit.check()
+                        self.assertEqual(subscribe_from, started_at)
+                        self.assertEqual(audit.events_observed, 2)
+                    spawn.assert_called_once()
+                self.assertEqual(order[-1], "subscribe")
+                self.assertFalse(audit.volumes)
+                self.assertFalse(audit.seen)
+
     def test_fresh_volume_sentinel_proves_delivery_and_is_removed(self):
         calls = []
         def command(args):
@@ -326,6 +386,56 @@ class EventAuditTests(unittest.TestCase):
         with patch.object(ops, "command", return_value=""), self.assertRaisesRegex(ops.ReleaseError, "EVENT_SYNC_FAILED"):
             self.audit.sync(timeout=0)
         self.assertFalse(self.audit.volumes)
+        self.assertFalse(self.audit.healthy)
+
+    def test_sync_timeout_after_arm_cannot_be_repaired_by_later_delivery(self):
+        pending = []
+        delivery = True
+
+        def command(args):
+            action = "create" if args[2] == "create" else "destroy"
+            event = self.event("volume", action, args[3])
+            if delivery:
+                self.audit.observe(event)
+            else:
+                pending.append(event)
+            return args[3]
+
+        with patch.object(ops, "command", side_effect=command) as run:
+            self.audit.arm()
+            delivery = False
+            with self.assertRaisesRegex(ops.ReleaseError, "EVENT_SYNC_FAILED"):
+                self.audit.sync(timeout=0)
+            self.assertFalse(self.audit.healthy)
+            self.assertIsNone(self.audit.process.poll())
+            delivery = True
+            for event in pending:
+                self.audit.observe(event)
+            self.assertEqual(self.audit.events_observed, 4)
+            # A responsive stream and late sentinel acknowledgements cannot
+            # repair the lost interval; no new synchronization is attempted.
+            for operation in (self.audit.check, self.audit.sync, self.audit.arm):
+                with self.assertRaisesRegex(ops.ReleaseError, "CONTINUITY_LOST"):
+                    operation()
+            self.assertEqual(run.call_count, 4)
+
+    def test_closed_stream_after_arm_cannot_restart_or_rearm_the_audit(self):
+        def command(args):
+            action = "create" if args[2] == "create" else "destroy"
+            self.audit.observe(self.event("volume", action, args[3]))
+            return args[3]
+        with patch.object(ops, "command", side_effect=command):
+            self.audit.arm()
+        self.assertTrue(self.audit.sealed)
+        self.audit._read()  # EOF while the process itself still reports running.
+        with patch.object(barrier.subprocess, "Popen") as spawn, patch.object(ops, "command") as run:
+            for operation in (self.audit.sync, self.audit.arm):
+                with self.assertRaisesRegex(ops.ReleaseError, "CONTINUITY_LOST"):
+                    operation()
+            with self.assertRaisesRegex(ops.ReleaseError, "INVALID_PHASE"):
+                self.audit.start()
+            spawn.assert_not_called()
+            run.assert_not_called()
 
     def test_transient_reconnect_and_writer_start_remain_invalid_after_stop(self):
         self.audit.sealed = True
