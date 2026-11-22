@@ -1,0 +1,67 @@
+{
+  "activation_policy": {
+    "activation": "COLD_RECREATE_AFTER_DURABLE_BOUNDARY",
+    "admission_protocol": 1,
+    "automatic_retry": false,
+    "business_writes_authorized": true,
+    "claims_authorized": true,
+    "failure_policy": "STOP_FENCE_PRESERVE_TARGET",
+    "metrics_requests_authorized": false,
+    "openai_requests_authorized": true,
+    "post_activation_backup_restore": false,
+    "post_activation_schema_downgrade": false,
+    "pre_activation_boundary": "SAME_LIVE_OPERATION",
+    "publication_requests_authorized": false,
+    "services": [
+      "ai_control_worker",
+      "ai_scheduler",
+      "ai_worker",
+      "backend",
+      "frontend",
+      "metrics_worker",
+      "publication_control_worker",
+      "publication_scheduler",
+      "publication_worker"
+    ],
+    "successful_restart_policy": "RESTORE_BOUND_POLICIES_BEFORE_SUCCESS",
+    "version": 1
+  },
+  "migration_request": {
+    "compatibility_class": "EXPAND_ONLY",
+    "frontend_api_url": "http://localhost:8000/api/v1",
+    "migration_path": [
+      {
+        "down_revision": "20261009_0028",
+        "revision": "20261121_0029",
+        "script_sha256": "sha256:258fe5c0858e791846e877cf37eccf9cd32eb5469f87d39de1c9a46db05bfc1f"
+      },
+      {
+        "down_revision": "20261121_0029",
+        "revision": "20261121_0030",
+        "script_sha256": "sha256:b50fd3ddcab6911e994d26648bf19ced0fd57d2d42eb6c7bd47d8d988a65f53f"
+      }
+    ],
+    "migration_plan_hash": "sha256:ef4b73e247956359c949173a968d0779ced15c3e96720e55cf2f50c2f81b674c",
+    "pre_activation_rollback_policy": "PRE_ACTIVATION_DOWNGRADE",
+    "repository": "afkochnev/iteam-ai-marketing",
+    "request_type": "MIGRATION_REHEARSAL_REQUEST",
+    "source_images": {
+      "backend": "ghcr.io/afkochnev/iteam-ai-marketing-backend@sha256:eb73bcb1ff8a7c3f6c31e07d1ef28cf1c87b6c5044dae85634bf4504183d8687",
+      "frontend": "ghcr.io/afkochnev/iteam-ai-marketing-frontend@sha256:177883f13c12e77f2501c85a35a7d86c3d58a8c62cdc1f869162a55b8f0c90d7"
+    },
+    "source_release_sha": "f0913e0029e25da58ea95504fd07b0989811dbb9",
+    "source_schema_head": "20261009_0028",
+    "target_build_attempt": 1,
+    "target_build_run_id": 45047752884,
+    "target_images": {
+      "backend": "ghcr.io/afkochnev/iteam-ai-marketing-backend@sha256:3b346a47255f1d743a52dbe2f1e403765b42431741c908df35f3f65e9819e341",
+      "frontend": "ghcr.io/afkochnev/iteam-ai-marketing-frontend@sha256:d05cc79a22955238c38f4e61550e961360d725efb58965c936f7a348e3262b63"
+    },
+    "target_release_sha": "5285d47580c84476165bf6dd4ad1df3809db7884",
+    "target_schema_head": "20261121_0030",
+    "version": 1
+  },
+  "repository": "afkochnev/iteam-ai-marketing",
+  "request_type": "MIGRATION_ACTIVATION_REHEARSAL_REQUEST",
+  "version": 1
+}

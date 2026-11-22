@@ -4,10 +4,13 @@
 необратимую границу активации на disposable candidate. Это часть этапа 5
 [ADR 013](adr/013-production-schema-migration-releases.md).
 
-Production activation adapter и новый signed approval для активации остаются
-отдельной частью протокола. Существующие migration approval и pre-activation
-apply сохраняют свои прежние полномочия. Candidate proof не принимается как
-production approval или rehearsal подписанного release image.
+Production-capable activation adapter/controller и новый signed approval v2
+описаны отдельно в [migration activation](migration-activation.md). Они
+дополняют этот candidate-блок combined rehearsal подписанных images.
+Существующие migration approval v1 и pre-activation apply сохраняют свои
+прежние полномочия. Candidate proof не принимается как production approval
+или rehearsal подписанного release image; этап 6 production-приёмки
+отдельно разрешается и в этом изменении не выполняется.
 
 ## Режим выбирается при запуске процесса
 
@@ -32,8 +35,9 @@ provision/refresh; publishing flags остаются выключенными. �
 Переход выполняется через создание новых контейнеров с новой конфигурацией;
 обычный restart не является сменой admission configuration.
 
-Параметр режима сам по себе не удостоверяет разрешение оператора. Будущий
-production controller обязан проверить отдельную authority, зафиксировать
+Параметр режима сам по себе не удостоверяет разрешение оператора.
+[Production controller](../scripts/migration_activation_apply.py) обязан
+проверить отдельную authority, зафиксировать
 необратимую границу и только затем создавать ACTIVE runtime. Текущий backend
 не выдаёт это разрешение и не загружает его из старого журнала.
 
@@ -98,7 +102,7 @@ operation ID, точные candidate commit/image identity и target schema.
 замена marker или journal идентичной копией также прекращает разрешение.
 Новая identity journal принимается только после собственной durable записи.
 
-Нет load/resume, automatic retry, downgrade или restore API. Во всех отчётах
+Нет load/resume, automatic retry, downgrade или restore API. Во всех candidate-отчётах
 `schema_downgrade_allowed=false`; production approval, production activation
 и внешние side effects остаются неразрешёнными. Результат чтения
 [старого журнала](migration-operation-inspection.md) не восстанавливает
@@ -145,14 +149,36 @@ Proof публикуется только после завершения про
 
 ## Связь с production release protocol
 
-Существующие signed-image migration/release drills продолжают выполняться.
-Их pinned images появились до нового admission gate, поэтому они не служат
-доказательством его работы. Candidate proof проверяет код и поведение
-изолированного fixture, сохраняя отдельный тип authority.
+Прежние signed-image migration/release drills продолжают выполняться со своими
+pinned images и contracts. Их более ранние target images не служат
+доказательством нового admission gate. Candidate proof проверяет код и
+поведение изолированного fixture, сохраняя `DISPOSABLE_CANDIDATE_ONLY`.
 
-Для завершения production-части этапа 5 необходимы новый activation-capable
-approval envelope, проверенный signed gate-capable image, binding к точной
-операции и target runtime, а также production adapter для activation и
-post-activation containment. После публикации такого image требуется
-отдельный signed end-to-end acceptance. Первая production migration остаётся
-отдельно разрешаемым этапом 6.
+Отдельный [activation request](../scripts/fixtures/migration-activation-0028-to-0030.json)
+связывает подписанный target с admission protocol 1. Новый
+[combined drill](../scripts/migration_activation_drill.py) проверяет nested
+migration rehearsal с PASSIVE target до downgrade, signed-target adversarial
+fixture, успешный controller path и physical containment после реального
+HTTP commit/worker claim. Snapshot покрывает все 37 public tables target
+schema. Этот proof имеет только `DISPOSABLE_SIGNED_ACTIVATION_ONLY`; его
+подписи/images и controller SHA/tree повторно проверяются перед review.
+
+Новый production receipt v2 связывает operation ID, точный source runtime,
+manifest, combined proof, фиксированную policy и срок не более часа. Controller
+сохраняет один live context и lock через pre-activation/activation, проверяет
+PASSIVE target до durable boundary и затем cold-recreate ACTIVE процессы.
+Регистрация реальных worker queues проверяется после запуска: к этому моменту
+claims уже разрешены policy. До boundary queued canaries в source-quiet fixture
+не добавляются; adversarial работа проверяется в отдельном fixture.
+
+Production policy явно разрешает business writes, claims и OpenAI requests
+через bound existing configuration. Publication и все metrics requests
+запрещены. После boundary допускается stop/fence с сохранением target,
+без source restart, schema downgrade или backup restore. Старый inspector
+не выдаёт этих полномочий и не становится resume API.
+
+Описание нового кода не является утверждением о завершённом новом CI/PR
+acceptance. Operational use требует успешного exact trusted combined proof,
+manual production approval и fresh inventory. Первая production migration,
+deployment и выдача production approval остаются отдельным этапом 6;
+в этом изменении они не выполнялись.
