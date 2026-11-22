@@ -11,8 +11,8 @@ from telethon import TelegramClient, errors, functions, utils
 from telethon.sessions import StringSession
 
 from app.core.config import settings
-
 from app.core.runtime_admission import require_active_runtime
+
 
 class MetricsProviderError(Exception):
     def __init__(self, code: str, message: str, *, retryable: bool = False) -> None:

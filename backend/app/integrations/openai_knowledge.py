@@ -4,8 +4,8 @@ from typing import Any
 from openai import AsyncOpenAI
 
 from app.core.config import settings
-
 from app.core.runtime_admission import require_active_runtime
+
 
 @dataclass(frozen=True)
 class ProviderSearchResult:

@@ -532,7 +532,8 @@ class Runtime:
         raise DrillError("FIXTURE_NOT_READY")
 
     def worker(self, role: str, *, mode: str, detached: bool = False) -> subprocess.CompletedProcess:
-        return self.run("worker-" + (role or "unset"), ["celery", "-A", "app.workers.celery_app:celery_app",
+        service = "worker-" + (role.replace("_", "-") or "unset")
+        return self.run(service, ["celery", "-A", "app.workers.celery_app:celery_app",
                         "worker", "--loglevel=WARNING", "--queues=" + (role or "ai"), "--concurrency=1",
                         "--pool=solo", "--without-gossip", "--without-mingle"], mode=mode, detached=detached,
                         overrides={"WORKER_ROLE": role}, check=detached, timeout=30, app=True)

@@ -21,9 +21,7 @@ HAS_AGENTS = importlib.util.find_spec("agents") is not None
 HAS_METRICS = importlib.util.find_spec("telethon") is not None
 
 
-def _environment(
-    mode: str | None = "passive", app_env: str = "development"
-) -> dict[str, str]:
+def _environment(mode: str | None = "passive", app_env: str = "development") -> dict[str, str]:
     env = {
         **os.environ,
         "APP_ENV": app_env,

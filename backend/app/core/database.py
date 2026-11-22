@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine as _create_async_engine,
 )
+from sqlalchemy.ext.asyncio import create_async_engine as _create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.pool import NullPool
 

@@ -186,6 +186,54 @@ class EvidenceTests(unittest.TestCase):
             run.assert_not_called()
 
 
+class WorkerCommandTests(unittest.TestCase):
+    def test_every_shipped_worker_role_uses_safe_container_name_and_original_queue(self):
+        class Commands:
+            def __init__(self):
+                self.created = {}
+                self.runs = []
+
+            def run(self, args, **kwargs):
+                if args[:2] == ["docker", "run"]:
+                    self.runs.append(args)
+                    name = args[args.index("--name") + 1]
+                    labels = dict(args[index + 1].split("=", 1)
+                                  for index, token in enumerate(args) if token == "--label")
+                    self.created[name] = {"Name": "/" + name, "Image": IMAGE,
+                                          "Config": {"Labels": labels},
+                                          "HostConfig": {"RestartPolicy": {"Name": "no"},
+                                                         "PortBindings": None, "Privileged": False}}
+                    return subprocess.CompletedProcess(args, 1, "", "RUNTIME_PASSIVE")
+                if args[:2] == ["docker", "inspect"]:
+                    return subprocess.CompletedProcess(args, 0, json.dumps([self.created[args[2]]]), "")
+                if args[:2] == ["docker", "rm"]:
+                    self.created.pop(args[-1])
+                    return subprocess.CompletedProcess(args, 0, "", "")
+                raise AssertionError("Unexpected command family")
+
+        with tempfile.TemporaryDirectory() as temporary:
+            commands = Commands()
+            runtime = drill.Runtime(commands, {"candidate_sha": SHA, "candidate_image_id": IMAGE},
+                                    Path(temporary), {})
+            roles = ("ai", "ai_control", "publication", "publication_control", "metrics", "")
+            for role in roles:
+                with self.subTest(role=role):
+                    result = runtime.worker(role, mode="passive")
+                    self.assertEqual(result.returncode, 1)
+                    args = commands.runs[-1]
+                    name = args[args.index("--name") + 1]
+                    self.assertRegex(name, r"^iteam-admission-drill-[0-9a-f]{10}-worker-[a-z-]+$")
+                    self.assertNotIn("_", name)
+                    self.assertIn("WORKER_ROLE=" + role, args)
+                    self.assertIn("--queues=" + (role or "ai"), args)
+                    self.assertIn("--pull=never", args)
+                    self.assertIn(IMAGE, args)
+            self.assertEqual(len(commands.runs), len(roles))
+            self.assertEqual(commands.created, {})
+            self.assertEqual(runtime.containers, {})
+            self.assertEqual(runtime.apps, set())
+
+
 class ActivationRuntime:
     """Unit driver double; real state primitives and durable files are used."""
     def __init__(self, root):

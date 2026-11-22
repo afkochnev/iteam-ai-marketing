@@ -42,9 +42,7 @@ async def _check_redis_ping() -> bool:
     try:
         from redis.asyncio import Redis
 
-        client = Redis.from_url(
-            settings.redis_url, socket_connect_timeout=5, socket_timeout=5
-        )
+        client = Redis.from_url(settings.redis_url, socket_connect_timeout=5, socket_timeout=5)
         try:
             return bool(await client.ping())
         finally:
