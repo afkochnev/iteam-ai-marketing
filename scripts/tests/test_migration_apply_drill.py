@@ -163,7 +163,12 @@ class MigrationApplyDrillTests(unittest.TestCase):
         config = drill.ops.load(self.root / "compose.json")
         self.assertEqual(set(config["services"]), drill.ops.ALL)
         self.assertEqual(config["services"]["postgres"]["ports"], ["127.0.0.1::5432"])
-        self.assertEqual(config["networks"], {"default": {"internal": True}})
+        self.assertEqual(config["networks"], {
+            "default": {"internal": True}, "host_publish": {"driver": "bridge", "internal": False},
+        })
+        self.assertEqual(config["services"]["postgres"]["networks"], ["default", "host_publish"])
+        self.assertTrue(all("networks" not in config["services"][name]
+                            for name in drill.ops.ALL - {"postgres"}))
         env = dict(line.split("=", 1) for line in runtime.env_path.read_text().splitlines())
         self.assertEqual(env["APP_ENV"], "development")
         self.assertEqual(env["TASK_DISPATCH_INTERVAL_SECONDS"], "3600")
@@ -200,6 +205,10 @@ class MigrationApplyDrillTests(unittest.TestCase):
             lambda value: value["volumes"].update(postgres_data={"external": True}),
             lambda value: value["services"]["backend"].update(pid="host"),
             lambda value: value["services"]["backend"].update(network_mode="host"),
+            lambda value: value["services"]["backend"].update(networks=["default", "host_publish"]),
+            lambda value: value["services"]["redis"].update(networks=["host_publish"]),
+            lambda value: value["services"]["postgres"].update(networks=["default", "foreign"]),
+            lambda value: value["networks"].update(host_publish={"external": True}),
             lambda value: value["services"]["backend"].update(ipc="container:production"),
             lambda value: value["services"]["backend"].update(privileged=True),
             lambda value: value["services"]["postgres"].update(volumes=["/production:/var/lib/postgresql/data"]),
@@ -238,7 +247,9 @@ class MigrationApplyDrillTests(unittest.TestCase):
 
     def live(self, runtime):
         network_id = "a" * 64
+        publish_network_id = "b" * 64
         network_name = runtime.project + "_default"
+        publish_network_name = runtime.project + "_host_publish"
         containers = {}
         for index, name in enumerate(sorted(drill.ops.ALL), 1):
             volume = {"postgres": "postgres_data", "redis": "redis_data",
@@ -257,25 +268,41 @@ class MigrationApplyDrillTests(unittest.TestCase):
                                "UsernsMode": "", "IpcMode": "private", "Privileged": False,
                                "PortBindings": copy.deepcopy(ports), "RestartPolicy": {"Name": "unless-stopped"},
                                "Binds": [runtime.project + "_" + volume + ":/data:rw"] if volume else None},
-                "NetworkSettings": {"Networks": {network_name: {"NetworkID": network_id}}, "Ports": ports},
+                "NetworkSettings": {
+                    "Networks": {network_name: {"NetworkID": network_id}, **(
+                        {publish_network_name: {"NetworkID": publish_network_id}} if name == "postgres" else {}
+                    )}, "Ports": ports,
+                },
                 "Mounts": [{"Type": "volume", "Name": runtime.project + "_" + volume}] if volume else [],
             }
-        network = {"Internal": True, "Driver": "bridge", "Scope": "local",
-                   "Labels": {"com.docker.compose.project": runtime.project},
+        network = {"Name": network_name, "Internal": True, "Driver": "bridge", "Scope": "local",
+                   "Labels": {"com.docker.compose.project": runtime.project,
+                              "com.docker.compose.network": "default"},
                    "Containers": {data["Id"]: {} for data in containers.values()}}
+        publish_network = {"Name": publish_network_name, "Internal": False, "Driver": "bridge", "Scope": "local",
+                           "Labels": {"com.docker.compose.project": runtime.project,
+                                      "com.docker.compose.network": "host_publish"},
+                           "Containers": {containers["postgres"]["Id"]: {}}}
+        networks = {network_id: network, publish_network_id: publish_network}
         def command(argv, **kwargs):
             if argv[:3] == ["docker", "network", "inspect"]:
-                return json.dumps([network])
+                return json.dumps([networks[argv[3]]])
             if argv[:2] == ["docker", "ps"]:
                 return "\n".join(data["Id"] for data in containers.values())
             raise AssertionError("unexpected Docker command")
-        return containers, network, command
+        return containers, networks, command
 
     def test_live_fixture_rejects_namespace_sharing_extra_network_members_and_remote_port(self):
         runtime = self.fixture()
-        cases = ("pid", "network", "bind", "network_member", "remote_port", "extra_port", "provider_secret")
-        for case in ("valid", *cases):
-            containers, network, command = self.live(runtime)
+        cases = ("pid", "network", "bind", "network_member", "remote_port", "extra_port", "provider_secret",
+                 "app_on_publish_network", "redis_on_publish_network", "publish_foreign_member",
+                 "foreign_network_label", "unexpected_network", "publish_internal",
+                 "unallocated_port", "empty_port")
+        for case in ("valid", "postgres_publish_mode", *cases):
+            containers, networks, command = self.live(runtime)
+            network = networks["a" * 64]
+            publish_network = networks["b" * 64]
+            publish_name = runtime.project + "_host_publish"
             if case == "pid":
                 containers["backend"]["HostConfig"]["PidMode"] = "host"
             elif case == "network":
@@ -290,9 +317,24 @@ class MigrationApplyDrillTests(unittest.TestCase):
                 containers["frontend"]["HostConfig"]["PortBindings"] = {"3000/tcp": [{}]}
             elif case == "provider_secret":
                 containers["metrics_worker"]["Config"]["Env"].append("TELEGRAM_METRICS_SESSION=secret")
+            elif case == "postgres_publish_mode":
+                containers["postgres"]["HostConfig"]["NetworkMode"] = publish_name
+            elif case in {"app_on_publish_network", "redis_on_publish_network"}:
+                service = "ai_worker" if case == "app_on_publish_network" else "redis"
+                containers[service]["NetworkSettings"]["Networks"][publish_name] = {"NetworkID": "b" * 64}
+            elif case == "publish_foreign_member":
+                publish_network["Containers"]["f" * 64] = {}
+            elif case == "foreign_network_label":
+                publish_network["Labels"]["com.docker.compose.project"] = "production"
+            elif case == "unexpected_network":
+                containers["postgres"]["NetworkSettings"]["Networks"]["foreign"] = {"NetworkID": "f" * 64}
+            elif case == "publish_internal":
+                publish_network["Internal"] = True
+            elif case in {"unallocated_port", "empty_port"}:
+                containers["postgres"]["NetworkSettings"]["Ports"]["5432/tcp"] = None if case == "unallocated_port" else []
             with self.subTest(case=case), patch.object(runtime, "inspect", side_effect=lambda service: containers[service]), \
                     patch.object(drill.ops, "command", side_effect=command), patch.object(drill, "_connects", return_value=True):
-                if case == "valid":
+                if case in {"valid", "postgres_publish_mode"}:
                     ids, port = drill.verify_live_fixture(runtime, request())
                     self.assertEqual(len(ids), 11)
                     self.assertEqual(port, 45678)
@@ -395,6 +437,10 @@ class MigrationApplyDrillTests(unittest.TestCase):
         self.assertEqual(proof["proof_type"], "MIGRATION_PREACTIVATION_DRILL")
         self.assertEqual(proof["authorization"], "DISPOSABLE_FIXTURE_ONLY")
         self.assertFalse(proof["production_approval_verified"])
+        self.assertFalse(proof["application_external_network"])
+        self.assertTrue(proof["postgres_has_host_publish_network"])
+        self.assertFalse(proof["target_maintenance_external_network"])
+        self.assertNotIn("external_network", proof)
         self.assertEqual(proof["success"]["status"], "PRE_ACTIVATION_READY")
         self.assertEqual(proof["recovery"]["status"], "ROLLED_BACK_PRE_ACTIVATION")
         self.assertEqual(proof["success"]["schema"], request()["target_schema_head"])

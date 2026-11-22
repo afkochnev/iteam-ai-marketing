@@ -314,6 +314,20 @@ Production ciphertext `migration-<operation-id>.dump.enc` и соответст�
 отсутствие активации, `restart=no`, пустые PostgreSQL network attachments
 и недоступность прежнего тестового host port.
 
+Application containers и Redis находятся только на internal bridge. Исходный
+disposable PostgreSQL дополнительно подключён к собственной обычной bridge
+сети `host_publish`, чтобы Docker действительно опубликовал ephemeral port
+на `127.0.0.1`. На исключительно internal сети Docker сохраняет запрос в
+`HostConfig.PortBindings`, но не создаёт доступный host port; это
+[подтверждено maintainer Moby](https://github.com/moby/moby/discussions/53256).
+До fence эта дополнительная сеть допускает outbound для тестового PostgreSQL;
+provider credentials в нём нет. Proof поэтому отдельно фиксирует
+`application_external_network=false` и
+`postgres_has_host_publish_network=true`. Обе сети PostgreSQL отключаются
+до migration и target helpers; `target_maintenance_external_network=false`
+подтверждается теми же проверками namespace и непрерывности. Это проверяет
+реальный published-port fence, не изменяя отдельный approval rehearsal.
+
 Fixture manifest/approval IDs синтетические и явно маркированы
 `authorization=DISPOSABLE_FIXTURE_ONLY` и
 `production_approval_verified=false`. Drill не вызывает production entry

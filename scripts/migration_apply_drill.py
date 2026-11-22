@@ -187,6 +187,12 @@ def create_fixture(root: Path, project: str, request: dict) -> rehearsal.Migrati
     config = ops.load(root / "compose.json")
     config["services"]["postgres"]["ports"] = ["127.0.0.1::5432"]
     config["services"]["postgres"]["restart"] = "unless-stopped"
+    # Docker publishes ports through a default-gateway network, which an
+    # internal-only container lacks. Only this synthetic PostgreSQL joins the
+    # generated publishing bridge. Applications/Redis remain internal, and the
+    # real writer barrier removes BOTH PostgreSQL attachments before migration.
+    config["services"]["postgres"]["networks"] = ["default", "host_publish"]
+    config["networks"]["host_publish"] = {"driver": "bridge", "internal": False}
     for name in ("backend", "frontend"):
         config["services"][name].update(restart="unless-stopped", stop_grace_period="210s")
     for name in ops.WORKERS:
@@ -217,12 +223,15 @@ def validate_fixture_files(runtime: rehearsal.MigrationDrillRuntime, request: di
         and config["volumes"] == {
             "postgres_data": {}, "redis_data": {}, "vk_publishing_credentials": {},
         }
-        and config["networks"] == {"default": {"internal": True}},
+        and config["networks"] == {
+            "default": {"internal": True},
+            "host_publish": {"driver": "bridge", "internal": False},
+        },
         "UNSAFE_APPLY_DRILL_COMPOSE",
     )
     services = config["services"]
     allowed = {
-        "postgres": {"image", "environment", "volumes", "healthcheck", "ports", "restart"},
+        "postgres": {"image", "environment", "volumes", "healthcheck", "ports", "restart", "networks"},
         "redis": {"image", "volumes", "healthcheck"},
         "backend": {"env_file", "depends_on", "mem_limit", "cpus", "restart", "stop_grace_period"},
         "frontend": {"depends_on", "mem_limit", "cpus", "restart", "stop_grace_period"},
@@ -242,6 +251,7 @@ def validate_fixture_files(runtime: rehearsal.MigrationDrillRuntime, request: di
         }
         and services["postgres"]["volumes"] == ["postgres_data:/var/lib/postgresql/data"]
         and services["redis"]["volumes"] == ["redis_data:/data"]
+        and services["postgres"]["networks"] == ["default", "host_publish"]
         and services["backend"]["env_file"] == ".env",
         "UNSAFE_APPLY_DRILL_COMPOSE",
     )
@@ -296,24 +306,30 @@ def verify_live_fixture(runtime: rehearsal.MigrationDrillRuntime, request: dict)
     ops.require(len(project_ids) == len(ids) and set(project_ids) == set(ids.values()),
                 "UNSAFE_APPLY_DRILL_TOPOLOGY")
     network_name = runtime.project + "_default"
-    networks = set()
+    publish_network_name = runtime.project + "_host_publish"
+    networks: dict[str, str] = {}
     for name, data in containers.items():
         labels = data["Config"].get("Labels") or {}
         host = data["HostConfig"]
+        expected_networks = {network_name, publish_network_name} if name == "postgres" else {network_name}
         ops.require(
             labels.get("com.docker.compose.project") == runtime.project
             and labels.get("com.docker.compose.service") == name
             and data["State"].get("Running") is True
-            and host.get("NetworkMode") == network_name
+            and host.get("NetworkMode") in expected_networks
             and all(host.get(key) in (None, "") for key in ("PidMode", "UTSMode", "UsernsMode"))
             and host.get("IpcMode") in (None, "private")
             and not any(host.get(key) for key in (
                 "Privileged", "VolumesFrom", "Links", "ExtraHosts", "Devices", "CapAdd",
             ))
-            and set(data["NetworkSettings"]["Networks"]) == {network_name},
+            and set(data["NetworkSettings"]["Networks"]) == expected_networks,
             "UNSAFE_APPLY_DRILL_TOPOLOGY",
         )
-        networks.add(data["NetworkSettings"]["Networks"][network_name]["NetworkID"])
+        for attached_name, endpoint in data["NetworkSettings"]["Networks"].items():
+            identifier = endpoint["NetworkID"]
+            ops.require(attached_name not in networks or networks[attached_name] == identifier,
+                        "UNSAFE_APPLY_DRILL_TOPOLOGY")
+            networks[attached_name] = identifier
         expected_mounts = {
             "postgres": {runtime.project + "_postgres_data"},
             "redis": {runtime.project + "_redis_data"},
@@ -348,15 +364,23 @@ def verify_live_fixture(runtime: rehearsal.MigrationDrillRuntime, request: dict)
             ops.require(not host.get("PortBindings") and not any(
                 (data["NetworkSettings"].get("Ports") or {}).values()
             ), "UNSAFE_APPLY_DRILL_PORT")
-    ops.require(len(networks) == 1, "UNSAFE_APPLY_DRILL_TOPOLOGY")
-    network = json.loads(ops.command(["docker", "network", "inspect", networks.pop()]))[0]
-    ops.require(
-        network.get("Internal") is True and network.get("Driver") == "bridge"
-        and network.get("Scope") == "local"
-        and (network.get("Labels") or {}).get("com.docker.compose.project") == runtime.project
-        and set(network.get("Containers") or {}) == set(ids.values()),
-        "UNSAFE_APPLY_DRILL_TOPOLOGY",
-    )
+    ops.require(set(networks) == {network_name, publish_network_name}
+                and len(set(networks.values())) == 2, "UNSAFE_APPLY_DRILL_TOPOLOGY")
+    for key, internal, members in (
+        ("default", True, set(ids.values())), ("host_publish", False, {ids["postgres"]}),
+    ):
+        expected_name = runtime.project + "_" + key
+        network = json.loads(ops.command(["docker", "network", "inspect", networks[expected_name]]))[0]
+        labels = network.get("Labels") or {}
+        ops.require(
+            network.get("Name") == expected_name
+            and network.get("Internal") is internal and network.get("Driver") == "bridge"
+            and network.get("Scope") == "local"
+            and labels.get("com.docker.compose.project") == runtime.project
+            and labels.get("com.docker.compose.network") == key
+            and set(network.get("Containers") or {}) == members,
+            "UNSAFE_APPLY_DRILL_TOPOLOGY",
+        )
     postgres = containers["postgres"]
     configured = postgres["HostConfig"].get("PortBindings")
     live = postgres["NetworkSettings"].get("Ports")
@@ -580,7 +604,8 @@ def run_drill(request: dict, output: Path, cosign: str, *, progress=None) -> dic
         "pre_activation_rollback_policy": request["pre_activation_rollback_policy"],
         "success": success, "recovery": recovery,
         "writers_activated": False, "production_credentials": False,
-        "publishing_enabled": False, "external_network": False,
+        "publishing_enabled": False, "application_external_network": False,
+        "postgres_has_host_publish_network": True, "target_maintenance_external_network": False,
         "disposable_services_per_scenario": len(ops.ALL), "scenario_count": 2,
         "disposable_projects_removed": True, "temporary_backups_and_keys_removed": True,
         "maintenance_helpers_removed": True, "created_at": datetime.now(UTC).isoformat(),
