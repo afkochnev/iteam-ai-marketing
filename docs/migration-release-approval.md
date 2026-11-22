@@ -23,8 +23,9 @@ artifact и подписанный receipt для отдельного release t
 | `target_build_run_id` | Exact `Release images` run, уже связанный с rehearsal proof |
 
 Source SHA и schema — явное ожидание оператора. Approval не считывает текущее
-состояние production и не доказывает, что оно совпадает с этими inputs. Будущий
-migration apply обязан проверить оба значения повторно до первой mutation.
+состояние production и не доказывает, что оно совпадает с этими inputs.
+[Migration apply до активации writers](migration-preactivation-apply.md)
+повторно проверяет оба значения до первой mutation.
 
 Request берётся из закреплённого
 `scripts/fixtures/migration-0028-to-0030.json` на точном commit rehearsal run.
@@ -137,14 +138,15 @@ run на `main`. Он сохраняет результат как `migration-ap
 новый успешный main rehearsal, затем обновить точные run/artifact IDs и raw
 JSON hash в CI. Автоматическая подмена на «последний» proof не выполняется.
 
-## Граница следующего этапа
+## Связь с pre-activation apply
 
 Существующие `release_ops.py prepare/apply` сохраняют schema-static contract v1
-и gate `20261009_0028`. Они не принимают новый migration receipt. Этот этап не
-добавляет migration apply, не подключается к production, не выполняет upgrade,
-downgrade, restore production backup или запуск writers.
+и gate `20261009_0028`. Они не принимают новый migration receipt. Approval
+workflow не подключается к production и не выполняет upgrade, downgrade,
+restore production backup или запуск writers. Отдельный этап 4 описан в
+[migration-preactivation-apply.md](migration-preactivation-apply.md).
 
-Одноразовое расходование approval реализуется в будущем migration apply:
+Одноразовое расходование approval реализовано в migration apply:
 под operation lock, после повторной read-only проверки ожидаемых source
 SHA/schema и до первой production mutation. Проверка receipt сама по себе
 не расходует approval и не разрешает автоматический retry. После активации
