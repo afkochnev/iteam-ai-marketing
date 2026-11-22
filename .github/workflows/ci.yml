@@ -88,7 +88,7 @@ jobs:
         with:
           persist-credentials: false
       - run: python3 -m unittest discover -s scripts/tests -v
-      - run: python3 -m py_compile scripts/release_ops.py scripts/release_backup.py scripts/release_drill.py
+      - run: python3 -m py_compile scripts/release_ops.py scripts/release_backup.py scripts/release_drill.py scripts/migration_release_approval.py scripts/migration_rehearsal_proof.py
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         with:
@@ -109,6 +109,25 @@ jobs:
         with:
           name: migration-drill-proof
           path: migration-drill-proof.json
+          if-no-files-found: error
+      # Exact successful main rehearsal from PR75. Refresh deliberately when
+      # the evidence expires; this only prepares a review, never an approval.
+      - name: Verify migration approval preparation against trusted main proof
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 scripts/migration_release_approval.py prepare \
+            --rehearsal-run 45010986161 \
+            --rehearsal-artifact 14749762846 \
+            --proof-sha256 sha256:f32997ae0e2cdc5cc0e351c2065b5c1d6689b63a286a0cfc919c67adf964b755 \
+            --expected-source-release f0913e0029e25da58ea95504fd07b0989811dbb9 \
+            --expected-source-schema 20261009_0028 \
+            --target-build-run 44954363133 \
+            --output migration-approval-check.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: migration-approval-check
+          path: migration-approval-check.json
           if-no-files-found: error
       - name: Isolated upgrade, rollback and failure recovery with published images
         env:
