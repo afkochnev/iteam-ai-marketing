@@ -122,6 +122,7 @@ def _environment(container: dict) -> dict[str, str]:
 class ExplicitRuntime(ops.Runtime):
     def __init__(self, root: Path, project: str, files: list[Path]):
         super().__init__(root, project=project)
+        self.project = project
         self.base = [
             "docker", "compose", "--project-directory", str(self.root),
             "--project-name", project, "--env-file", str(self.env_path),

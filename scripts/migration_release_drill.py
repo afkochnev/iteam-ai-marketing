@@ -877,6 +877,7 @@ def rehearse(
     cosign: str,
     *,
     progress: Progress | None = None,
+    runtime_factory: Callable[[Path, str, dict[str, Any]], MigrationDrillRuntime] | None = None,
 ) -> dict[str, Any]:
     phase = "preflight"
 
@@ -902,7 +903,7 @@ def rehearse(
     with tempfile.TemporaryDirectory(prefix="iteam-migration-drill-") as directory:
         root = Path(directory).resolve()
         project = "iteam-migration-drill-" + secrets.token_hex(5)
-        runtime = create_drill(root, project, request)
+        runtime = (runtime_factory or create_drill)(root, project, request)
         downgrade_tested = False
         downgraded_state = None
         result: dict[str, Any]

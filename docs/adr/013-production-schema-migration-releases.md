@@ -6,7 +6,10 @@
 
 ## Context
 
-Production сейчас работает на Alembic `20261009_0028`. После A1 foundation ветка `main` содержит additive migrations:
+Исходная схема, зафиксированная при принятии ADR и в migration rehearsal, —
+Alembic `20261009_0028`. Это ожидаемый source, а не результат новой live
+production inspection; перед apply фактические release/schema проверяются
+повторно. После A1 foundation ветка `main` содержит additive migrations:
 
 - `20261121_0029` — таблицы `workspaces` и `workspace_memberships`;
 - `20261121_0030` — deterministic default workspace и membership для существующих активных пользователей.
@@ -78,7 +81,7 @@ source_schema_head
 - destructive type conversion;
 - изменение смысла существующего статуса;
 - массовая перезапись исторического business state;
-- provider side effects;
+- provider side effects внутри migration helpers и passive checks;
 - migration, требующая одновременной работы двух writers.
 
 Contract/cleanup migrations выполняются только позднее, после отдельного cutover и compatibility window.
@@ -92,39 +95,71 @@ Contract/cleanup migrations выполняются только позднее, 
 3. Проверяются source schema, source row counts и business-data hash.
 4. Подписанный target backend image запускает exact upgrade до `target_schema_head`.
 5. Выполняются `alembic current`, `alembic check` и migration-specific invariants.
-6. Поднимается target runtime без production credentials и внешней сети.
-7. Проверяются health/readiness, BUILD_SHA, topology и отключённые provider gates.
+6. Для admission-capable target поднимается явно PASSIVE runtime без production credentials и внешней сети.
+7. Проверяются health/readiness, BUILD_SHA, topology, read-only DB и отсутствие business readiness/claims.
 8. Проверяется pre-activation downgrade, если он заявлен разрешённым.
 9. После downgrade должны восстановиться source schema и исходный hash всех существовавших до migration business tables.
 10. Disposable project, volumes, backup и keys удаляются; сохраняется только безопасный proof.
 
 Rehearsal использует exact source/target image digests из будущего manifest, а не код checkout.
 
+Activation-capable approval требует отдельный combined signed-image proof:
+вложенная migration rehearsal сохраняет target PASSIVE до downgrade;
+отдельный adversarial fixture доказывает passive admission с queued work;
+две новые операции тем же controller проверяют activation success и containment
+после реального HTTP commit/worker claim. Полный target snapshot включает
+все 37 public tables. Candidate proof с локальным образом и прежний v1
+migration proof по отдельности не дают production activation authority.
+
 ### 5. Production-порядок
 
-Migration `apply` выполняется под operation lock и только после нового manual production approval.
+Migration-and-activation `apply` выполняется под общим operation lock и только
+после нового manual production approval v2. Read-only plan заранее создаёт
+operation ID и runtime identity hash; receipt связывает их с manifest,
+combined rehearsal, фиксированной capability policy и сроком не более часа.
+Fresh inventory и target plan проверяются до расходования receipt.
 
 Порядок:
 
 ```text
-read-only inventory и quiet gate
+signed authority + fresh inventory/runtime binding и quiet gate
 → encrypted backup + isolated restore proof
 → stop schedulers
 → drain workers
 → повторный quiet gate
 → stop all application writers
+→ изоляция data access и непрерывная writer barrier
 → exact source schema check
 → target image migration preflight
 → alembic upgrade exact_target
 → schema и data invariant checks
-→ target backend в maintenance/readiness mode
-→ frontend readiness
-→ workers/schedulers по очередям
-→ postflight
-→ снять maintenance mode
+→ PRE_ACTIVATION_READY без завершения live operation
+→ PASSIVE target preflight: health/read-only DB, закрытые writes/claims, неизменные данные
+→ durable activation intent + exclusive marker + fsync/readback
+→ cold recreation девяти target application services, restart=no
+→ reconnect exact data networks
+→ ACTIVE backend/frontend и workers/schedulers по exact очередям
+→ active postflight: build/schema/readiness и реальные queue registrations
+→ восстановление bound normal restart policies и terminal ACTIVE
 ```
 
-До завершения postflight publishing providers не включаются и новые claims не разрешаются.
+**Уточнение семантики postflight:** target business writes/claims запрещены
+до durable activation boundary. Проверить настоящую регистрацию ACTIVE
+workers в очередях можно только после запуска consumers; с этого момента
+claims уже разрешены подписанной policy. Поэтому прежняя формулировка
+«новые claims не разрешаются до завершения postflight» не применяется к
+active postflight. До boundary выполняется отдельный passive preflight.
+
+Policy явно разрешает business writes, claims и OpenAI requests через exact
+bound existing configuration после активации. Publication и все metrics
+requests остаются запрещёнными и после успешного postflight. Migration
+helpers и passive processes provider side effects не выполняют.
+
+Quiet gate сохраняет прежние условия. Adversarial queued canaries живут в
+отдельном fixture; их не добавляют перед source quiet или между
+`PRE_ACTIVATION_READY` и boundary. В end-to-end fixture работа создаётся
+только после разрешённой активации. Stage 4 и stage 5 используют тот же
+live adapter и lock; сохранённая старая operation не продолжается.
 
 ### 6. Две разные rollback boundary
 
@@ -136,21 +171,29 @@ read-only inventory и quiet gate
 - migration rehearsal доказал downgrade exact target → exact source;
 - после upgrade не запускались workers/schedulers и не было application writes;
 - target runtime не вышел из maintenance mode;
+- durable activation boundary ещё не запрошена и текущий live pre-activation engine сохраняет полномочия recovery;
 - existing business-data hash не изменился;
 - downgrade возвращает exact source schema и проходит `alembic check`.
 
-После подтверждённого downgrade возвращаются exact previous image IDs и source BUILD_SHA.
+После подтверждённого downgrade проверяются exact previous image IDs и source
+BUILD_SHA; source writers остаются остановленными, data access — изолированным.
 
 #### После активации writers
 
 Автоматический schema downgrade запрещён.
 
-При ошибке после начала writers:
+Controller прекращает использовать pre-activation downgrade handler сразу
+после его успешного возврата. При ошибке дальнейшего passive preflight,
+handoff или после начала writers:
 
-- новые claims блокируются;
-- runtime переводится в maintenance/fail-closed;
-- фиксируются известные attempts и UNKNOWN outcomes;
-- выполняется только отдельно определённый fail-forward/operator recovery.
+- независимо от ошибки state предпринимаются физические stop/fence;
+- restart policies отключаются, application writers останавливаются,
+  PostgreSQL/Redis изолируются, проверяется закрытие прежнего host port;
+- только после проверок подтверждаются отсутствие новых claims,
+  target schema/database identity и стабильность полного snapshot;
+- target данные сохраняются; source runtime не запускается;
+- потеря continuity, durable state или cleanup даёт
+  `OPERATOR_RECOVERY_REQUIRED` и требует отдельного recovery решения.
 
 Backup не восстанавливается поверх живой БД автоматически. Возврат старых application images допустим только при отдельно доказанной совместимости со схемой target; сам факт additive migration этого не доказывает.
 
@@ -165,9 +208,17 @@ migration revisions
 compatibility class
 pre-activation rollback policy
 rehearsal proof
+operation ID + expected runtime identity
+explicit business/claims/OpenAI authority; publication/metrics denied
+issued_at / expires_at, lifetime <= 3600 seconds
 ```
 
-Approval обычного schema-static release нельзя переиспользовать для migration release. Approval одноразовый и расходуется до первой production mutation, как и в действующем protocol.
+Approval обычного schema-static release нельзя переиспользовать для migration
+release. Прежний migration approval v1 разрешает только pre-activation path;
+activation использует отдельные review/receipt v2 и workflow identity.
+Approval одноразовый и расходуется до первой production mutation, как и в
+действующем protocol. Wall-clock и monotonic deadline прекращают дальнейшие
+active mutations при истечении срока; stop/fence остаются разрешены.
 
 ### 8. Migration-specific invariants обязательны
 
@@ -208,8 +259,8 @@ Approval обычного schema-static release нельзя переиспол�
 2. **Isolated migration drill** — upgrade/downgrade/data invariants на disposable restore.
 3. **Approval workflow** — review artifact и signed receipt для migration release.
 4. **Apply pre-activation path** — lock, quiet gate, backup, stop/drain, exact upgrade, readiness и разрешённый downgrade до writer activation.
-5. **Post-activation recovery controls** — maintenance/fail-forward, без automatic downgrade.
-6. **First production acceptance** — отдельно разрешённый переход `0028 → 0030` с publishing disabled.
+5. **Explicit activation and post-activation containment** — отдельный signed approval v2, runtime binding, passive preflight, durable boundary, cold ACTIVE recreation, active postflight и stop/fence с сохранением target; без automatic downgrade/restore.
+6. **First production acceptance** — отдельно разрешённый переход `0028 → 0030` с publishing и всеми metrics flags disabled; OpenAI capability входит в явно проверяемую policy.
 
 Подготовительная часть этапа 5 — [read-only inspection сохранённой операции](../migration-operation-inspection.md).
 Она проверяет связность journal/marker/runtime/backup metadata и всегда оставляет
@@ -219,8 +270,16 @@ post-activation recovery и не завершает этап 5.
 Следующая часть — [пассивный runtime и candidate activation boundary](../runtime-admission.md):
 запрет business writes/claims до нового активного процесса, durable one-way
 marker и проверка containment после реальной записи на disposable candidate.
-Candidate authority отделена от production approval; production adapter и
-signed end-to-end acceptance требуют отдельного завершения этапа 5.
+Candidate authority отделена от production approval. Её дополняет
+[отдельный протокол migration activation](../migration-activation.md):
+production-capable adapter/controller, новый signed approval v2 и combined
+signed-image end-to-end drill на target с admission protocol 1. Candidate,
+signed disposable proof и production receipt имеют разные authority.
+
+Наличие кода и runbook не заменяет успешный exact trusted CI proof и не
+утверждает, что новая CI/PR acceptance уже завершена. Этап 6 не выполнен:
+production approval, migration и deployment требуют отдельного решения и
+fresh inventory. Сохранённый journal или inspector не дают права resume.
 
 Ни один PR не должен одновременно добавлять новую business schema и включать её production deployment.
 
@@ -248,7 +307,7 @@ signed end-to-end acceptance требуют отдельного заверше�
 - Additive migrations можно разворачивать малыми проверяемыми шагами.
 - Старый image rollback после writer activation больше не обещается без доказанной schema compatibility.
 - Разработка новых migrations может продолжаться только при наличии rehearsal и migration-specific invariants.
-- Production остаётся на `20261009_0028`, пока отдельный migration protocol не реализован, принят и одобрен.
+- Переход от rehearsed source `20261009_0028` не разрешён до принятия protocol и отдельного production approval; фактический current state определяется fresh inventory.
 
 ## Non-goals
 
@@ -269,6 +328,7 @@ ADR не:
 - [Migration strategy](../architecture-v2/migration-strategy.md);
 - [Roadmap](../architecture-v2/roadmap.md);
 - [Release operations](../release-operations.md);
+- [Migration activation](../migration-activation.md);
 - ADR 002, ADR 005, ADR 006 и ADR 007.
 
 Принятие ADR является prerequisite для implementation PR migration-capable release tooling.

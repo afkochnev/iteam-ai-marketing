@@ -10,6 +10,9 @@
 Команда не реализует activation, resume или post-activation recovery.
 Даже полностью согласованный журнал `PRE_ACTIVATION_READY` не даёт новому
 процессу доказательство непрерывного наблюдения и разрешение downgrade.
+Отдельный [activation controller v2](migration-activation.md) сохраняет live
+context от начала новой операции; его появление не расширяет полномочия
+этого исторического inspector.
 
 ## Вызов
 
@@ -137,9 +140,9 @@ Proof типа `MIGRATION_PREACTIVATION_DRILL` имеет `proof_contract_versio
 approval rehearsal не меняется. Fixture proof остаётся
 `DISPOSABLE_FIXTURE_ONLY` с `production_approval_verified=false`.
 
-## Следующая часть этапа 5
+## Связь с admission и отдельной activation authority
 
-Следующий [candidate-блок](runtime-admission.md) добавляет пассивный старт
+[Candidate-блок](runtime-admission.md) добавляет пассивный старт
 runtime с запретом business writes/claims, durable one-way marker до reconnect
 и проверку containment после реальных HTTP/worker записей. Его evidence имеет
 отдельную authority `DISPOSABLE_CANDIDATE_ONLY` и не расширяет полномочия
@@ -151,6 +154,26 @@ business writes и Celery consumers; read-only engine readiness helper дейс�
 выбирает passive mode для maintenance. Свойства нового candidate нельзя
 приписывать старому подписанному образу по одному имени environment.
 
-Для завершения этапа 5 остаются activation-capable signed approval, production
-activation/containment adapter и signed end-to-end acceptance на образе с новым
-gate. Первая production migration остаётся отдельно разрешаемым этапом.
+Его дополняет [migration activation](migration-activation.md): отдельные
+review/receipt v2, production-capable activation/containment adapter и
+combined signed-image drill на target с admission protocol 1. Новая
+production authority связывает operation/runtime, manifest, policy и срок;
+новый disposable proof сохраняет `DISPOSABLE_SIGNED_ACTIVATION_ONLY`.
+Production controller повторно проверяет fresh inventory до consumption и
+держит один lock/live adapter через обе фазы. Он не загружает старую operation
+для продолжения.
+
+В новой полной операции старый `operation-<id>.json` остаётся terminal
+`PRE_ACTIVATION_READY` после завершения pre-activation engine. Последующая
+активация или containment отражаются в отдельных
+`activation-<id>.json` и `activation-<id>.started`. Этот inspector **не читает
+новые activation records** и не выводит итог всей операции. Даже его
+`CONSISTENT_TERMINAL` с `PRE_ACTIVATION_READY` не означает, что runtime сейчас
+остановлен: `writer_boundary` по-прежнему всегда `UNKNOWN`.
+
+Успешный combined CI proof необходим для будущего review; наличие нового
+кода не утверждает завершение CI/PR acceptance. Production approval,
+deployment и первая migration не выполнялись. Они остаются отдельно
+разрешаемым этапом 6 с проверкой фактического runtime. Ни свежий receipt,
+ни новая подпись, ни согласованность исторических файлов не разрешают
+resume прерванной операции.
