@@ -16,7 +16,7 @@ import socket
 import subprocess
 import threading
 import time
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 import release_ops as ops
@@ -145,9 +145,13 @@ class EventAudit:
 
     def start(self) -> None:
         ops.require(self.process is None, "WRITER_BARRIER_INVALID_PHASE")
+        # Popen does not wait for Docker to subscribe. Replay from before spawn
+        # so the first sentinel cannot race the event stream's connection. This
+        # is only startup synchronization, never recovery of a lost live fence.
+        since = datetime.now(UTC).isoformat()
         try:
             self.process = subprocess.Popen(
-                ["docker", "events", "--format", "{{json .}}"],
+                ["docker", "events", "--since", since, "--format", "{{json .}}"],
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
             )
         except OSError:
@@ -178,7 +182,11 @@ class EventAudit:
                 while not {(name, "create"), (name, "destroy")} <= self.seen:
                     self.check()
                     remaining = deadline - time.monotonic()
-                    ops.require(remaining > 0, "WRITER_BARRIER_EVENT_SYNC_FAILED")
+                    if remaining <= 0:
+                        # Later delivery cannot retroactively prove that the
+                        # observer continuously covered this operation.
+                        self.healthy = False
+                        raise ops.ReleaseError("WRITER_BARRIER_EVENT_SYNC_FAILED")
                     self.condition.wait(min(remaining, 0.25))
                 self.check()
         finally:
