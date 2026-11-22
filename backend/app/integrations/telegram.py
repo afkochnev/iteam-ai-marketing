@@ -7,6 +7,7 @@ from typing import Any, Protocol
 import httpx
 
 from app.core.config import settings
+from app.core.runtime_admission import require_active_runtime
 from app.integrations.vk_credentials import VKCredentialError, VKCredentialStore
 
 
@@ -70,6 +71,7 @@ class PublicationProvider(Protocol):
 
 class TelegramProvider:
     def __init__(self, token: str | None = None) -> None:
+        require_active_runtime()
         token = token or settings.telegram_bot_token
         if not token:
             raise TelegramProviderError(
@@ -78,6 +80,7 @@ class TelegramProvider:
         self._token = token
 
     async def publish(self, *, text: str, chat_id: str) -> ProviderPublicationResult:
+        require_active_runtime()
         if not text.strip() or len(text) > 4096:
             raise TelegramProviderError("TELEGRAM_BAD_REQUEST", "Telegram message is invalid.")
         url = f"https://api.telegram.org/bot{self._token}/sendMessage"
@@ -137,6 +140,7 @@ class VKProvider:
         credential_store: VKCredentialStore | None = None,
         single_attempt: bool = False,
     ) -> None:
+        require_active_runtime()
         if settings.vk_owner_id is None:
             raise VKProviderError("VK_AUTH_ERROR", "VK publishing is not configured.")
         if settings.vk_owner_id >= 0:
@@ -170,6 +174,7 @@ class VKProvider:
             raise VKProviderError("VK_AUTH_ERROR", "VK publishing is not configured.")
 
     async def _access_token(self, *, force_refresh: bool = False) -> str:
+        require_active_runtime()
         if self._credential_store is None:
             if not self._token or not self._token.strip():
                 raise VKProviderError("VK_AUTH_ERROR", "VK publishing is not configured.")
@@ -188,6 +193,7 @@ class VKProvider:
         return access_token
 
     async def _send(self, *, text: str, access_token: str) -> dict[str, Any]:
+        require_active_runtime()
         try:
             async with httpx.AsyncClient(timeout=settings.vk_request_timeout_seconds) as client:
                 response = await client.post(
@@ -246,6 +252,7 @@ class VKProvider:
 
     async def publish(self, *, text: str, chat_id: str) -> ProviderPublicationResult:
         # Target validation is deliberately before credential access or any network call.
+        require_active_runtime()
         if chat_id != str(settings.vk_owner_id):
             raise VKProviderError(
                 "VK_TARGET_MISMATCH", "VK publishing target does not match configured owner."

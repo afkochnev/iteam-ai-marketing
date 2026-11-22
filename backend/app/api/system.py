@@ -8,6 +8,8 @@ from app.api.dependencies import AdminUser, SessionDependency
 from app.core.config import settings
 from app.core.database import engine
 from app.core.errors import AppError
+from app.core.runtime_admission import admission_status
+from app.core.runtime_readiness import EXPECTED_MIGRATION_HEAD as EXPECTED_MIGRATION_HEAD
 from app.models.activity import ActivityLog
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.approval import Approval, ApprovalStatus
@@ -17,8 +19,6 @@ from app.models.task import Task, TaskStatus, TaskType
 from app.schemas.runtime_diagnostics import RuntimeDiagnostics
 from app.services.reconciliation_integrity import reconciliation_integrity_report
 from app.services.runtime_diagnostics_service import collect_runtime_diagnostics
-
-EXPECTED_MIGRATION_HEAD = "20261121_0030"
 
 router = APIRouter(prefix="/system", tags=["system"])
 
@@ -256,7 +256,7 @@ async def _check_schema() -> bool:
 
 
 @router.get("/ready")
-async def readiness() -> dict[str, str]:
+async def readiness() -> dict[str, object]:
     try:
         settings.validate_production()
     except RuntimeError as error:
@@ -280,4 +280,4 @@ async def readiness() -> dict[str, str]:
             503,
             payload,
         )
-    return payload
+    return {**payload, **admission_status(business_ready=True)}

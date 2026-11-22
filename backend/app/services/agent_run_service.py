@@ -20,6 +20,7 @@ from app.agents.tool_registry import tool_registry
 from app.core.config import settings
 from app.core.director_chat import CHAT_KIND, is_director_chat
 from app.core.errors import AppError
+from app.core.runtime_admission import require_active_runtime
 from app.models.agent import Agent, AgentStatus
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.approval import Approval, ApprovalObjectType, ApprovalStatus
@@ -75,6 +76,7 @@ class AgentRunService:
         commit: bool = True,
         feedback_analysis_id: UUID | None = None,
     ) -> AgentRun:
+        require_active_runtime()
         query = (
             select(Task)
             .options(
@@ -595,6 +597,7 @@ class AgentRunService:
 
     async def enqueue(self, run: AgentRun, *, countdown: int = 0) -> AgentRun:
         # Serialize normal enqueue and recovery on the durable run, not the broker.
+        require_active_runtime()
         locked = await self.session.scalar(
             select(AgentRun)
             .where(AgentRun.id == run.id)
@@ -655,6 +658,7 @@ class AgentRunService:
         remains at its exhausted automatic retry count; only this explicitly
         validated recovery may create one new queued run.
         """
+        require_active_runtime()
 
         task = (
             await self.session.execute(
@@ -803,6 +807,7 @@ class AgentRunService:
     async def claim(
         self, run_id: UUID
     ) -> tuple[AgentSnapshot, str, AgentRuntimeContext, str | None] | None:
+        require_active_runtime()
         run = await self.repository.get_by_id(run_id, lock=True)
         if run is None or run.status is not AgentRunStatus.QUEUED:
             return None
@@ -876,6 +881,7 @@ class AgentRunService:
         )
 
     async def finish_success(self, run_id: UUID, result: RuntimeResult) -> None:
+        require_active_runtime()
         run = await self.repository.get_by_id(run_id, lock=True)
         if run is None or run.status is not AgentRunStatus.RUNNING:
             return
@@ -924,6 +930,7 @@ class AgentRunService:
         *,
         result: RuntimeResult | None = None,
     ) -> None:
+        require_active_runtime()
         run = await self.repository.get_by_id(run_id, lock=True)
         if run is None or run.status is not AgentRunStatus.RUNNING:
             return

@@ -3,10 +3,11 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from sqlalchemy import and_, or_, select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
+from app.core.database import create_async_engine
 from app.core.error_monitoring import report_exception
 from app.models.content import ContentChannel
 from app.models.publication import Publication, PublicationStatus

@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from datetime import datetime
+from typing import Any
 from uuid import UUID, uuid4
 
 from sqlalchemy import DateTime, MetaData, func
@@ -9,12 +10,13 @@ from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
     async_sessionmaker,
-    create_async_engine,
+    create_async_engine as _create_async_engine,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
+from app.core.runtime_admission import is_passive_runtime, require_active_runtime
 
 NAMING_CONVENTION = {
     "ix": "ix_%(column_0_label)s",
@@ -24,8 +26,45 @@ NAMING_CONVENTION = {
     "pk": "pk_%(table_name)s",
 }
 
-engine = create_async_engine(settings.database_url, pool_pre_ping=True)
-async_session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+def create_async_engine(url: str, **kwargs: Any) -> AsyncEngine:
+    """The shared boundary for business engines, including task-local engines."""
+    require_active_runtime()
+    return _create_async_engine(url, **kwargs)
+
+
+def create_readonly_engine() -> AsyncEngine:
+    """Bounded health probe; the server starts each transaction readonly."""
+    return _create_async_engine(
+        settings.database_url,
+        poolclass=NullPool,
+        connect_args={
+            "timeout": 5,
+            "server_settings": {
+                "default_transaction_read_only": "on",
+                "statement_timeout": "5000",
+            },
+        },
+    )
+
+
+class _BusinessSession(AsyncSession):
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        require_active_runtime()
+        super().__init__(*args, **kwargs)
+
+
+# Keep the module importable for models and migration health bootstraps, but
+# never hand business callers a session in a passive process. Even direct
+# connection access to the passive engine defaults to readonly transactions.
+engine = (
+    create_readonly_engine()
+    if is_passive_runtime()
+    else create_async_engine(settings.database_url, pool_pre_ping=True)
+)
+async_session_factory: async_sessionmaker[AsyncSession] = async_sessionmaker(
+    engine, class_=_BusinessSession, expire_on_commit=False
+)
 
 
 def create_worker_session_factory() -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]:
@@ -60,5 +99,6 @@ class UUIDTimestampMixin:
 
 
 async def get_db_session() -> AsyncIterator[AsyncSession]:
+    require_active_runtime()
     async with async_session_factory() as session:
         yield session

@@ -167,7 +167,9 @@ services:
     entrypoint: ["python", "-m", "app.maintenance.vk_publishing_credentials"]
     command: ["status"]
     environment:
-      APP_ENV: maintenance
+      # Explicit operator CLI; maintenance is reserved for passive runtime.
+      APP_ENV: credential_admin
+      RUNTIME_ADMISSION_MODE: active
       VK_PUBLISHING_ENABLED: "false"
       VK_ACCESS_TOKEN: ""
       VK_CREDENTIALS_FILE: /run/iteam-secrets/vk/credentials.json
