@@ -100,6 +100,8 @@ schema-static drill сохраняет собственный `release-drill-pro
 безопасные этапы, без command arguments, credentials и business payloads.
 
 Proof относится только к указанной паре images и синтетической fixture.
-Оформление итогового manifest, integration с approval/apply и production
-acceptance остаются отдельными этапами. Запуск этой команды не выполняет
-deployment и не является разрешением на production migration.
+[Migration approval](migration-release-approval.md) оформляет manifest v2,
+повторно проверяет exact proof и images и создаёт отдельный signed receipt
+после ручного решения. Migration apply и production acceptance остаются
+следующими этапами. Запуск rehearsal не выполняет deployment и не является
+разрешением на production migration.
