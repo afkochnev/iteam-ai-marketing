@@ -48,6 +48,14 @@ def manifest() -> dict:
         compatibility_class="EXPAND_ONLY",
         pre_activation_rollback_policy="PRE_ACTIVATION_DOWNGRADE",
     )
+    source_images = {
+        "backend": image("backend", "c"),
+        "frontend": image("frontend", "d"),
+    }
+    target_images = {
+        "backend": image("backend", "e"),
+        "frontend": image("frontend", "f"),
+    }
     return {
         "version": contracts.MIGRATION_MANIFEST_VERSION,
         "release_type": contracts.MIGRATION_RELEASE_TYPE,
@@ -63,23 +71,21 @@ def manifest() -> dict:
         "compatibility_class": "EXPAND_ONLY",
         "pre_activation_rollback_policy": "PRE_ACTIVATION_DOWNGRADE",
         "frontend_api_url": contracts.FRONTEND_API_URL,
-        "source_images": {
-            "backend": image("backend", "c"),
-            "frontend": image("frontend", "d"),
-        },
-        "target_images": {
-            "backend": image("backend", "e"),
-            "frontend": image("frontend", "f"),
-        },
+        "source_images": source_images,
+        "target_images": target_images,
         "rehearsal_proof": {
             "workflow_run_id": 202,
             "artifact_id": 303,
             "proof_sha256": "sha256:" + "9" * 64,
             "source_release_sha": SOURCE_RELEASE,
             "target_release_sha": TARGET_RELEASE,
+            "target_build_run_id": 101,
+            "target_build_attempt": 1,
             "source_schema_head": SOURCE_SCHEMA,
             "target_schema_head": TARGET_SCHEMA,
             "migration_plan_hash": plan_hash,
+            "source_images": copy.deepcopy(source_images),
+            "target_images": copy.deepcopy(target_images),
         },
     }
 
@@ -239,10 +245,12 @@ class MigrationManifestContractTests(unittest.TestCase):
                 ):
                     contracts.validate_migration_manifest(value)
 
-    def test_rehearsal_proof_is_bound_to_exact_release_schema_and_plan(self):
+    def test_rehearsal_proof_is_bound_to_exact_release_schema_plan_and_build(self):
         for key, replacement in [
             ("source_release_sha", "3" * 40),
             ("target_release_sha", "4" * 40),
+            ("target_build_run_id", 999),
+            ("target_build_attempt", 2),
             ("source_schema_head", "20261009_0027"),
             ("target_schema_head", "20261121_0031"),
             ("migration_plan_hash", "sha256:" + "7" * 64),
@@ -250,6 +258,20 @@ class MigrationManifestContractTests(unittest.TestCase):
             with self.subTest(key=key):
                 value = manifest()
                 value["rehearsal_proof"][key] = replacement
+                with self.assertRaisesRegex(
+                    contracts.ManifestContractError,
+                    "REHEARSAL_PROOF_SCOPE_MISMATCH",
+                ):
+                    contracts.validate_migration_manifest(value)
+
+    def test_rehearsal_proof_cannot_be_reused_for_other_image_digests(self):
+        for section, component in [
+            ("source_images", "backend"),
+            ("target_images", "frontend"),
+        ]:
+            with self.subTest(section=section, component=component):
+                value = manifest()
+                value["rehearsal_proof"][section][component] = image(component, "8")
                 with self.assertRaisesRegex(
                     contracts.ManifestContractError,
                     "REHEARSAL_PROOF_SCOPE_MISMATCH",

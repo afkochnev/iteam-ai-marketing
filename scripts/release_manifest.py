@@ -207,8 +207,12 @@ def validate_migration_manifest(value: Any) -> None:
         manifest["target_release_sha"], "INVALID_TARGET_RELEASE_SHA"
     )
     _require(source_release != target_release, "SOURCE_AND_TARGET_RELEASE_MATCH")
-    _positive_int(manifest["target_build_run_id"], "INVALID_TARGET_BUILD_RUN")
-    _positive_int(manifest["target_build_attempt"], "INVALID_TARGET_BUILD_ATTEMPT")
+    target_build_run_id = _positive_int(
+        manifest["target_build_run_id"], "INVALID_TARGET_BUILD_RUN"
+    )
+    target_build_attempt = _positive_int(
+        manifest["target_build_attempt"], "INVALID_TARGET_BUILD_ATTEMPT"
+    )
 
     source_schema = _schema_head(
         manifest["source_schema_head"], "INVALID_SOURCE_SCHEMA_HEAD"
@@ -220,8 +224,8 @@ def validate_migration_manifest(value: Any) -> None:
         manifest["frontend_api_url"] == FRONTEND_API_URL,
         "UNREVIEWED_FRONTEND_ENDPOINT",
     )
-    _images(manifest["source_images"], "INVALID_SOURCE_IMAGES")
-    _images(manifest["target_images"], "INVALID_TARGET_IMAGES")
+    source_images = _images(manifest["source_images"], "INVALID_SOURCE_IMAGES")
+    target_images = _images(manifest["target_images"], "INVALID_TARGET_IMAGES")
 
     expected_plan_hash = migration_plan_hash(
         source_schema_head=source_schema,
@@ -246,20 +250,40 @@ def validate_migration_manifest(value: Any) -> None:
             "proof_sha256",
             "source_release_sha",
             "target_release_sha",
+            "target_build_run_id",
+            "target_build_attempt",
             "source_schema_head",
             "target_schema_head",
             "migration_plan_hash",
+            "source_images",
+            "target_images",
         },
         "INVALID_REHEARSAL_PROOF_FIELDS",
     )
     _positive_int(proof["workflow_run_id"], "INVALID_REHEARSAL_WORKFLOW_RUN")
     _positive_int(proof["artifact_id"], "INVALID_REHEARSAL_ARTIFACT")
     _sha256(proof["proof_sha256"], "INVALID_REHEARSAL_PROOF_HASH")
+    proof_build_run = _positive_int(
+        proof["target_build_run_id"], "INVALID_REHEARSAL_TARGET_BUILD_RUN"
+    )
+    proof_build_attempt = _positive_int(
+        proof["target_build_attempt"], "INVALID_REHEARSAL_TARGET_BUILD_ATTEMPT"
+    )
+    proof_source_images = _images(
+        proof["source_images"], "INVALID_REHEARSAL_SOURCE_IMAGES"
+    )
+    proof_target_images = _images(
+        proof["target_images"], "INVALID_REHEARSAL_TARGET_IMAGES"
+    )
     _require(
         proof["source_release_sha"] == source_release
         and proof["target_release_sha"] == target_release
+        and proof_build_run == target_build_run_id
+        and proof_build_attempt == target_build_attempt
         and proof["source_schema_head"] == source_schema
         and proof["target_schema_head"] == target_schema
-        and proof["migration_plan_hash"] == expected_plan_hash,
+        and proof["migration_plan_hash"] == expected_plan_hash
+        and proof_source_images == source_images
+        and proof_target_images == target_images,
         "REHEARSAL_PROOF_SCOPE_MISMATCH",
     )
