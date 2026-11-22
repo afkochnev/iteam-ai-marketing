@@ -76,6 +76,25 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  runtime-admission:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - name: Candidate admission controller contracts
+        run: python3 -m unittest discover -s scripts/tests -p test_runtime_admission_drill.py -v
+      - name: Actual checkout candidate passive admission and post-write containment
+        run: python3 scripts/runtime_admission_drill.py --output runtime-admission-proof.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: runtime-admission-candidate-proof
+          path: runtime-admission-proof.json
+          if-no-files-found: error
+
   release-tools:
     runs-on: ubuntu-latest
     timeout-minutes: 30

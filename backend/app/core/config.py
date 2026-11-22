@@ -8,6 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     app_name: str = "iTeam AI Marketing Department"
     app_env: str = "development"
+    runtime_admission_mode: str = "active"
     worker_role: str | None = None
     scheduler_role: str | None = None
     runtime_diagnostics_enabled: bool = True
@@ -255,6 +256,8 @@ class Settings(BaseSettings):
         ensure_safe_test_redis_url(self.redis_url)
 
     def validate_production(self) -> None:
+        if self.runtime_admission_mode not in {"active", "passive"}:
+            raise RuntimeError("RUNTIME_ADMISSION_MODE_INVALID")
         self.validate_metrics_capabilities()
         self.validate_redis_isolation()
         numeric_errors: list[str] = []

@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import AppError
+from app.core.runtime_admission import require_active_runtime
 from app.core.vk_canary_retry import (
     CANARY_ID,
     CANARY_OWNER_ID,
@@ -1430,6 +1431,7 @@ class PublicationService:
     async def claim_canary_retry(
         self, publication_id: UUID, user: User, *, new_authorization: bool = False
     ) -> PublicationResponse:
+        require_active_runtime()
         publication = await self._locked(publication_id)
         request_key = RETRY_V2_KEY if new_authorization else RETRY_KEY
         used = await self.session.scalar(
@@ -1550,6 +1552,7 @@ class PublicationService:
         self, publication_id: UUID, user: User | None = None
     ) -> PublicationResponse:
         """Atomically claim an approved/due publication before Celery execution."""
+        require_active_runtime()
         publication = await self._locked(publication_id)
         if await self.has_canary_retry(publication_id):
             raise AppError("VK_CANARY_RETRY_CONSUMED", "Однократная canary уже запрошена.", 409)
@@ -1662,6 +1665,7 @@ class PublicationService:
         *,
         execution_token: str | None = None,
     ) -> PublicationResponse | None:
+        require_active_runtime()
         publication = await self.session.scalar(
             select(Publication).where(Publication.id == publication_id).with_for_update()
         )
@@ -1877,6 +1881,7 @@ class PublicationService:
         execution_token: str | None = None,
     ) -> PublicationResponse | None:
         """Publish a claimed record; provider errors are persisted without raw payloads."""
+        require_active_runtime()
         publication = await self.session.scalar(
             select(Publication).where(Publication.id == publication_id).with_for_update()
         )
@@ -2029,6 +2034,7 @@ class PublicationService:
 
     async def recover_stuck_publishing(self, *, cutoff: datetime) -> int:
         """Move abandoned claims to conservative reconciliation state."""
+        require_active_runtime()
         rows = list(
             (
                 await self.session.scalars(
@@ -2064,6 +2070,7 @@ class PublicationService:
         return len(rows)
 
     async def recover_one_stuck(self, publication_id: UUID) -> Publication:
+        require_active_runtime()
         publication = await self._locked(publication_id)
         cutoff = utc_now() - timedelta(seconds=settings.publication_publishing_stale_seconds)
         if (

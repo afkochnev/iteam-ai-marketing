@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
+from app.core.runtime_admission import require_active_runtime
 from app.models.task import Task, TaskStatus, TaskType
 from app.services.activity_log_service import ActivityLogService
 from app.services.agent_run_service import AgentRunService
@@ -39,6 +40,7 @@ class TaskDispatcherService:
         self.session = session
 
     async def dispatch_ready_tasks(self, *, limit: int = 20) -> list[UUID]:
+        require_active_runtime()
         task_ids = list(
             (
                 await self.session.scalars(

@@ -2,10 +2,11 @@ import asyncio
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.exc import ProgrammingError
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
+from app.core.database import create_async_engine
 from app.core.error_monitoring import report_exception
 from app.services.publication_service import PublicationService
 from app.services.task_recovery_service import TaskRecoveryService

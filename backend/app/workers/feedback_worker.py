@@ -9,10 +9,11 @@ from agents import ModelBehaviorError, OpenAIResponsesModel, RunConfig, Runner
 from openai import AsyncOpenAI
 from pydantic import ValidationError
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
+from app.core.database import create_async_engine
 from app.core.errors import AppError
 from app.models.agent import Agent, AgentStatus
 from app.models.agent_run import AgentRun, AgentRunStatus

@@ -216,6 +216,12 @@ Approval обычного schema-static release нельзя переиспол�
 текущую writer boundary неизвестной. Эта часть не реализует activation или
 post-activation recovery и не завершает этап 5.
 
+Следующая часть — [пассивный runtime и candidate activation boundary](../runtime-admission.md):
+запрет business writes/claims до нового активного процесса, durable one-way
+marker и проверка containment после реальной записи на disposable candidate.
+Candidate authority отделена от production approval; production adapter и
+signed end-to-end acceptance требуют отдельного завершения этапа 5.
+
 Ни один PR не должен одновременно добавлять новую business schema и включать её production deployment.
 
 ## Alternatives

@@ -15,6 +15,8 @@ from typing import Any
 
 import httpx
 
+from app.core.runtime_admission import require_active_runtime
+
 VK_ID_TOKEN_URL = "https://id.vk.ru/oauth2/auth"
 VK_API_BASE_URL = "https://api.vk.com/method"
 VK_REQUIRED_SCOPE = "wall groups"
@@ -111,6 +113,7 @@ class VKCredentialStore:
         refresh_leeway_seconds: int,
         owner_uid: int | None = None,
     ) -> None:
+        require_active_runtime()
         self.owner_uid = os.geteuid() if owner_uid is None else owner_uid
         self.path = Path(path)
         self.lock_path = self.path.with_name(f".{self.path.name}.lock")
@@ -133,6 +136,7 @@ class VKCredentialStore:
 
     @contextmanager
     def _locked(self, mode: int) -> Iterator[None]:
+        require_active_runtime()
         try:
             with self._open_lock() as lock:
                 fcntl.flock(lock.fileno(), mode)
@@ -243,6 +247,7 @@ class VKCredentialStore:
         return status
 
     async def access_token(self, *, force_refresh: bool = False) -> str:
+        require_active_runtime()
         with self._locked(fcntl.LOCK_EX):
             snapshot = self._read_unlocked()
             refresh_after = datetime.now(UTC) + timedelta(seconds=self.refresh_leeway_seconds)
@@ -255,6 +260,7 @@ class VKCredentialStore:
         return token
 
     async def _refresh(self, snapshot: VKCredentialSnapshot) -> VKCredentialSnapshot:
+        require_active_runtime()
         state = secrets.token_urlsafe(32)
         try:
             async with httpx.AsyncClient(timeout=self.request_timeout_seconds) as client:
@@ -346,6 +352,7 @@ class VKCredentialStore:
         access_token: str,
         **parameters: Any,
     ) -> Any:
+        require_active_runtime()
         response = await client.post(
             f"{VK_API_BASE_URL}/{method}",
             data={

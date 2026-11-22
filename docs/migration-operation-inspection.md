@@ -139,14 +139,18 @@ approval rehearsal не меняется. Fixture proof остаётся
 
 ## Следующая часть этапа 5
 
-Для полноценного post-activation пути остаются отдельные работы: явное
-разрешение активации, durable one-way marker до первого возможного reconnect
-или application write, пассивный старт runtime с реальным запретом claims,
-и containment после активации с сохранением target schema и новых данных.
-Их acceptance должен включать реальные записи на disposable runtime и сбои
-после начала writers.
+Следующий [candidate-блок](runtime-admission.md) добавляет пассивный старт
+runtime с запретом business writes/claims, durable one-way marker до reconnect
+и проверку containment после реальных HTTP/worker записей. Его evidence имеет
+отдельную authority `DISPOSABLE_CANDIDATE_ONLY` и не расширяет полномочия
+этого инспектора или прежнего migration approval.
 
-`APP_ENV=maintenance` сам по себе не является общим запретом application writes
-или запуска Celery consumers. Read-only engine существующего readiness helper
-действует только внутри этого helper. Наличие инспектора не завершает этап 5
-и не разрешает первую production migration.
+В старых pinned release images `APP_ENV=maintenance` сам по себе не закрывает
+business writes и Celery consumers; read-only engine readiness helper действует
+только внутри этого helper. Новый backend с `admission_protocol=1` принудительно
+выбирает passive mode для maintenance. Свойства нового candidate нельзя
+приписывать старому подписанному образу по одному имени environment.
+
+Для завершения этапа 5 остаются activation-capable signed approval, production
+activation/containment adapter и signed end-to-end acceptance на образе с новым
+gate. Первая production migration остаётся отдельно разрешаемым этапом.

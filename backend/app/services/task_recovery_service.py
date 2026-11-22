@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.errors import AppError
+from app.core.runtime_admission import require_active_runtime
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.optimization import CampaignOptimizationAction, OptimizationActionStatus
 from app.models.publication_plan import PublicationPlan
@@ -19,6 +20,7 @@ class TaskRecoveryService:
         self.session = session
 
     async def recover_stuck(self, *, limit: int = 50) -> list[AgentRun]:
+        require_active_runtime()
         cutoff = datetime.now(UTC) - timedelta(seconds=settings.task_stuck_after_seconds)
         runs = list(
             (

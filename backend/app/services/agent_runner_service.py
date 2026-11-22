@@ -15,6 +15,7 @@ from app.agents.output_registry import output_type_registry
 from app.agents.tool_registry import tool_registry
 from app.core.config import settings
 from app.core.redaction import redact_text
+from app.core.runtime_admission import require_active_runtime
 from app.models.task import TaskType
 from app.schemas.agent_outputs import SingleSocialPostResult
 
@@ -72,6 +73,7 @@ class _InstrumentedResponsesModel(OpenAIResponsesModel):
             await session.commit()
 
     async def get_response(self, *args: Any, **kwargs: Any) -> Any:
+        require_active_runtime()
         self._turn_index += 1
         turn = self._turn_index
         await self._record_external_request()
@@ -324,6 +326,7 @@ class AgentRunnerService:
         context: AgentRuntimeContext,
         trace_id: str | None,
     ) -> RuntimeResult:
+        require_active_runtime()
         if not settings.openai_api_key:
             raise AgentRuntimeError("OPENAI_NOT_CONFIGURED", "OpenAI API не настроен.")
         task_type = context.output_task_type or context.task_type

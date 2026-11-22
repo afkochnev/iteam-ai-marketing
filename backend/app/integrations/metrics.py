@@ -11,6 +11,7 @@ from telethon import TelegramClient, errors, functions, utils
 from telethon.sessions import StringSession
 
 from app.core.config import settings
+from app.core.runtime_admission import require_active_runtime
 
 
 class MetricsProviderError(Exception):
@@ -64,6 +65,7 @@ class TelegramMetricsProvider:
     """User-only MTProto read path; no login, view increment or session file writes."""
 
     async def get_metrics(self, *, external_id: str) -> ProviderMetricsResult:
+        require_active_runtime()
         if not settings.telegram_metrics_enabled:
             raise MetricsProviderError("TELEGRAM_METRICS_DISABLED", "Метрики Telegram отключены.")
         _metrics_role()
@@ -177,6 +179,7 @@ class VKMetricsProvider:
     """Separate read credential; never falls back to a publishing token."""
 
     async def get_metrics(self, *, external_id: str) -> ProviderMetricsResult:
+        require_active_runtime()
         if not settings.vk_metrics_enabled:
             raise MetricsProviderError("VK_METRICS_DISABLED", "Метрики VK отключены.")
         _metrics_role()

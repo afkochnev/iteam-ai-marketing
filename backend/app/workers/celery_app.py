@@ -1,9 +1,16 @@
-from celery import Celery
-from kombu import Queue
+from app.core.runtime_admission import require_active_runtime
 
-from app.core.config import settings
-from app.workers.runtime_heartbeat import register_runtime_heartbeat
-from app.workers.scheduler_config import build_beat_schedule
+# Ordinary import failure is intentional: Celery signal receiver exceptions
+# can be swallowed, and a consumer-ready hook is already too late to prevent
+# broker claims. This also covers beat, producers and explicit CLI queue flags.
+require_active_runtime()
+
+from celery import Celery  # noqa: E402
+from kombu import Queue  # noqa: E402
+
+from app.core.config import settings  # noqa: E402
+from app.workers.runtime_heartbeat import register_runtime_heartbeat  # noqa: E402
+from app.workers.scheduler_config import build_beat_schedule  # noqa: E402
 
 settings.validate_worker_capabilities()
 settings.validate_scheduler_capabilities()

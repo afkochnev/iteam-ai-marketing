@@ -5,6 +5,7 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 from app.api import system
 from app.api.system import EXPECTED_MIGRATION_HEAD
+from app.core.config import settings
 from app.core.errors import AppError
 from app.core.redaction import redact
 from app.main import app
@@ -18,7 +19,14 @@ def test_readiness_expected_head_matches_alembic_head() -> None:
 def test_health() -> None:
     response = TestClient(app).get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok", "version": "0.1.0"}
+    assert response.json() == {
+        "status": "ok",
+        "version": "0.1.0",
+        "admission_protocol": 1,
+        "admission_mode": "active",
+        "business_ready": False,
+        "build_sha": settings.build_sha,
+    }
     assert response.headers.get("x-request-id")
 
 
@@ -115,3 +123,21 @@ async def test_readiness_rejects_invalid_production_configuration(
 
 async def _false_async() -> bool:
     return False
+
+
+@pytest.mark.asyncio
+async def test_active_readiness_reports_business_ready_only_after_all_checks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def available() -> bool:
+        return True
+
+    monkeypatch.setattr(system, "_check_database", available)
+    monkeypatch.setattr(system, "_check_redis", available)
+    monkeypatch.setattr(system, "_check_schema", available)
+    response = await system.readiness()
+    assert all(response[key] == "ok" for key in ("status", "database", "redis", "schema"))
+    assert response["admission_protocol"] == 1
+    assert response["admission_mode"] == "active"
+    assert response["business_ready"] is True
+    assert response["build_sha"] == settings.build_sha
