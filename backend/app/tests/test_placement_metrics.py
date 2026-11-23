@@ -11,7 +11,6 @@ from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.errors import AppError
 from app.integrations.metrics import ProviderMetricsResult, VKMetricsProvider
-from app.integrations.telegram import ProviderPublicationResult, VKProvider
 from app.models.activity import ActivityLog
 from app.models.content import ContentChannel
 from app.models.publication import Publication, PublicationStatus
@@ -25,12 +24,19 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 async def published(db_session, monkeypatch):
-    monkeypatch.setattr(settings, "vk_owner_id", -987)
-    claim = await _issue_claim(db_session, monkeypatch, ContentChannel.VK)
-    send = AsyncMock(return_value=ProviderPublicationResult("314", None, datetime.now(UTC), "-987"))
-    monkeypatch.setattr(VKProvider, "publish", send)
-    await vk_worker._run(claim.id, claim.token)
-    send.assert_awaited_once()
+    with monkeypatch.context() as worker:
+        worker.setattr(settings, "vk_owner_id", -987)
+        claim = await _issue_claim(db_session, worker, ContentChannel.VK)
+        worker.setattr(settings, "worker_role", "publication")
+        worker.setattr(settings, "vk_access_token", "fixture-publish-token")
+        send = AsyncMock(return_value=httpx.Response(200, json={"response": {"post_id": 314}}))
+        worker.setattr(httpx.AsyncClient, "post", send)
+        await vk_worker._run(claim.id, claim.token)
+        row = await db_session.get(Publication, claim.id, populate_existing=True)
+        assert row is not None
+        assert row.status is PublicationStatus.PUBLISHED, row.failure_code
+        send.assert_awaited_once()
+        assert send.await_args.kwargs["data"]["owner_id"] == -987
     monkeypatch.setattr(settings, "worker_role", "metrics")
     monkeypatch.setattr(settings, "vk_metrics_enabled", True)
     monkeypatch.setattr(settings, "vk_metrics_owner_id", -987)
