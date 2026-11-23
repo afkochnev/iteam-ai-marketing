@@ -171,12 +171,14 @@ class VKProvider:
         single_attempt: bool = False,
     ) -> None:
         require_active_runtime()
-        if settings.vk_owner_id is None:
+        owner_id = settings.vk_owner_id
+        if owner_id is None:
             raise VKProviderError("VK_AUTH_ERROR", "VK publishing is not configured.")
-        if settings.vk_owner_id >= 0:
+        if owner_id >= 0:
             raise VKProviderError(
                 "VK_TARGET_INVALID", "VK publishing target must be a community wall."
             )
+        self._owner_id = owner_id
         explicit_token = (token or "").strip() or None
         configured_token = (settings.vk_access_token or "").strip() or None
         if settings.app_env.lower() in {"production", "prod"} and (
@@ -195,7 +197,7 @@ class VKProvider:
                 settings.vk_credentials_file,
                 client_id=settings.vk_client_id,
                 expected_user_id=settings.vk_expected_user_id,
-                owner_id=settings.vk_owner_id,
+                owner_id=self._owner_id,
                 api_version=settings.vk_api_version,
                 request_timeout_seconds=settings.vk_request_timeout_seconds,
                 refresh_leeway_seconds=settings.vk_token_refresh_leeway_seconds,
@@ -230,7 +232,7 @@ class VKProvider:
                     "https://api.vk.com/method/wall.post",
                     # Credentials remain in form data, never in URLs or logs.
                     data={
-                        "owner_id": settings.vk_owner_id,
+                        "owner_id": self._owner_id,
                         "from_group": 1,
                         "access_token": access_token,
                         "v": settings.vk_api_version,
@@ -299,7 +301,7 @@ class VKProvider:
     async def publish(self, *, text: str, chat_id: str) -> ProviderPublicationResult:
         # Target validation is deliberately before credential access or any network call.
         require_active_runtime()
-        if chat_id != str(settings.vk_owner_id):
+        if chat_id != str(self._owner_id) or settings.vk_owner_id != self._owner_id:
             raise VKProviderError(
                 "VK_TARGET_MISMATCH", "VK publishing target does not match configured owner."
             )
@@ -329,7 +331,7 @@ class VKProvider:
             ) from exc
         return ProviderPublicationResult(
             external_id=post_id,
-            external_url=f"https://vk.com/wall{settings.vk_owner_id}_{post_id}",
+            external_url=f"https://vk.com/wall{self._owner_id}_{post_id}",
             published_at=datetime.now(UTC),
-            provider_target_id=str(settings.vk_owner_id),
+            provider_target_id=str(self._owner_id),
         )

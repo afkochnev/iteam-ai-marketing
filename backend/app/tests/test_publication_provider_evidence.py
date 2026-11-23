@@ -1,3 +1,5 @@
+from urllib.parse import parse_qs
+
 import httpx
 import pytest
 
@@ -184,3 +186,44 @@ async def test_vk_refresh_only_after_definite_auth_refusal(
     assert caught.value.ambiguous and not caught.value.retryable
     assert seen == refreshes
     assert calls == ["POST"] * len(responses)
+
+
+async def test_vk_refresh_and_receipt_keep_the_authorized_wall(monkeypatch):
+    monkeypatch.setattr(settings, "vk_access_token", None)
+    monkeypatch.setattr(settings, "vk_owner_id", -123)
+    owners = []
+    refreshes = []
+
+    class Store:
+        async def access_token(self, *, force_refresh=False):
+            refreshes.append(force_refresh)
+            # The account setting changes after target validation but before wall.post.
+            monkeypatch.setattr(settings, "vk_owner_id", -777)
+            return "synthetic"
+
+    def reply(request):
+        owners.append(parse_qs(request.content.decode())["owner_id"])
+        if len(owners) == 1:
+            return httpx.Response(200, json={"error": {"error_code": 5}})
+        # Also change it before the successful receipt is assembled.
+        monkeypatch.setattr(settings, "vk_owner_id", -456)
+        return httpx.Response(200, json={"response": {"post_id": 37}})
+
+    client = httpx.AsyncClient
+    monkeypatch.setattr(
+        httpx,
+        "AsyncClient",
+        lambda **kw: client(transport=httpx.MockTransport(reply), **kw),
+    )
+    adapter = VKProvider(credential_store=Store())
+    receipt = await adapter.publish(text="test post", chat_id="-123")
+
+    assert owners == [["-123"], ["-123"]]
+    assert refreshes == [False, True]
+    assert receipt.provider_target_id == "-123"
+    assert receipt.external_url == "https://vk.com/wall-123_37"
+
+    with pytest.raises(VKProviderError) as stale_adapter:
+        await adapter.publish(text="new post", chat_id="-123")
+    assert stale_adapter.value.code == "VK_TARGET_MISMATCH"
+    assert refreshes == [False, True]
