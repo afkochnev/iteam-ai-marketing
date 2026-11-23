@@ -12,6 +12,7 @@ from app.models.content import (
     ContentVersion,
     ContentVersionSource,
 )
+from app.models.hypothesis import HypothesisVersion, MarketingHypothesis
 from app.models.knowledge import KnowledgeItem, KnowledgeSource, KnowledgeStore
 from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem
 from app.models.marketing_feedback import (
@@ -42,6 +43,8 @@ from app.models.user import User, UserRole
 from app.models.workspace import Workspace, WorkspaceMembership, WorkspaceRole
 
 __all__ = [
+    "HypothesisVersion",
+    "MarketingHypothesis",
     "MarketingExperiment",
     "MarketingExperimentPublication",
     "CampaignOptimizationAction",
