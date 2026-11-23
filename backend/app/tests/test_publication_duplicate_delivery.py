@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.publications import retry_publication
 from app.core.config import settings
 from app.core.database import async_session_factory
+from app.core.errors import AppError
 from app.integrations.telegram import (
     ProviderPublicationResult,
     PublicationProvider,
@@ -246,3 +247,34 @@ async def test_legacy_start_requires_reconciliation_before_new_authorized_send(
     assert result is not None and result.status is PublicationStatus.PUBLISHED
     assert await claim.deliver(provider, token=row.execution_token) is None
     provider.publish.assert_awaited_once()
+
+
+async def test_stale_approved_row_cannot_issue_second_claim(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setattr(settings, "telegram_publishing_enabled", True)
+    user, _campaign, post, version = await _approved_post(db_session)
+    first_session = PublicationService(db_session)
+    publication = await first_session.create(
+        PublicationCreate(
+            content_item_id=post.id, content_version_id=version.id, channel=post.channel
+        ),
+        user,
+    )
+    await first_session.approve(publication.id, user)
+    cached = await db_session.get(Publication, publication.id)
+    assert cached is not None and cached.status is PublicationStatus.APPROVED
+    async with async_session_factory() as winner:
+        await PublicationService(winner).claim_for_publish(publication.id, user)
+        row = await winner.get(Publication, publication.id)
+        assert row is not None and row.execution_token
+        winning_token = row.execution_token
+
+    # Keep a strong reference so the first session retains its original ORM snapshot.
+    assert cached.status is PublicationStatus.APPROVED
+    with pytest.raises(AppError) as rejected:
+        await first_session.claim_for_publish(publication.id, user)
+    assert rejected.value.code == "PUBLICATION_INVALID_STATE"
+    await db_session.rollback()
+    persisted = await db_session.get(Publication, publication.id, populate_existing=True)
+    assert persisted is not None and persisted.execution_token == winning_token

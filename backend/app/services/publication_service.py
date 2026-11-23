@@ -1064,10 +1064,16 @@ class PublicationService:
                 422,
             )
 
-    async def _locked(self, publication_id: UUID) -> Publication:
-        publication = await self.session.scalar(
-            select(Publication).where(Publication.id == publication_id).with_for_update()
+    async def _find_locked(self, publication_id: UUID) -> Publication | None:
+        return await self.session.scalar(
+            select(Publication)
+            .where(Publication.id == publication_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
+
+    async def _locked(self, publication_id: UUID) -> Publication:
+        publication = await self._find_locked(publication_id)
         if publication is None:
             raise AppError("PUBLICATION_NOT_FOUND", "Публикация не найдена.", 404)
         return publication
@@ -1571,18 +1577,10 @@ class PublicationService:
         key = started if queued in recorded else legacy
         return None if key in recorded else key
 
-    async def _lock_worker_publication(self, publication_id: UUID) -> Publication | None:
-        return await self.session.scalar(
-            select(Publication)
-            .where(Publication.id == publication_id)
-            .with_for_update()
-            .execution_options(populate_existing=True)
-        )
-
     async def _result_owner(
         self, publication_id: UUID, token: str, receipt: ProviderPublicationResult | None = None
     ) -> Publication | None:
-        publication = await self._lock_worker_publication(publication_id)
+        publication = await self._find_locked(publication_id)
         if publication is None:
             return None
         if (
@@ -1726,7 +1724,7 @@ class PublicationService:
         execution_token: str | None = None,
     ) -> PublicationResponse | None:
         require_active_runtime()
-        publication = await self._lock_worker_publication(publication_id)
+        publication = await self._find_locked(publication_id)
         if publication is None or publication.status is not PublicationStatus.PUBLISHING:
             return None
         if publication.channel.value != "VK":
@@ -1939,7 +1937,7 @@ class PublicationService:
     ) -> PublicationResponse | None:
         """Publish a claimed record; provider errors are persisted without raw payloads."""
         require_active_runtime()
-        publication = await self._lock_worker_publication(publication_id)
+        publication = await self._find_locked(publication_id)
         if publication is None or publication.status is not PublicationStatus.PUBLISHING:
             return None
         if publication.channel.value != "TELEGRAM":
@@ -2092,6 +2090,7 @@ class PublicationService:
                         Publication.updated_at < cutoff,
                     )
                     .with_for_update(skip_locked=True)
+                    .execution_options(populate_existing=True)
                 )
             ).all()
         )
