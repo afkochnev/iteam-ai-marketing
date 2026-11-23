@@ -40,6 +40,7 @@ from app.models.publication import (
     ACTIVE_PUBLICATION_STATUSES,
     PUBLICATION_ALLOWED_TRANSITIONS,
     Publication,
+    PublicationClaimEvent,
     PublicationReconciliation,
     PublicationStatus,
     ReconciliationDecision,
@@ -1428,6 +1429,19 @@ class PublicationService:
             is not None
         )
 
+    def _stage_claim_event(self, publication: Publication, token: str) -> None:
+        self.session.add(
+            PublicationClaimEvent(
+                publication_id=publication.id,
+                content_version_id=publication.content_version_id,
+                channel=publication.channel,
+                claim_digest=hashlib.sha256(token.encode()).hexdigest(),
+                event_type="legacy.social.claimed",
+                schema_version=1,
+                delivery_owner="legacy_direct",
+            )
+        )
+
     async def claim_canary_retry(
         self, publication_id: UUID, user: User, *, new_authorization: bool = False
     ) -> PublicationResponse:
@@ -1492,6 +1506,7 @@ class PublicationService:
         previous_failure = publication.failure_code
         publication.status = PublicationStatus.PUBLISHING
         publication.execution_token = str(uuid4())
+        self._stage_claim_event(publication, publication.execution_token)
         publication.failure_code = None
         publication.failure_message = None
         # This consumes the one manual retry even when delivery later fails or is ambiguous.
@@ -1636,6 +1651,7 @@ class PublicationService:
         # Workers must present this token; an old message carrying only the
         # publication id can no longer authorize a later retry.
         publication.execution_token = str(uuid4())
+        self._stage_claim_event(publication, publication.execution_token)
         if early_canary:
             assert user is not None
             await ActivityLogService(self.session).record(
