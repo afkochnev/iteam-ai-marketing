@@ -2,6 +2,7 @@ import hashlib
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import Mock
+from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select, update
@@ -217,15 +218,23 @@ async def test_authorized_vk_canary_retry_has_a_separate_claim_event(db_session,
         assert all(event.channel is ContentChannel.VK for event in events)
 
 
-async def test_downgrade_preserves_committed_claim_evidence(db_session, approved_publication):
+@pytest.fixture
+def claim_event_migration():
+    from alembic.script import ScriptDirectory
+
+    directory = ScriptDirectory(str(Path(__file__).resolve().parents[2] / "alembic"))
+    return directory, directory.get_revision("20261123_0031").module
+
+
+async def test_downgrade_preserves_committed_claim_evidence(
+    db_session, approved_publication, claim_event_migration
+):
     from alembic.migration import MigrationContext
     from alembic.operations import Operations
-    from alembic.script import ScriptDirectory
 
     user, publication = approved_publication
     await PublicationService(db_session).claim_for_publish(publication.id, user)
-    directory = ScriptDirectory(str(Path(__file__).resolve().parents[2] / "alembic"))
-    migration = directory.get_revision("20261123_0031").module
+    _, migration = claim_event_migration
 
     def downgrade(connection):
         with Operations.context(MigrationContext.configure(connection)):
@@ -238,3 +247,44 @@ async def test_downgrade_preserves_committed_claim_evidence(db_session, approved
     async with async_session_factory() as observer:
         event = (await observer.scalars(select(PublicationClaimEvent))).one()
         assert event.publication_id == publication.id
+
+
+async def test_upgrade_preserves_legacy_inflight_claim_without_creating_an_event(
+    db_session, approved_publication, claim_event_migration
+):
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+
+    _, publication = approved_publication
+    directory, migration = claim_event_migration
+    legacy_token = str(uuid4())
+
+    def rehearse(connection):
+        context = MigrationContext.configure(connection)
+        with Operations.context(context):
+            migration.downgrade()
+            context.stamp(directory, migration.down_revision)
+            assert context.get_current_revision() == "20261121_0030"
+            table = Publication.__table__
+            connection.execute(
+                table.update()
+                .where(table.c.id == publication.id)
+                .values(status=PublicationStatus.PUBLISHING, execution_token=legacy_token)
+            )
+            read_row = table.select().where(table.c.id == publication.id)
+            before = dict(connection.execute(read_row).mappings().one())
+            assert before["status"] is PublicationStatus.PUBLISHING
+            assert before["execution_token"] == legacy_token
+
+            migration.upgrade()
+            context.stamp(directory, migration.revision)
+            assert context.get_current_revision() == "20261123_0031"
+            assert dict(connection.execute(read_row).mappings().one()) == before
+            assert connection.scalar(select(func.count()).select_from(PublicationClaimEvent)) == 0
+
+    connection = await db_session.connection()
+    savepoint = await connection.begin_nested()
+    try:
+        await connection.run_sync(rehearse)
+    finally:
+        await savepoint.rollback()
