@@ -97,7 +97,7 @@ class TelegramProvider:
             ) as client:
                 response = await client.post(url, json={"chat_id": chat_id, "text": text})
         except httpx.TimeoutException as exc:
-            before_send = isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout))
+            before_send = isinstance(exc, httpx.ConnectTimeout | httpx.PoolTimeout)
             raise TelegramProviderError(
                 "TELEGRAM_PROVIDER_TIMEOUT",
                 "Telegram request timed out.",
@@ -113,10 +113,12 @@ class TelegramProvider:
                 ambiguous=not before_send,
             ) from exc
         code = response.status_code
-        if 200 <= code < 300:
+        if 200 <= code < 300 or 400 <= code < 500:
             try:
                 payload = response.json()
-                if payload["ok"] is True and "error_code" not in payload:
+                if not isinstance(payload, dict):
+                    raise ValueError("Invalid Telegram response")
+                if code < 300 and payload.get("ok") is True and "error_code" not in payload:
                     result = payload["result"]
                     message_id = _receipt_id(result["message_id"])
                     target_id = _receipt_id(result["chat"]["id"], signed=True)
@@ -128,11 +130,15 @@ class TelegramProvider:
                         published_at=datetime.now(UTC),
                         provider_target_id=target_id,
                     )
-                if payload["ok"] is not False or "result" in payload:
-                    raise ValueError("Invalid Telegram response")
-                code = payload["error_code"]
-                if type(code) is not int:
-                    raise ValueError("Invalid Telegram error code")
+                error_code = payload.get("error_code", code)
+                if (
+                    payload.get("ok") is not False
+                    or "result" in payload
+                    or type(error_code) is not int
+                    or (code >= 400 and code != error_code)
+                ):
+                    raise ValueError("Invalid Telegram refusal")
+                code = error_code
             except (ValueError, KeyError, TypeError) as exc:
                 raise TelegramProviderError(
                     "TELEGRAM_PROVIDER_ERROR",
@@ -232,7 +238,7 @@ class VKProvider:
                     },
                 )
         except httpx.TimeoutException as exc:
-            before_send = isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout))
+            before_send = isinstance(exc, httpx.ConnectTimeout | httpx.PoolTimeout)
             raise VKProviderError(
                 "VK_PROVIDER_TIMEOUT",
                 "VK request timed out.",
@@ -253,7 +259,7 @@ class VKProvider:
                 "VK_PROVIDER_ERROR", "VK did not confirm delivery.", ambiguous=True
             )
         try:
-            payload = response.json()
+            payload: dict[str, Any] = response.json()
             if (
                 not isinstance(payload, dict)
                 or ("response" in payload and "error" in payload)

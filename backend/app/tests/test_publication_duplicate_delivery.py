@@ -21,7 +21,7 @@ from app.integrations.telegram import (
     VKProviderError,
 )
 from app.models.activity import ActivityLog
-from app.models.content import ContentChannel
+from app.models.content import ContentChannel, ContentVersion
 from app.models.publication import (
     LegacyPublicationAttempt,
     Publication,
@@ -57,10 +57,18 @@ class _Claim:
 
 
 @pytest.fixture(params=[ContentChannel.TELEGRAM, ContentChannel.VK])
-async def claim(db_session: AsyncSession, monkeypatch, request) -> _Claim:
-    channel = request.param
+def channel(request) -> ContentChannel:
+    return request.param
+
+
+@pytest.fixture
+async def claim(db_session, monkeypatch, channel) -> _Claim:
     monkeypatch.setattr(settings, "telegram_target_chat_id", "@attempt_test")
     monkeypatch.setattr(settings, "vk_owner_id", -987)
+    return await _issue_claim(db_session, monkeypatch, channel)
+
+
+async def _issue_claim(db_session: AsyncSession, monkeypatch, channel: ContentChannel) -> _Claim:
     monkeypatch.setattr(settings, f"{channel.value.lower()}_publishing_enabled", True)
     user, _campaign, post, version = await _approved_post(db_session)
     post.channel = channel
@@ -88,18 +96,20 @@ async def _claim_event(session: AsyncSession, publication_id: UUID, token: str):
     ).one()
 
 
-def _provider():
+def _provider(target_id: str | None = "-987"):
     provider = Mock(spec=PublicationProvider)
     provider.publish.return_value = ProviderPublicationResult(
-        "314", None, datetime.now(UTC), "-987"
+        "314", None, datetime.now(UTC), target_id
     )
     return provider
 
 
 @asynccontextmanager
-async def _in_flight(claim: _Claim, error: Exception | None = None):
+async def _in_flight(
+    claim: _Claim, error: Exception | None = None, *, target_id: str | None = "-987"
+):
     entered, release = asyncio.Event(), asyncio.Event()
-    provider = _provider()
+    provider = _provider(target_id)
 
     async def send(*, text, chat_id):
         entered.set()
@@ -222,7 +232,11 @@ async def test_late_provider_result_preserves_recovered_claim(
     if outcome == "success":
         (receipt,) = events
         assert receipt.event_type == "PUBLICATION_LATE_PROVIDER_RECEIPT"
-        assert receipt.metadata_ == {"publication_id": str(row.id), "external_id": "314"}
+        assert receipt.metadata_ == {
+            "publication_id": str(row.id),
+            "external_id": "314",
+            "provider_target_id": "-987",
+        }
     else:
         assert not events
 
@@ -249,7 +263,7 @@ async def _authorize_retry(claim: _Claim, monkeypatch: pytest.MonkeyPatch) -> st
 async def test_late_success_cannot_finish_a_new_publishing_claim(
     claim: _Claim, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ):
-    async with _in_flight(claim) as (old_worker, release):
+    async with _in_flight(claim, target_id=None) as (old_worker, release):
         retry_token = await _authorize_retry(claim, monkeypatch)
         release.set()
         assert await old_worker is None
@@ -406,10 +420,16 @@ async def test_attempt_classifies_provider_outcomes(
         assert attempt.failure_code == f"{channel}_RECONCILIATION_REQUIRED"
 
 
+@pytest.mark.parametrize("target_configured", [True, False])
 async def test_target_change_blocks_delivery_before_provider_entry(
-    claim: _Claim, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    db_session: AsyncSession, channel: ContentChannel, monkeypatch, target_configured: bool
 ):
-    if claim.channel is ContentChannel.TELEGRAM:
+    monkeypatch.setattr(
+        settings, "telegram_target_chat_id", "@original" if target_configured else None
+    )
+    monkeypatch.setattr(settings, "vk_owner_id", -987 if target_configured else None)
+    claim = await _issue_claim(db_session, monkeypatch, channel)
+    if channel is ContentChannel.TELEGRAM:
         monkeypatch.setattr(settings, "telegram_target_chat_id", "@different_test_chat")
     else:
         monkeypatch.setattr(settings, "vk_owner_id", -988)
@@ -501,3 +521,31 @@ async def test_interrupted_commit_preserves_only_previously_committed_attempt_st
         await PublicationService(db_session).recover_one_stuck(claim.id)
         await db_session.refresh(attempt)
         assert attempt.status == "UNKNOWN" and attempt.external_id is None
+
+
+@pytest.mark.parametrize("field", ["channel", "version"])
+async def test_claim_snapshot_mismatch_blocks_provider_entry(claim: _Claim, db_session, field):
+    event = await _claim_event(db_session, claim.id, claim.token)
+    if field == "channel":
+        event.channel = (
+            ContentChannel.VK
+            if claim.channel is ContentChannel.TELEGRAM
+            else ContentChannel.TELEGRAM
+        )
+    else:
+        other = await db_session.scalar(
+            select(ContentVersion.id).where(ContentVersion.id != event.content_version_id).limit(1)
+        )
+        assert other is not None
+        event.content_version_id = other
+    await db_session.commit()
+
+    provider = _provider()
+    result = await claim.deliver(provider)
+    assert result is not None and result.status is PublicationStatus.FAILED
+    assert result.failure_code == "PUBLICATION_CLAIM_SNAPSHOT_MISMATCH"
+    assert await claim.deliver(provider) is None
+    provider.publish.assert_not_awaited()
+    assert await db_session.get(LegacyPublicationAttempt, event.id) is None
+    starts = select(ActivityLog.id).where(ActivityLog.event_type == "PUBLICATION_STARTED")
+    assert await db_session.scalar(starts) is None

@@ -1,5 +1,6 @@
 import hashlib
 from datetime import UTC, datetime, timedelta
+from typing import Literal
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, or_, select
@@ -71,8 +72,8 @@ def utc_now() -> datetime:
 
 class PublicationService:
     def __init__(self, session: AsyncSession):
+        self._attempts = PublicationAttemptService(session)
         self.session = session
-        self.attempts = PublicationAttemptService(session)
 
     async def _plan_item(self, item: ContentItem) -> PublicationPlanItem | None:
         metadata = item.metadata_ or {}
@@ -1609,35 +1610,44 @@ class PublicationService:
             publication.status is PublicationStatus.PUBLISHING
             and publication.execution_token == token
         ):
-            await self.attempts.finish(publication_id, token, outcome)
+            await self._attempts.finish(publication_id, token, outcome)
             return publication
         # Recovery or a human decision superseded this execution during I/O.
         # Preserve a late external ID for reconciliation without changing the decision.
         if not isinstance(outcome, str):
+            evidence = {"publication_id": str(publication_id), "external_id": outcome.external_id}
+            if outcome.provider_target_id is not None:
+                evidence["provider_target_id"] = outcome.provider_target_id
             await ActivityLogService(self.session).record(
                 "PUBLICATION_LATE_PROVIDER_RECEIPT",
                 operation_key=self._claim_audit_key("late-receipt", publication_id, token),
                 campaign_id=publication.campaign_id,
                 content_item_id=publication.content_item_id,
-                metadata={
-                    "publication_id": str(publication_id),
-                    "external_id": outcome.external_id,
-                },
+                metadata=evidence,
             )
             await self.session.commit()
         return None
 
-    async def _reject_changed_target(
-        self, publication: Publication, token: str, target: str
-    ) -> bool:
-        if publication.provider_target_id is None or publication.provider_target_id == target:
-            return False
+    async def _begin_provider_attempt(
+        self, publication: Publication, token: str, target: str, *, injected_provider: bool
+    ) -> Literal[True] | PublicationResponse | None:
+        if (publication.provider_target_id or "") != target or (
+            not target.strip() and not injected_provider
+        ):
+            code = f"{publication.channel.value}_TARGET_MISMATCH"
+            message = "Цель публикации не соответствует разрешению на отправку."
+        else:
+            try:
+                return True if await self._attempts.start(publication, token) else None
+            except AppError as error:
+                code, message = error.code, error.message
+
         publication.status = PublicationStatus.FAILED
-        publication.failure_code = f"{publication.channel.value}_TARGET_MISMATCH"
-        publication.failure_message = "Цель публикации изменилась после выдачи разрешения."
+        publication.failure_code = code
+        publication.failure_message = message
         await ActivityLogService(self.session).record(
             "PUBLICATION_FAILED",
-            operation_key=self._claim_audit_key("target-mismatch", publication.id, token),
+            operation_key=self._claim_audit_key("blocked", publication.id, token),
             campaign_id=publication.campaign_id,
             content_item_id=publication.content_item_id,
             metadata={
@@ -1647,7 +1657,7 @@ class PublicationService:
         )
         await self.session.commit()
         await self.session.refresh(publication)
-        return True
+        return await self._response(publication)
 
     async def claim_for_publish(
         self, publication_id: UUID, user: User | None = None
@@ -1872,10 +1882,11 @@ class PublicationService:
             await self.session.refresh(publication)
             return await self._response(publication)
         target = str(settings.vk_owner_id or "")
-        if await self._reject_changed_target(publication, claim_token, target):
-            return await self._response(publication)
-        if not await self.attempts.start(publication, claim_token):
-            return None
+        admitted = await self._begin_provider_attempt(
+            publication, claim_token, target, injected_provider=provider is not None
+        )
+        if admitted is not True:
+            return admitted
         if diagnostic_retry:
             # Commit a durable one-use execution marker before contacting VK. Redelivery
             # after a crash or a concurrent task must never repeat the provider request.
@@ -2044,10 +2055,11 @@ class PublicationService:
             await self.session.refresh(publication)
             return await self._response(publication)
         target = settings.telegram_target_chat_id or ""
-        if await self._reject_changed_target(publication, claim_token, target):
-            return await self._response(publication)
-        if not await self.attempts.start(publication, claim_token):
-            return None
+        admitted = await self._begin_provider_attempt(
+            publication, claim_token, target, injected_provider=provider is not None
+        )
+        if admitted is not True:
+            return admitted
         await ActivityLogService(self.session).record(
             "PUBLICATION_STARTED",
             operation_key=start_key,
@@ -2168,7 +2180,7 @@ class PublicationService:
                 "Состояние доставки неоднозначно; требуется ручная проверка."
             )
             if publication.execution_token is not None:
-                await self.attempts.finish(
+                await self._attempts.finish(
                     publication.id, publication.execution_token, publication.failure_code
                 )
             publication.execution_token = None
@@ -2200,7 +2212,7 @@ class PublicationService:
         publication.failure_code = self._reconciliation_code(publication.channel)
         publication.failure_message = "Состояние доставки неоднозначно; требуется ручная проверка."
         if publication.execution_token is not None:
-            await self.attempts.finish(
+            await self._attempts.finish(
                 publication.id, publication.execution_token, publication.failure_code
             )
         publication.execution_token = None

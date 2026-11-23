@@ -7,12 +7,12 @@ import httpx
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.sql.selectable import ScalarSelect
+from sqlalchemy.sql import Select
 
+from app.core.errors import AppError
 from app.integrations.telegram import ProviderPublicationResult, PublicationProviderError
 from app.models.content import ContentChannel
 from app.models.publication import LegacyPublicationAttempt, Publication, PublicationClaimEvent
-
 
 # Only these adapter classifications establish rejection or a definite pre-send failure.
 _DEFINITE_ERRORS = {
@@ -68,25 +68,32 @@ class PublicationAttemptService:
         self.session = session
 
     @staticmethod
-    def _event_id(publication_id: UUID, token: str) -> ScalarSelect[UUID]:
-        return (
-            select(PublicationClaimEvent.id)
-            .where(
-                PublicationClaimEvent.publication_id == publication_id,
-                PublicationClaimEvent.claim_digest == hashlib.sha256(token.encode()).hexdigest(),
-            )
-            .scalar_subquery()
+    def _event(publication_id: UUID, token: str) -> Select[tuple[PublicationClaimEvent]]:
+        return select(PublicationClaimEvent).where(
+            PublicationClaimEvent.publication_id == publication_id,
+            PublicationClaimEvent.claim_digest == hashlib.sha256(token.encode()).hexdigest(),
         )
 
     async def start(self, publication: Publication, token: str) -> bool:
-        event_id = await self.session.scalar(select(self._event_id(publication.id, token)))
-        if event_id is None:
+        event: PublicationClaimEvent | None = await self.session.scalar(
+            self._event(publication.id, token).execution_options(populate_existing=True)
+        )
+        if event is None:
             # Pre-0031 claims keep their original execution/audit path.
             return True
+        if (
+            event.channel != publication.channel
+            or event.content_version_id != publication.content_version_id
+        ):
+            raise AppError(
+                "PUBLICATION_CLAIM_SNAPSHOT_MISMATCH",
+                "Версия или канал публикации не совпадает с разрешением на отправку.",
+                409,
+            )
         inserted = await self.session.scalar(
             insert(LegacyPublicationAttempt)
             .values(
-                claim_event_id=event_id,
+                claim_event_id=event.id,
                 claimed_target_id=publication.provider_target_id,
                 status="STARTED",
             )
@@ -98,10 +105,15 @@ class PublicationAttemptService:
     async def finish(
         self, publication_id: UUID, token: str, outcome: ProviderPublicationResult | str
     ) -> None:
+        event_id = (
+            self._event(publication_id, token)
+            .with_only_columns(PublicationClaimEvent.id)
+            .scalar_subquery()
+        )
         statement = (
             update(LegacyPublicationAttempt)
             .where(
-                LegacyPublicationAttempt.claim_event_id == self._event_id(publication_id, token),
+                LegacyPublicationAttempt.claim_event_id == event_id,
                 LegacyPublicationAttempt.status == "STARTED",
             )
             .execution_options(synchronize_session=False)

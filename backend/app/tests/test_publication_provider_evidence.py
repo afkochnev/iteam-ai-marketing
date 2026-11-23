@@ -123,6 +123,23 @@ async def test_telegram_requires_consistent_message_and_target(monkeypatch, payl
     assert caught.value.ambiguous and not caught.value.retryable
 
 
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"ok": True, "result": {"message_id": 18, "chat": {"id": -123}}},
+        {"ok": False, "error_code": 401},
+        {},
+    ],
+)
+async def test_telegram_conflicting_or_missing_refusal_is_ambiguous(monkeypatch, payload):
+    calls = _transport(monkeypatch, httpx.Response(429, json=payload))
+    with pytest.raises(PublicationProviderError) as caught:
+        await TelegramProvider(token="synthetic").publish(text="test post", chat_id="-123")
+    assert caught.value.code == "TELEGRAM_PROVIDER_ERROR"
+    assert caught.value.ambiguous and not caught.value.retryable
+    assert calls == ["POST"]
+
+
 async def test_telegram_definite_error_envelope_keeps_rate_limit_classification(monkeypatch):
     _transport(monkeypatch, httpx.Response(200, json={"ok": False, "error_code": 429}))
     with pytest.raises(PublicationProviderError) as caught:
