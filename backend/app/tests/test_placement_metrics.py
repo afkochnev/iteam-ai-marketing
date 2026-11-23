@@ -12,6 +12,7 @@ from app.core.database import async_session_factory
 from app.core.errors import AppError
 from app.integrations.metrics import ProviderMetricsResult, VKMetricsProvider
 from app.integrations.telegram import ProviderPublicationResult, VKProvider
+from app.models.activity import ActivityLog
 from app.models.content import ContentChannel
 from app.models.publication import Publication, PublicationStatus
 from app.models.publication_metrics import MetricsSource, PublicationMetricsSnapshot
@@ -124,7 +125,10 @@ async def test_unusable_receipt_leaves_placement_without_observations(
     assert report.external_placement_id is not None and not report.history
 
 
-async def test_foreign_publication_cannot_borrow_placement(published, db_session, monkeypatch):
+@pytest.mark.parametrize("external_id", ["314", "0314"])
+async def test_foreign_publication_cannot_borrow_placement(
+    published, db_session, monkeypatch, external_id
+):
     own = await db_session.get(Publication, published.id, populate_existing=True)
     other = Publication(
         campaign_id=own.campaign_id,
@@ -132,7 +136,7 @@ async def test_foreign_publication_cannot_borrow_placement(published, db_session
         content_version_id=own.content_version_id,
         channel=own.channel,
         status=PublicationStatus.PUBLISHED,
-        external_id=own.external_id,
+        external_id=external_id,
         provider_target_id=own.provider_target_id,
         published_at=own.published_at,
     )
@@ -141,11 +145,29 @@ async def test_foreign_publication_cannot_borrow_placement(published, db_session
     monkeypatch.setattr(
         httpx.AsyncClient, "post", AsyncMock(return_value=_response(views={"count": 0}))
     )
-    snapshot = await MetricsService(db_session).sync(other.id)
-    assert snapshot.external_placement_id is None
-    report = await publication_metrics(other.id, published.user, db_session)
-    assert report.external_placement_id is None
-    assert [row.id for row in report.history] == [snapshot.id]
+    other_id = other.id
+    service = MetricsService(db_session)
+    original_id = (await service.sync(published.id)).id
+    with pytest.raises(AppError) as error:
+        await service.sync(other_id)
+    assert error.value.code == "METRICS_PLACEMENT_CONFLICT"
+
+    # A rejected sync must release its transaction lock even when the caller keeps the session.
+    async with async_session_factory() as checker:
+        available = await checker.scalar(
+            select(Publication.id).where(Publication.id == other_id).with_for_update(nowait=True)
+        )
+        assert available == other_id
+    report = await publication_metrics(other_id, published.user, db_session)
+    assert report.external_placement_id is None and report.history == []
+    original = await publication_metrics(published.id, published.user, db_session)
+    assert [row.id for row in original.history] == [original_id]
+    synced = (
+        await db_session.scalars(
+            select(ActivityLog).where(ActivityLog.event_type == "PUBLICATION_METRICS_SYNCED")
+        )
+    ).all()
+    assert [event.metadata_["publication_id"] for event in synced] == [str(published.id)]
 
 
 async def test_publication_correction_during_remote_read_discards_sample(

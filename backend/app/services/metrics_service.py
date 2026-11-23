@@ -70,30 +70,52 @@ class MetricsService:
                 "METRICS_INVALID_VALUE", "Метрики должны быть целыми неотрицательными числами.", 422
             )
 
-    async def _placement_id(self, publication: Publication) -> UUID | None:
+    async def _placement_id(
+        self, publication: Publication, *, reject_conflict: bool = False
+    ) -> UUID | None:
         if (
             publication.status is not PublicationStatus.PUBLISHED
             or publication.provider_target_id is None
             or publication.external_id is None
         ):
             return None
-        return (
-            await self.session.scalars(
-                select(LegacyExternalPlacement.id)
+        # Legacy decimal IDs can contain leading zeroes. The adapters look them up as integers.
+        object_id = publication.external_id.lstrip("0")
+        match = (
+            await self.session.execute(
+                select(
+                    LegacyExternalPlacement.id,
+                    PublicationClaimEvent.publication_id,
+                    PublicationClaimEvent.channel,
+                    PublicationClaimEvent.content_version_id,
+                )
                 .join(
                     PublicationClaimEvent,
                     PublicationClaimEvent.id == LegacyExternalPlacement.claim_event_id,
                 )
                 .where(
-                    PublicationClaimEvent.publication_id == publication.id,
-                    PublicationClaimEvent.channel == publication.channel,
-                    PublicationClaimEvent.content_version_id == publication.content_version_id,
                     LegacyExternalPlacement.channel == publication.channel,
                     LegacyExternalPlacement.provider_target_id == publication.provider_target_id,
-                    LegacyExternalPlacement.external_id == publication.external_id,
+                    LegacyExternalPlacement.external_id == object_id,
                 )
             )
         ).one_or_none()
+        if match is None:
+            return None
+        placement_id, owner_id, channel, version_id = match._tuple()
+        if (owner_id, channel, version_id) == (
+            publication.id,
+            publication.channel,
+            publication.content_version_id,
+        ):
+            return placement_id if object_id == publication.external_id else None
+        if reject_conflict:
+            raise AppError(
+                "METRICS_PLACEMENT_CONFLICT",
+                "Внешнее размещение закреплено за другой публикацией или версией.",
+                409,
+            )
+        return None
 
     async def _latest(
         self,
@@ -292,14 +314,19 @@ class MetricsService:
             raise AppError(
                 "METRICS_PUBLICATION_CHANGED", "Публикация изменилась во время чтения метрик.", 409
             )
-        return await self._store(
-            locked,
-            placement_id=await self._placement_id(locked) if verified else None,
-            source=MetricsSource.PROVIDER,
-            observed_at=result.observed_at,
-            provider=result.provider,
-            values=values,
-        )
+        try:
+            placement_id = await self._placement_id(locked, reject_conflict=True)
+            return await self._store(
+                locked,
+                placement_id=placement_id if verified else None,
+                source=MetricsSource.PROVIDER,
+                observed_at=result.observed_at,
+                provider=result.provider,
+                values=values,
+            )
+        except AppError:
+            await self.session.rollback()
+            raise
 
     async def publication_metrics(self, publication_id: UUID) -> dict[str, Any]:
         publication = await self.session.get(Publication, publication_id, populate_existing=True)

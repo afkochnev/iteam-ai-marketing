@@ -260,7 +260,8 @@ async def test_placement_storage_failure_rolls_back_success_and_blocks_redeliver
     claim_event = await _claim_event(db_session, claim.id, claim.token)
 
     def fail_insert(conn, cursor, statement, params, context, many):
-        if context.isinsert and context.compiled.statement.table.name == "legacy_external_placements":
+        table = context.compiled.statement.table if context.isinsert else None
+        if table is not None and table.name == LegacyExternalPlacement.__tablename__:
             raise RuntimeError("injected placement write failure")
 
     provider = _provider()
