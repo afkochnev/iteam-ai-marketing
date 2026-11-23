@@ -69,6 +69,13 @@ class PublicationProvider(Protocol):
     async def publish(self, *, text: str, chat_id: str) -> ProviderPublicationResult: ...
 
 
+def _receipt_id(value: object, *, signed: bool = False) -> str:
+    lower = -(2**63) if signed else 1
+    if type(value) is not int or value == 0 or not lower <= value < 2**63:
+        raise ValueError("Invalid provider identifier")
+    return str(value)
+
+
 class TelegramProvider:
     def __init__(self, token: str | None = None) -> None:
         require_active_runtime()
@@ -90,43 +97,66 @@ class TelegramProvider:
             ) as client:
                 response = await client.post(url, json={"chat_id": chat_id, "text": text})
         except httpx.TimeoutException as exc:
+            before_send = isinstance(exc, httpx.ConnectTimeout | httpx.PoolTimeout)
             raise TelegramProviderError(
-                "TELEGRAM_PROVIDER_TIMEOUT", "Telegram request timed out.", ambiguous=True
-            ) from exc
-        except httpx.NetworkError as exc:
-            raise TelegramProviderError(
-                "TELEGRAM_PROVIDER_ERROR",
-                "Telegram request failed before delivery confirmation.",
-                retryable=True,
+                "TELEGRAM_PROVIDER_TIMEOUT",
+                "Telegram request timed out.",
+                retryable=before_send,
+                ambiguous=not before_send,
             ) from exc
         except httpx.HTTPError as exc:
+            before_send = isinstance(exc, httpx.ConnectError)
             raise TelegramProviderError(
-                "TELEGRAM_PROVIDER_ERROR", "Telegram request failed."
+                "TELEGRAM_PROVIDER_ERROR",
+                "Telegram request failed.",
+                retryable=before_send,
+                ambiguous=not before_send,
             ) from exc
-        if response.status_code == 401:
+        code = response.status_code
+        if 200 <= code < 300 or 400 <= code < 500:
+            try:
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("Invalid Telegram response")
+                if code < 300 and payload.get("ok") is True and "error_code" not in payload:
+                    result = payload["result"]
+                    message_id = _receipt_id(result["message_id"])
+                    target_id = _receipt_id(result["chat"]["id"], signed=True)
+                    if chat_id.lstrip("-").isdecimal() and int(chat_id) != int(target_id):
+                        raise ValueError("Mismatched Telegram receipt target")
+                    return ProviderPublicationResult(
+                        external_id=message_id,
+                        external_url=None,
+                        published_at=datetime.now(UTC),
+                        provider_target_id=target_id,
+                    )
+                error_code = payload.get("error_code", code)
+                if (
+                    payload.get("ok") is not False
+                    or "result" in payload
+                    or type(error_code) is not int
+                    or (code >= 400 and code != error_code)
+                ):
+                    raise ValueError("Invalid Telegram refusal")
+                code = error_code
+            except (ValueError, KeyError, TypeError) as exc:
+                raise TelegramProviderError(
+                    "TELEGRAM_PROVIDER_ERROR",
+                    "Telegram returned an invalid response.",
+                    ambiguous=True,
+                ) from exc
+        if code == 401:
             raise TelegramProviderError("TELEGRAM_AUTH_ERROR", "Telegram authentication failed.")
-        if response.status_code in {403}:
+        if code == 403:
             raise TelegramProviderError("TELEGRAM_PERMISSION_ERROR", "Telegram access was denied.")
-        if response.status_code == 429:
+        if code == 429:
             raise TelegramProviderError(
                 "TELEGRAM_RATE_LIMIT", "Telegram rate limit reached.", retryable=True
             )
-        if response.status_code >= 400:
+        if code in {400, 404, 413, 422}:
             raise TelegramProviderError("TELEGRAM_BAD_REQUEST", "Telegram rejected the message.")
-        try:
-            payload: dict[str, Any] = response.json()
-            result = payload["result"]
-            message_id = str(result["message_id"])
-            target_id = str(result["chat"]["id"])
-        except (ValueError, KeyError, TypeError) as exc:
-            raise TelegramProviderError(
-                "TELEGRAM_PROVIDER_ERROR", "Telegram returned an invalid response."
-            ) from exc
-        return ProviderPublicationResult(
-            external_id=message_id,
-            external_url=None,
-            published_at=datetime.now(UTC),
-            provider_target_id=target_id,
+        raise TelegramProviderError(
+            "TELEGRAM_PROVIDER_ERROR", "Telegram did not confirm delivery.", ambiguous=True
         )
 
 
@@ -141,12 +171,14 @@ class VKProvider:
         single_attempt: bool = False,
     ) -> None:
         require_active_runtime()
-        if settings.vk_owner_id is None:
+        owner_id = settings.vk_owner_id
+        if owner_id is None:
             raise VKProviderError("VK_AUTH_ERROR", "VK publishing is not configured.")
-        if settings.vk_owner_id >= 0:
+        if owner_id >= 0:
             raise VKProviderError(
                 "VK_TARGET_INVALID", "VK publishing target must be a community wall."
             )
+        self._owner_id = owner_id
         explicit_token = (token or "").strip() or None
         configured_token = (settings.vk_access_token or "").strip() or None
         if settings.app_env.lower() in {"production", "prod"} and (
@@ -165,7 +197,7 @@ class VKProvider:
                 settings.vk_credentials_file,
                 client_id=settings.vk_client_id,
                 expected_user_id=settings.vk_expected_user_id,
-                owner_id=settings.vk_owner_id,
+                owner_id=self._owner_id,
                 api_version=settings.vk_api_version,
                 request_timeout_seconds=settings.vk_request_timeout_seconds,
                 refresh_leeway_seconds=settings.vk_token_refresh_leeway_seconds,
@@ -200,7 +232,7 @@ class VKProvider:
                     "https://api.vk.com/method/wall.post",
                     # Credentials remain in form data, never in URLs or logs.
                     data={
-                        "owner_id": settings.vk_owner_id,
+                        "owner_id": self._owner_id,
                         "from_group": 1,
                         "access_token": access_token,
                         "v": settings.vk_api_version,
@@ -208,19 +240,34 @@ class VKProvider:
                     },
                 )
         except httpx.TimeoutException as exc:
+            before_send = isinstance(exc, httpx.ConnectTimeout | httpx.PoolTimeout)
             raise VKProviderError(
-                "VK_PROVIDER_TIMEOUT", "VK request timed out.", ambiguous=True
-            ) from exc
-        except httpx.NetworkError as exc:
-            raise VKProviderError(
-                "VK_PROVIDER_ERROR",
-                "VK request failed before delivery confirmation.",
-                retryable=True,
+                "VK_PROVIDER_TIMEOUT",
+                "VK request timed out.",
+                retryable=before_send,
+                ambiguous=not before_send,
             ) from exc
         except httpx.HTTPError as exc:
-            raise VKProviderError("VK_PROVIDER_ERROR", "VK request failed.") from exc
+            before_send = isinstance(exc, httpx.ConnectError)
+            raise VKProviderError(
+                "VK_PROVIDER_ERROR",
+                "VK request failed.",
+                retryable=before_send,
+                ambiguous=not before_send,
+            ) from exc
+        status = response.status_code
+        if not (200 <= status < 300 or 400 <= status < 500) or status == 408:
+            raise VKProviderError(
+                "VK_PROVIDER_ERROR", "VK did not confirm delivery.", ambiguous=True
+            )
         try:
             payload: dict[str, Any] = response.json()
+            if (
+                not isinstance(payload, dict)
+                or ("response" in payload and "error" in payload)
+                or (status >= 400 and not isinstance(payload.get("error"), dict))
+            ):
+                raise ValueError("Invalid VK response")
         except (ValueError, TypeError) as exc:
             raise VKProviderError(
                 "VK_PROVIDER_ERROR", "VK returned an invalid response.", ambiguous=True
@@ -246,6 +293,7 @@ class VKProvider:
             label,
             message,
             retryable=retryable,
+            ambiguous=code not in {5, 27, 7, 15, 6, 9, 100},
             error_code=VKProviderError._numeric_code(raw_error.get("error_code")),
             error_subcode=subcode,
         )
@@ -253,7 +301,7 @@ class VKProvider:
     async def publish(self, *, text: str, chat_id: str) -> ProviderPublicationResult:
         # Target validation is deliberately before credential access or any network call.
         require_active_runtime()
-        if chat_id != str(settings.vk_owner_id):
+        if chat_id != str(self._owner_id) or settings.vk_owner_id != self._owner_id:
             raise VKProviderError(
                 "VK_TARGET_MISMATCH", "VK publishing target does not match configured owner."
             )
@@ -276,14 +324,14 @@ class VKProvider:
         if error is not None:
             raise error[1]
         try:
-            post_id = str(payload["response"]["post_id"])
-        except (KeyError, TypeError) as exc:
+            post_id = _receipt_id(payload["response"]["post_id"])
+        except (KeyError, TypeError, ValueError) as exc:
             raise VKProviderError(
                 "VK_PROVIDER_ERROR", "VK returned an invalid response.", ambiguous=True
             ) from exc
         return ProviderPublicationResult(
             external_id=post_id,
-            external_url=f"https://vk.com/wall{settings.vk_owner_id}_{post_id}",
+            external_url=f"https://vk.com/wall{self._owner_id}_{post_id}",
             published_at=datetime.now(UTC),
-            provider_target_id=str(settings.vk_owner_id),
+            provider_target_id=str(self._owner_id),
         )

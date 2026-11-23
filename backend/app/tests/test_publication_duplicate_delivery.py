@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -6,7 +7,7 @@ from unittest.mock import Mock
 from uuid import UUID
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.publications import retry_publication
@@ -20,13 +21,19 @@ from app.integrations.telegram import (
     VKProviderError,
 )
 from app.models.activity import ActivityLog
-from app.models.content import ContentChannel
-from app.models.publication import Publication, PublicationStatus
+from app.models.content import ContentChannel, ContentVersion
+from app.models.publication import (
+    LegacyPublicationAttempt,
+    Publication,
+    PublicationClaimEvent,
+    PublicationStatus,
+)
 from app.models.user import User
 from app.schemas.publication import PublicationCreate
 from app.services.activity_log_service import ActivityLogService
 from app.services.publication_service import PublicationService
 from app.tests.test_publications import _approved_post
+from app.tests.test_vk_canary_retry import failed_canary
 from app.workers.telegram_worker import publish_telegram_publication
 from app.workers.vk_worker import publish_vk_publication
 
@@ -50,8 +57,18 @@ class _Claim:
 
 
 @pytest.fixture(params=[ContentChannel.TELEGRAM, ContentChannel.VK])
-async def claim(db_session: AsyncSession, monkeypatch, request) -> _Claim:
-    channel = request.param
+def channel(request) -> ContentChannel:
+    return request.param
+
+
+@pytest.fixture
+async def claim(db_session, monkeypatch, channel) -> _Claim:
+    monkeypatch.setattr(settings, "telegram_target_chat_id", "@attempt_test")
+    monkeypatch.setattr(settings, "vk_owner_id", -987)
+    return await _issue_claim(db_session, monkeypatch, channel)
+
+
+async def _issue_claim(db_session: AsyncSession, monkeypatch, channel: ContentChannel) -> _Claim:
     monkeypatch.setattr(settings, f"{channel.value.lower()}_publishing_enabled", True)
     user, _campaign, post, version = await _approved_post(db_session)
     post.channel = channel
@@ -68,16 +85,31 @@ async def claim(db_session: AsyncSession, monkeypatch, request) -> _Claim:
     return _Claim(row.id, channel, row.execution_token, user)
 
 
-def _provider():
+async def _claim_event(session: AsyncSession, publication_id: UUID, token: str):
+    return (
+        await session.scalars(
+            select(PublicationClaimEvent).where(
+                PublicationClaimEvent.publication_id == publication_id,
+                PublicationClaimEvent.claim_digest == hashlib.sha256(token.encode()).hexdigest(),
+            )
+        )
+    ).one()
+
+
+def _provider(target_id: str | None = "-987"):
     provider = Mock(spec=PublicationProvider)
-    provider.publish.return_value = ProviderPublicationResult("314", None, datetime.now(UTC))
+    provider.publish.return_value = ProviderPublicationResult(
+        "314", None, datetime.now(UTC), target_id
+    )
     return provider
 
 
 @asynccontextmanager
-async def _in_flight(claim: _Claim, error: Exception | None = None):
+async def _in_flight(
+    claim: _Claim, error: Exception | None = None, *, target_id: str | None = "-987"
+):
     entered, release = asyncio.Event(), asyncio.Event()
-    provider = _provider()
+    provider = _provider(target_id)
 
     async def send(*, text, chat_id):
         entered.set()
@@ -102,13 +134,30 @@ async def _recover(session: AsyncSession):
 
 
 async def test_duplicate_valid_token_during_provider_call(claim: _Claim, db_session: AsyncSession):
+    event = await _claim_event(db_session, claim.id, claim.token)
+    assert await db_session.get(LegacyPublicationAttempt, event.id) is None
     duplicate = _provider()
     async with _in_flight(claim) as (first, release):
+        attempt = await db_session.get(LegacyPublicationAttempt, event.id)
+        assert attempt is not None and attempt.status == "STARTED"
+        started_at = attempt.started_at
+        assert started_at is not None and attempt.finished_at is None
+        assert attempt.claimed_target_id == (
+            "@attempt_test" if claim.channel is ContentChannel.TELEGRAM else "-987"
+        )
+        assert attempt.external_id is None and attempt.provider_target_id is None
+        assert attempt.failure_code is None
         assert await asyncio.wait_for(claim.deliver(duplicate), timeout=10) is None
         duplicate.publish.assert_not_awaited()
         release.set()
         result = await first
     assert result is not None and result.status is PublicationStatus.PUBLISHED
+    assert await claim.deliver(duplicate) is None
+    duplicate.publish.assert_not_awaited()
+    await db_session.refresh(attempt)
+    assert attempt.status == "SUCCEEDED" and attempt.external_id == "314"
+    assert attempt.provider_target_id == "-987" and attempt.failure_code is None
+    assert attempt.started_at == started_at and attempt.finished_at >= started_at
     row = await db_session.get(Publication, claim.id, populate_existing=True)
     assert row is not None and row.external_id == "314"
     events = await db_session.scalars(
@@ -132,7 +181,14 @@ async def test_interrupted_worker_does_not_send_again_after_restart(
     replay = _provider()
     assert await claim.deliver(replay) is None
     replay.publish.assert_not_awaited()
+    event = await _claim_event(db_session, claim.id, claim.token)
+    attempt = await db_session.get(LegacyPublicationAttempt, event.id)
+    assert attempt is not None and attempt.status == "STARTED"
     await _recover(db_session)
+    await db_session.refresh(attempt)
+    assert attempt.status == "UNKNOWN"
+    assert attempt.failure_code == f"{claim.channel.value}_RECONCILIATION_REQUIRED"
+    assert attempt.finished_at is not None and attempt.external_id is None
     row = await db_session.get(Publication, claim.id, populate_existing=True)
     assert row is not None and row.status is PublicationStatus.FAILED
     assert row.failure_code == f"{claim.channel.value}_RECONCILIATION_REQUIRED"
@@ -176,7 +232,11 @@ async def test_late_provider_result_preserves_recovered_claim(
     if outcome == "success":
         (receipt,) = events
         assert receipt.event_type == "PUBLICATION_LATE_PROVIDER_RECEIPT"
-        assert receipt.metadata_ == {"publication_id": str(row.id), "external_id": "314"}
+        assert receipt.metadata_ == {
+            "publication_id": str(row.id),
+            "external_id": "314",
+            "provider_target_id": "-987",
+        }
     else:
         assert not events
 
@@ -203,22 +263,42 @@ async def _authorize_retry(claim: _Claim, monkeypatch: pytest.MonkeyPatch) -> st
 async def test_late_success_cannot_finish_a_new_publishing_claim(
     claim: _Claim, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ):
-    async with _in_flight(claim) as (old_worker, release):
+    async with _in_flight(claim, target_id=None) as (old_worker, release):
         retry_token = await _authorize_retry(claim, monkeypatch)
         release.set()
         assert await old_worker is None
     row = await db_session.get(Publication, claim.id, populate_existing=True)
     assert row is not None and row.status is PublicationStatus.PUBLISHING
     assert row.execution_token == retry_token and row.external_id is None
+    old_event = await _claim_event(db_session, claim.id, claim.token)
+    new_event = await _claim_event(db_session, claim.id, retry_token)
+    assert new_event.id != old_event.id
+    old_attempt = await db_session.get(LegacyPublicationAttempt, old_event.id)
+    assert old_attempt is not None and old_attempt.status == "UNKNOWN"
+    assert old_attempt.external_id is None and old_attempt.provider_target_id is None
+    assert await db_session.get(LegacyPublicationAttempt, new_event.id) is None
     receipts = await _receipt_events(db_session, row)
     (receipt,) = receipts
     assert receipt.event_type == "PUBLICATION_LATE_PROVIDER_RECEIPT"
     assert receipt.metadata_ == {"publication_id": str(row.id), "external_id": "314"}
+    retried = _provider()
+    retried.publish.return_value = ProviderPublicationResult("315", None, datetime.now(UTC))
+    await claim.deliver(retried, token=retry_token)
+    retried.publish.assert_awaited_once()
+    new_attempt = await db_session.get(LegacyPublicationAttempt, new_event.id)
+    assert new_attempt is not None and new_attempt.status == "SUCCEEDED"
+    assert new_attempt.external_id == "315" and new_attempt.provider_target_id is None
+    await db_session.refresh(old_attempt)
+    assert old_attempt.status == "UNKNOWN" and old_attempt.external_id is None
 
 
 async def _legacy_queue(claim: _Claim, db_session: AsyncSession) -> Publication:
     row = await db_session.get(Publication, claim.id)
     assert row is not None
+    # Older claims also predate the per-token claim event.
+    await db_session.execute(
+        delete(PublicationClaimEvent).where(PublicationClaimEvent.publication_id == row.id)
+    )
     # The pre-upgrade queue key is per publication and has no token-specific metadata.
     await db_session.execute(
         update(ActivityLog)
@@ -249,6 +329,8 @@ async def test_legacy_queue_without_start_can_deliver_once(claim: _Claim, db_ses
     assert result is not None and result.status is PublicationStatus.PUBLISHED
     assert await claim.deliver(provider) is None
     provider.publish.assert_awaited_once()
+    assert await db_session.scalar(select(PublicationClaimEvent.id)) is None
+    assert await db_session.scalar(select(LegacyPublicationAttempt.claim_event_id)) is None
 
 
 async def test_legacy_start_requires_reconciliation_before_new_authorized_send(
@@ -305,3 +387,165 @@ async def test_stale_approved_row_cannot_issue_second_claim(
     await db_session.rollback()
     persisted = await db_session.get(Publication, publication.id, populate_existing=True)
     assert persisted is not None and persisted.execution_token == winning_token
+
+
+@pytest.mark.parametrize("outcome", ["refused", "timeout", "network", "untrusted_code"])
+async def test_attempt_classifies_provider_outcomes(
+    claim: _Claim, db_session: AsyncSession, outcome
+):
+    channel = claim.channel.value
+    errors = VKProviderError if claim.channel is ContentChannel.VK else TelegramProviderError
+    code = f"{channel}_PERMISSION_ERROR"
+    if outcome == "timeout":
+        code = f"{channel}_PROVIDER_TIMEOUT"
+    elif outcome == "network":
+        code = f"{channel}_PROVIDER_ERROR"
+    elif outcome == "untrusted_code":
+        code = "unsanitized provider details"
+    provider = _provider()
+    provider.publish.side_effect = errors(
+        code, "private provider text", ambiguous=outcome == "timeout"
+    )
+    await claim.deliver(provider)
+    provider.publish.assert_awaited_once()
+
+    event = await _claim_event(db_session, claim.id, claim.token)
+    attempt = await db_session.get(LegacyPublicationAttempt, event.id)
+    assert attempt is not None and attempt.finished_at >= attempt.started_at
+    assert attempt.external_id is None and attempt.provider_target_id is None
+    if outcome == "refused":
+        assert (attempt.status, attempt.failure_code) == ("FAILED", code)
+    else:
+        assert attempt.status == "UNKNOWN"
+        assert attempt.failure_code == f"{channel}_RECONCILIATION_REQUIRED"
+
+
+@pytest.mark.parametrize("target_configured", [True, False])
+async def test_target_change_blocks_delivery_before_provider_entry(
+    db_session: AsyncSession, channel: ContentChannel, monkeypatch, target_configured: bool
+):
+    monkeypatch.setattr(
+        settings, "telegram_target_chat_id", "@original" if target_configured else None
+    )
+    monkeypatch.setattr(settings, "vk_owner_id", -987 if target_configured else None)
+    claim = await _issue_claim(db_session, monkeypatch, channel)
+    if channel is ContentChannel.TELEGRAM:
+        monkeypatch.setattr(settings, "telegram_target_chat_id", "@different_test_chat")
+    else:
+        monkeypatch.setattr(settings, "vk_owner_id", -988)
+    provider = _provider()
+    result = await claim.deliver(provider)
+    assert result is not None and result.failure_code == f"{claim.channel.value}_TARGET_MISMATCH"
+    provider.publish.assert_not_awaited()
+    event = await _claim_event(db_session, claim.id, claim.token)
+    assert await db_session.get(LegacyPublicationAttempt, event.id) is None
+
+
+async def test_recovery_before_execution_does_not_create_an_attempt(
+    claim: _Claim, db_session: AsyncSession
+):
+    event = await _claim_event(db_session, claim.id, claim.token)
+    await _recover(db_session)
+    provider = _provider()
+    assert await claim.deliver(provider) is None
+    provider.publish.assert_not_awaited()
+    assert await db_session.get(LegacyPublicationAttempt, event.id) is None
+
+
+async def test_explicit_vk_canary_retry_links_a_new_attempt(db_session, monkeypatch):
+    user, service, row, _, _, old_token = await failed_canary(db_session, monkeypatch)
+    original = await _claim_event(db_session, row.id, old_token)
+    first = await db_session.get(LegacyPublicationAttempt, original.id)
+    assert first is not None and first.status == "FAILED"
+    assert first.failure_code == "VK_PERMISSION_ERROR"
+
+    await service.claim_canary_retry(row.id, user)
+    retry = await _claim_event(db_session, row.id, row.execution_token)
+    assert retry.id != original.id
+    assert await db_session.get(LegacyPublicationAttempt, retry.id) is None
+    provider = _provider()
+    provider.publish.return_value = ProviderPublicationResult(
+        "952", None, datetime.now(UTC), "-150574411"
+    )
+    await service.execute_vk(row.id, provider, execution_token=row.execution_token)
+    provider.publish.assert_awaited_once()
+    second = await db_session.get(LegacyPublicationAttempt, retry.id)
+    assert second is not None and second.status == "SUCCEEDED"
+    assert second.external_id == "952" and second.provider_target_id == "-150574411"
+    await db_session.refresh(first)
+    assert first.status == "FAILED" and first.external_id is None
+
+
+@pytest.mark.parametrize("interrupted_state", ["STARTED", "SUCCEEDED"])
+async def test_interrupted_commit_preserves_only_previously_committed_attempt_state(
+    claim: _Claim, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, interrupted_state: str
+):
+    event = await _claim_event(db_session, claim.id, claim.token)
+    provider = _provider()
+    async with async_session_factory() as worker:
+        commit = worker.commit
+
+        async def interrupt():
+            await worker.flush()
+            staged = await worker.get(LegacyPublicationAttempt, event.id, populate_existing=True)
+            if staged is not None and staged.status == interrupted_state:
+                raise RuntimeError("test interruption before commit")
+            await commit()
+
+        with monkeypatch.context() as fault:
+            fault.setattr(worker, "commit", interrupt)
+            service = PublicationService(worker)
+            execute = service.execute_telegram
+            if claim.channel is ContentChannel.VK:
+                execute = service.execute_vk
+            with pytest.raises(RuntimeError, match="test interruption before commit"):
+                await execute(claim.id, provider, execution_token=claim.token)
+        await worker.rollback()
+
+    row = await db_session.get(Publication, claim.id, populate_existing=True)
+    assert row is not None and row.status is PublicationStatus.PUBLISHING
+    assert row.external_id is None
+    attempt = await db_session.get(LegacyPublicationAttempt, event.id, populate_existing=True)
+    if interrupted_state == "STARTED":
+        provider.publish.assert_not_awaited()
+        assert attempt is None
+    else:
+        provider.publish.assert_awaited_once()
+        assert attempt is not None and attempt.status == "STARTED" and attempt.external_id is None
+        window = timedelta(seconds=settings.publication_publishing_stale_seconds + 1)
+        stale = datetime.now(UTC) - window
+        await db_session.execute(
+            update(Publication).where(Publication.id == claim.id).values(updated_at=stale)
+        )
+        await db_session.commit()
+        await PublicationService(db_session).recover_one_stuck(claim.id)
+        await db_session.refresh(attempt)
+        assert attempt.status == "UNKNOWN" and attempt.external_id is None
+
+
+@pytest.mark.parametrize("field", ["channel", "version"])
+async def test_claim_snapshot_mismatch_blocks_provider_entry(claim: _Claim, db_session, field):
+    event = await _claim_event(db_session, claim.id, claim.token)
+    if field == "channel":
+        event.channel = (
+            ContentChannel.VK
+            if claim.channel is ContentChannel.TELEGRAM
+            else ContentChannel.TELEGRAM
+        )
+    else:
+        other = await db_session.scalar(
+            select(ContentVersion.id).where(ContentVersion.id != event.content_version_id).limit(1)
+        )
+        assert other is not None
+        event.content_version_id = other
+    await db_session.commit()
+
+    provider = _provider()
+    result = await claim.deliver(provider)
+    assert result is not None and result.status is PublicationStatus.FAILED
+    assert result.failure_code == "PUBLICATION_CLAIM_SNAPSHOT_MISMATCH"
+    assert await claim.deliver(provider) is None
+    provider.publish.assert_not_awaited()
+    assert await db_session.get(LegacyPublicationAttempt, event.id) is None
+    starts = select(ActivityLog.id).where(ActivityLog.event_type == "PUBLICATION_STARTED")
+    assert await db_session.scalar(starts) is None
