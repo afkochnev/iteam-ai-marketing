@@ -38,6 +38,15 @@ METRIC_FIELDS = (
 )
 
 
+def _metrics_target(publication: Publication) -> str | None:
+    target = publication.provider_target_id
+    if publication.channel is ContentChannel.TELEGRAM and target is not None:
+        digits = target.removeprefix("-")
+        if digits.isascii() and digits.isdecimal():
+            return str(int(target))
+    return target
+
+
 class MetricsService:
     def __init__(self, session: AsyncSession):
         self.session = session
@@ -95,7 +104,7 @@ class MetricsService:
                 )
                 .where(
                     LegacyExternalPlacement.channel == publication.channel,
-                    LegacyExternalPlacement.provider_target_id == publication.provider_target_id,
+                    LegacyExternalPlacement.provider_target_id == _metrics_target(publication),
                     LegacyExternalPlacement.external_id == object_id,
                 )
             )
@@ -247,7 +256,7 @@ class MetricsService:
                     "Публикация не привязана к точной внешней площадке.",
                     409,
                 )
-            if publication.provider_target_id != expected_target:
+            if _metrics_target(publication) != expected_target:
                 raise AppError(
                     "METRICS_PROVIDER_TARGET_MISMATCH",
                     "Публикация относится к другой внешней площадке.",
@@ -276,6 +285,7 @@ class MetricsService:
         channel = publication.channel
         version_id = publication.content_version_id
         target_id = publication.provider_target_id
+        receipt_target_id = _metrics_target(publication)
         external_id = publication.external_id or ""
         try:
             result = await provider.get_metrics(external_id=external_id)
@@ -283,7 +293,7 @@ class MetricsService:
             if verified and (
                 result.provider != provider_name
                 or result.provider_target_id is None
-                or result.provider_target_id != target_id
+                or result.provider_target_id != receipt_target_id
                 or result.external_id != external_id
             ):
                 raise MetricsProviderError(

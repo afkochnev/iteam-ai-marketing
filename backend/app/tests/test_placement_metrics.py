@@ -1,15 +1,18 @@
 import asyncio
 from datetime import UTC, datetime
+from types import SimpleNamespace as NS
 from unittest.mock import AsyncMock
 
 import httpx
 import pytest
 from sqlalchemy import func, select, update
+from telethon.tl.types import PeerChannel
 
 from app.api.publications import publication_metrics
 from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.errors import AppError
+from app.integrations import metrics
 from app.integrations.metrics import ProviderMetricsResult, VKMetricsProvider
 from app.models.activity import ActivityLog
 from app.models.content import ContentChannel
@@ -17,7 +20,7 @@ from app.models.publication import Publication, PublicationStatus
 from app.models.publication_metrics import MetricsSource, PublicationMetricsSnapshot
 from app.services.metrics_service import MetricsService
 from app.tests.test_publication_duplicate_delivery import _issue_claim
-from app.workers import vk_worker
+from app.workers import telegram_worker, vk_worker
 
 pytestmark = pytest.mark.integration
 
@@ -42,6 +45,62 @@ async def published(db_session, monkeypatch):
     monkeypatch.setattr(settings, "vk_metrics_owner_id", -987)
     monkeypatch.setattr(settings, "vk_metrics_access_token", "fixture-read-token")
     return claim
+
+
+async def test_telegram_bot_receipt_then_first_mtproto_observation(db_session, monkeypatch):
+    target = "@placement_test"
+    chat_id = -1001321892281
+    with monkeypatch.context() as worker:
+        worker.setattr(settings, "telegram_target_chat_id", target)
+        claim = await _issue_claim(db_session, worker, ContentChannel.TELEGRAM)
+        worker.setattr(settings, "worker_role", "publication")
+        worker.setattr(settings, "telegram_bot_token", "fixture-send-token")
+        receipt = {"ok": True, "result": {"message_id": 314, "chat": {"id": chat_id}}}
+        send = AsyncMock(return_value=httpx.Response(200, json=receipt))
+        worker.setattr(httpx.AsyncClient, "post", send)
+        await telegram_worker._run_in_worker_loop(claim.id, claim.token)
+        send.assert_awaited_once()
+        assert send.await_args.kwargs["json"]["chat_id"] == target
+
+    published = await db_session.get(Publication, claim.id, populate_existing=True)
+    assert published is not None and published.status is PublicationStatus.PUBLISHED
+    assert (published.provider_target_id, published.external_id) == (str(chat_id), "314")
+    empty = await publication_metrics(claim.id, claim.user, db_session)
+    assert empty.external_placement_id is not None and empty.history == []
+
+    monkeypatch.setattr(settings, "worker_role", "metrics")
+    monkeypatch.setattr(settings, "telegram_metrics_enabled", True)
+    monkeypatch.setattr(settings, "telegram_metrics_peer", target)
+    monkeypatch.setattr(settings, "telegram_metrics_chat_id", chat_id)
+    monkeypatch.setattr(settings, "telegram_metrics_session", "")
+    peer = PeerChannel(1321892281)
+    client = AsyncMock(return_value=NS(views=[NS(views=0)]))
+    client.is_user_authorized.return_value = True
+    client.get_me.return_value = NS(bot=False)
+    client.get_entity.return_value = peer
+    client.get_messages.return_value = NS(id=314, peer_id=peer)
+    monkeypatch.setattr(metrics, "TelegramClient", lambda *args, **kwargs: client)
+
+    sample = await MetricsService(db_session).sync(claim.id)
+    assert sample.provider == "telegram_mtproto"
+    assert sample.external_placement_id == empty.external_placement_id
+    assert sample.views == 0 and sample.reactions is None
+    client.get_messages.assert_awaited_once_with(peer, ids=314)
+    client.assert_awaited_once()
+    request = client.await_args.args[0]
+    assert request.peer == peer and request.id == [314] and request.increment is False
+
+    client.get_entity.return_value = PeerChannel(1321892282)
+    client.get_messages.return_value = NS(id=314, peer_id=client.get_entity.return_value)
+    with pytest.raises(AppError) as error:
+        await MetricsService(db_session).sync(claim.id)
+    assert error.value.code == "TELEGRAM_METRICS_PEER_MISMATCH"
+    client.get_messages.assert_awaited_once_with(peer, ids=314)
+    client.assert_awaited_once()
+    report = await publication_metrics(claim.id, claim.user, db_session)
+    assert report.latest is not None and report.history == [report.latest]
+    assert report.latest.id == sample.id
+    assert report.latest.external_placement_id == empty.external_placement_id
 
 
 def _response(**fields):

@@ -218,3 +218,84 @@ async def test_telegram_provider_values_persist_without_fabricated_metrics(db_se
             "subscribers",
         ]
     )
+
+
+@pytest.mark.integration
+async def test_padded_telegram_target_queues_only_the_configured_chat(
+    db_session,
+    monkeypatch,
+    telegram,  # noqa: F811
+):
+    from app.tests.test_metrics import _published_publication
+
+    publication, _user = await _published_publication(db_session)
+    publication.provider_target_id = "-0001001321892281"
+    wrong_rows = []
+    for wrong_target in ("0001001321892281", "-0001001321892282", "@iteam2022", None):
+        row = Publication(
+            campaign_id=publication.campaign_id,
+            content_item_id=publication.content_item_id,
+            content_version_id=publication.content_version_id,
+            channel=publication.channel,
+            status=PublicationStatus.PUBLISHED,
+            external_id=publication.external_id,
+            provider_target_id=wrong_target,
+            published_at=publication.published_at,
+        )
+        db_session.add(row)
+        wrong_rows.append(row)
+    await db_session.commit()
+
+    enqueue = Mock()
+    monkeypatch.setattr(metrics_worker.sync_publication_metrics, "apply_async", enqueue)
+    await metrics_worker._sync_recent()
+    enqueue.assert_called_once_with(args=[str(publication.id)], queue="metrics")
+    for row in wrong_rows:
+        with pytest.raises(AppError) as rejected:
+            await MetricsService(db_session).sync(row.id)
+        assert rejected.value.code == (
+            "METRICS_PROVIDER_TARGET_UNBOUND"
+            if row.provider_target_id is None
+            else "METRICS_PROVIDER_TARGET_MISMATCH"
+        )
+
+    snapshot = await MetricsService(db_session).sync(publication.id)
+    assert snapshot.views == 12 and snapshot.provider == "telegram_mtproto"
+    assert snapshot.external_placement_id is None
+    await db_session.refresh(publication)
+    assert publication.provider_target_id == "-0001001321892281"
+
+
+@pytest.mark.integration
+async def test_padded_telegram_chat_cannot_borrow_another_placement(
+    db_session,
+    monkeypatch,
+    telegram,  # noqa: F811
+):
+    from app.tests.test_publication_duplicate_delivery import _issue_claim, _provider
+
+    target_id = "-1001321892281"
+    with monkeypatch.context() as publishing:
+        publishing.setattr(settings, "telegram_target_chat_id", target_id)
+        claim = await _issue_claim(db_session, publishing, ContentChannel.TELEGRAM)
+        await claim.deliver(_provider(target_id))
+    owner = await db_session.get(Publication, claim.id, populate_existing=True)
+    other = Publication(
+        campaign_id=owner.campaign_id,
+        content_item_id=owner.content_item_id,
+        content_version_id=owner.content_version_id,
+        channel=owner.channel,
+        status=PublicationStatus.PUBLISHED,
+        external_id=owner.external_id,
+        provider_target_id="-0001001321892281",
+        published_at=owner.published_at,
+    )
+    db_session.add(other)
+    await db_session.commit()
+    other_id = other.id
+    client, _request = telegram
+    client.get_messages.return_value.id = int(owner.external_id)
+    with pytest.raises(AppError) as conflict:
+        await MetricsService(db_session).sync(other_id)
+    assert conflict.value.code == "METRICS_PLACEMENT_CONFLICT"
+    assert await db_session.scalar(select(PublicationMetricsSnapshot.id)) is None

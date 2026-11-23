@@ -47,10 +47,12 @@ async def _sync_recent() -> None:
             cutoff = datetime.now(UTC) - timedelta(days=settings.metrics_lookback_days)
             target_conditions = []
             if settings.telegram_metrics_enabled and settings.telegram_metrics_chat_id is not None:
+                chat_id = settings.telegram_metrics_chat_id
+                sign = "-" if chat_id < 0 else ""
                 target_conditions.append(
                     and_(
                         Publication.channel == ContentChannel.TELEGRAM,
-                        Publication.provider_target_id == str(settings.telegram_metrics_chat_id),
+                        Publication.provider_target_id.regexp_match(f"^{sign}0*{abs(chat_id)}$"),
                     )
                 )
             if settings.vk_metrics_enabled and settings.vk_metrics_owner_id is not None:
