@@ -1065,12 +1065,13 @@ class PublicationService:
             )
 
     async def _find_locked(self, publication_id: UUID) -> Publication | None:
-        return await self.session.scalar(
+        publication: Publication | None = await self.session.scalar(
             select(Publication)
             .where(Publication.id == publication_id)
             .with_for_update()
             .execution_options(populate_existing=True)
         )
+        return publication
 
     async def _locked(self, publication_id: UUID) -> Publication:
         publication = await self._find_locked(publication_id)

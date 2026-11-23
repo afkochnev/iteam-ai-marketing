@@ -139,6 +139,19 @@ async def test_interrupted_worker_does_not_send_again_after_restart(
     assert row.external_id is None and row.execution_token is None
 
 
+async def _receipt_events(db_session: AsyncSession, row: Publication):
+    return (
+        await db_session.scalars(
+            select(ActivityLog).where(
+                ActivityLog.content_item_id == row.content_item_id,
+                ActivityLog.event_type.in_(
+                    ["PUBLICATION_LATE_PROVIDER_RECEIPT", "PUBLICATION_PUBLISHED"]
+                ),
+            )
+        )
+    ).all()
+
+
 @pytest.mark.parametrize("outcome", ["success", "provider_error", "unexpected_error"])
 async def test_late_provider_result_preserves_recovered_claim(
     claim: _Claim, db_session: AsyncSession, outcome: str
@@ -159,22 +172,48 @@ async def test_late_provider_result_preserves_recovered_claim(
     assert row is not None and row.status is PublicationStatus.FAILED
     assert row.failure_code == f"{claim.channel.value}_RECONCILIATION_REQUIRED"
     assert row.external_id is None and row.execution_token is None and row.retry_count == 0
-    events = (
-        await db_session.scalars(
-            select(ActivityLog).where(
-                ActivityLog.content_item_id == row.content_item_id,
-                ActivityLog.event_type.in_(
-                    ["PUBLICATION_LATE_PROVIDER_RECEIPT", "PUBLICATION_PUBLISHED"]
-                ),
-            )
-        )
-    ).all()
+    events = await _receipt_events(db_session, row)
     if outcome == "success":
         (receipt,) = events
         assert receipt.event_type == "PUBLICATION_LATE_PROVIDER_RECEIPT"
         assert receipt.metadata_ == {"publication_id": str(row.id), "external_id": "314"}
     else:
         assert not events
+
+
+async def _authorize_retry(claim: _Claim, monkeypatch: pytest.MonkeyPatch) -> str:
+    async with async_session_factory() as session:
+        await _recover(session)
+        await PublicationService(session).reconcile_not_published(
+            claim.id, claim.user, note="Confirmed absent"
+        )
+        queue = Mock()
+        task = publish_telegram_publication
+        if claim.channel is ContentChannel.VK:
+            task = publish_vk_publication
+        monkeypatch.setattr(task, "apply_async", queue)
+        await retry_publication(claim.id, claim.user, session)
+        row = await session.get(Publication, claim.id, populate_existing=True)
+        assert row is not None and row.status is PublicationStatus.PUBLISHING
+        assert row.execution_token and row.execution_token != claim.token
+        queue.assert_called_once_with(args=[str(row.id), row.execution_token], queue="publication")
+        return row.execution_token
+
+
+async def test_late_success_cannot_finish_a_new_publishing_claim(
+    claim: _Claim, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    async with _in_flight(claim) as (old_worker, release):
+        retry_token = await _authorize_retry(claim, monkeypatch)
+        release.set()
+        assert await old_worker is None
+    row = await db_session.get(Publication, claim.id, populate_existing=True)
+    assert row is not None and row.status is PublicationStatus.PUBLISHING
+    assert row.execution_token == retry_token and row.external_id is None
+    receipts = await _receipt_events(db_session, row)
+    (receipt,) = receipts
+    assert receipt.event_type == "PUBLICATION_LATE_PROVIDER_RECEIPT"
+    assert receipt.metadata_ == {"publication_id": str(row.id), "external_id": "314"}
 
 
 async def _legacy_queue(claim: _Claim, db_session: AsyncSession) -> Publication:
@@ -228,24 +267,12 @@ async def test_legacy_start_requires_reconciliation_before_new_authorized_send(
     assert await claim.deliver(provider) is None
     provider.publish.assert_not_awaited()
 
-    await _recover(db_session)
-    await PublicationService(db_session).reconcile_not_published(
-        claim.id, claim.user, note="Confirmed absent"
-    )
-    queue = Mock()
-    task = publish_telegram_publication
-    if claim.channel is ContentChannel.VK:
-        task = publish_vk_publication
-    monkeypatch.setattr(task, "apply_async", queue)
-    await retry_publication(claim.id, claim.user, db_session)
-    row = await db_session.get(Publication, claim.id, populate_existing=True)
-    assert row is not None and row.execution_token and row.execution_token != claim.token
-    queue.assert_called_once_with(args=[str(row.id), row.execution_token], queue="publication")
+    retry_token = await _authorize_retry(claim, monkeypatch)
     assert await claim.deliver(provider) is None
     provider.publish.assert_not_awaited()
-    result = await claim.deliver(provider, token=row.execution_token)
+    result = await claim.deliver(provider, token=retry_token)
     assert result is not None and result.status is PublicationStatus.PUBLISHED
-    assert await claim.deliver(provider, token=row.execution_token) is None
+    assert await claim.deliver(provider, token=retry_token) is None
     provider.publish.assert_awaited_once()
 
 
