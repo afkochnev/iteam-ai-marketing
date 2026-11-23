@@ -37,7 +37,7 @@ class HypothesisVersion(Base):
     __table_args__ = (
         UniqueConstraint("hypothesis_id", "version_number"),
         CheckConstraint("schema_version = 1 AND version_number > 0", name="version_range"),
-        CheckConstraint("length(trim(source)) > 0", name="provenance"),
+        CheckConstraint("source ~ '\\S'", name="provenance"),
         ForeignKeyConstraint(
             ["hypothesis_id", "workspace_id", "campaign_id"],
             [

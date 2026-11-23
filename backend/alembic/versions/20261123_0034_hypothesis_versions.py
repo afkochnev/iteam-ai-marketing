@@ -68,7 +68,7 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint("hypothesis_id", "version_number"),
         sa.CheckConstraint("schema_version = 1 AND version_number > 0", name="version_range"),
-        sa.CheckConstraint("length(trim(source)) > 0", name="provenance"),
+        sa.CheckConstraint("source ~ '\\S'", name="provenance"),
     )
     text_keys = ", ".join(f"'{key}'" for key in TEXT_FIELDS)
     list_keys = ", ".join(f"'{key}'" for key in LIST_FIELDS)
@@ -81,7 +81,7 @@ def upgrade() -> None:
             END IF;
             FOREACH key IN ARRAY ARRAY[{text_keys}] LOOP
                 IF jsonb_typeof(NEW.snapshot -> key) IS DISTINCT FROM 'string'
-                    OR trim(NEW.snapshot ->> key) = '' THEN
+                    OR (NEW.snapshot ->> key) !~ '\\S' THEN
                     RAISE EXCEPTION 'Invalid snapshot field %', key USING ERRCODE = '23514';
                 END IF;
             END LOOP;
@@ -91,7 +91,7 @@ def upgrade() -> None:
                 END IF;
                 IF EXISTS (SELECT 1 FROM jsonb_array_elements(NEW.snapshot -> key) AS x(value)
                            WHERE jsonb_typeof(value) <> 'string'
-                              OR trim(value #>> '{{}}') = '') THEN
+                              OR (value #>> '{{}}') !~ '\\S') THEN
                     RAISE EXCEPTION 'Invalid snapshot entry %', key USING ERRCODE = '23514';
                 END IF;
             END LOOP;
