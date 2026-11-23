@@ -22,6 +22,7 @@ from app.models.marketing_feedback import (
     MarketingFeedbackAnalysis,
 )
 from app.models.publication import (
+    LegacyPublicationAttempt,
     Publication,
     PublicationClaimEvent,
     PublicationReconciliation,
@@ -73,6 +74,7 @@ __all__ = [
     "KnowledgePackItem",
     "KnowledgeSource",
     "KnowledgeStore",
+    "LegacyPublicationAttempt",
     "Publication",
     "PublicationClaimEvent",
     "PublicationReconciliation",

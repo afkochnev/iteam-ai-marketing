@@ -263,6 +263,13 @@ async def test_upgrade_preserves_legacy_inflight_claim_without_creating_an_event
     def rehearse(connection):
         context = MigrationContext.configure(connection)
         with Operations.context(context):
+            # Rehearse the historical migration against its own schema inside the savepoint.
+            newer_revisions = directory.iterate_revisions(
+                context.get_current_revision(), migration.revision
+            )
+            for newer in newer_revisions:
+                newer.module.downgrade()
+                context.stamp(directory, newer.down_revision)
             migration.downgrade()
             context.stamp(directory, migration.down_revision)
             assert context.get_current_revision() == "20261121_0030"
