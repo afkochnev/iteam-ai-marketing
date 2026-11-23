@@ -112,9 +112,10 @@ async def test_claim_event_audit_and_authorization_roll_back_together(
             assert await observer.scalar(queued) is None
         raise RuntimeError("interrupted before commit")
 
-    monkeypatch.setattr(db_session, "commit", interrupt_before_commit)
-    with pytest.raises(RuntimeError, match="interrupted before commit"):
-        await publish_now(publication_id, user, db_session)
+    with monkeypatch.context() as fault:
+        fault.setattr(db_session, "commit", interrupt_before_commit)
+        with pytest.raises(RuntimeError, match="interrupted before commit"):
+            await publish_now(publication_id, user, db_session)
     await db_session.rollback()
     async with async_session_factory() as observer:
         persisted = await observer.get(Publication, publication_id)
