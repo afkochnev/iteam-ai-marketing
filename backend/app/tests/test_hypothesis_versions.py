@@ -56,6 +56,7 @@ async def test_versions_preserve_the_exact_subject_and_reject_stale_writers(db_s
     root = MarketingHypothesis(workspace_id=workspace.id, campaign_id=campaign.id)
     db_session.add(root)
     await db_session.flush()
+
     def downgrade(connection):
         with Operations.context(MigrationContext.configure(connection)):
             hypothesis_migration().downgrade()
@@ -173,9 +174,8 @@ async def test_two_transactions_compete_for_same_next_version(db_session):
             assert duplicate.value.orig.sqlstate == "23505"
             async with other.begin():
                 await other.execute(path)
-                rows = await other.scalars(
-                    select(versions.c.id).order_by(versions.c.version_number)
-                )
+                ordered = select(versions.c.id).order_by(versions.c.version_number)
+                rows = await other.scalars(ordered)
                 assert list(rows) == [first_id, winner_id]
     finally:
         async with db_session.begin():
