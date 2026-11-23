@@ -2,9 +2,21 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base, UUIDTimestampMixin
@@ -128,3 +140,31 @@ class PublicationReconciliation(UUIDTimestampMixin, Base):
     external_url: Mapped[str | None] = mapped_column(Text)
     external_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     note: Mapped[str | None] = mapped_column(Text)
+
+
+class PublicationClaimEvent(Base):
+    """A committed legacy execution claim. Direct dispatch owns its delivery."""
+
+    __tablename__ = "publication_claim_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "publication_id", "claim_digest", name="uq_publication_claim_events_claim"
+        ),
+        CheckConstraint("claim_digest ~ '^[0-9a-f]{64}$'", name="digest_format"),
+        CheckConstraint("event_type = 'legacy.social.claimed'", name="legacy_event"),
+        CheckConstraint("schema_version = 1", name="schema_v1"),
+        CheckConstraint("delivery_owner = 'legacy_direct'", name="legacy_direct"),
+        Index("ix_publication_claim_events_content_version_id", "content_version_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    publication_id: Mapped[UUID] = mapped_column(ForeignKey("publications.id", ondelete="CASCADE"))
+    content_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("content_versions.id", ondelete="RESTRICT")
+    )
+    channel: Mapped[ContentChannel] = mapped_column(Enum(ContentChannel, name="content_channel"))
+    claim_digest: Mapped[str] = mapped_column(String(64))
+    event_type: Mapped[str] = mapped_column(String(32))
+    schema_version: Mapped[int] = mapped_column(Integer)
+    delivery_owner: Mapped[str] = mapped_column(String(24))

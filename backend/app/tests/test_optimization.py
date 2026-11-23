@@ -12,6 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.errors import AppError
+from app.core.runtime_readiness import EXPECTED_MIGRATION_HEAD
 from app.models.activity import ActivityLog
 from app.models.agent_run import AgentRun, AgentRunStatus
 from app.models.campaign import CampaignStatus
@@ -546,9 +547,8 @@ async def test_snapshot_freezes_real_content_version_and_plan_state(db_session):
 
 
 async def test_migration_tables_enums_and_restrict_provenance(db_session):
-    assert (
-        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261121_0030"
-    )
+    revision = await db_session.scalar(text("SELECT version_num FROM alembic_version"))
+    assert revision == EXPECTED_MIGRATION_HEAD
     enums = list(
         await db_session.scalars(
             text("SELECT typname FROM pg_type WHERE typname LIKE 'optimization_%' AND typtype='e'")

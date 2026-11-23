@@ -29,6 +29,12 @@ Outbox не даёт exactly-once удалённый эффект. До сети
 
 Relay, таблицы, CI и workers не добавляются в A0. Их реализация — отдельные additive PR с failure injection. Открытые вопросы: Q3, Q5, Q9, Q10 в [roadmap](../architecture-v2/roadmap.md).
 
+## События действующего механизма публикаций
+
+При выдаче разрешения на отправку в Telegram или VK приложение сохраняет запись в `publication_claim_events` в одной транзакции PostgreSQL с токеном публикации. Событие связывает публикацию, точную версию контента и канал с SHA-256 отпечатком токена. Новое явно разрешённое исполнение получает отдельную запись. Миграция `20261123_0031` создаёт таблицу пустой. Исторические отправки сохраняют прежний аудит. События хранятся до удаления соответствующей публикации.
+
+Тип `legacy.social.claimed` версии 1 и поле `delivery_owner = legacy_direct` обозначают выдачу разрешения. Вызов Celery по-прежнему выполняет действующий код после фиксации транзакции. При отказе брокера запись остаётся доступной для диагностики. Читатель не вправе отправлять задание по такой записи. Фактическую доставку подтверждают результат провайдера и последующая сверка.
+
 ## Validation / links
 
 [External actions](../architecture-v2/external-actions.md), [migration strategy](../architecture-v2/migration-strategy.md). Будущие тесты: DB rollback, broker unavailable после commit, duplicate event, relay crash, stale lease, consumer crash после provider success и восстановление без blind resend.

@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.errors import AppError
+from app.core.runtime_readiness import EXPECTED_MIGRATION_HEAD
 from app.models.activity import ActivityLog
 from app.models.agent import Agent, AgentTool
 from app.models.agent_run import AgentRun, AgentRunStatus, ToolCall, ToolCallStatus
@@ -598,9 +599,8 @@ async def test_durable_unique_and_restrict_fk(db_session, table, constraint):
         async with db_session.begin_nested():
             await db_session.delete(action)
             await db_session.flush()
-    assert (
-        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261121_0030"
-    )
+    revision = await db_session.scalar(text("SELECT version_num FROM alembic_version"))
+    assert revision == EXPECTED_MIGRATION_HEAD
 
 
 async def test_api_auth_comment_response_reload(db_session, client):
