@@ -1631,9 +1631,8 @@ class PublicationService:
     async def _begin_provider_attempt(
         self, publication: Publication, token: str, target: str, *, injected_provider: bool
     ) -> Literal[True] | PublicationResponse | None:
-        if (publication.provider_target_id or "") != target or (
-            not target.strip() and not injected_provider
-        ):
+        missing_target = not target.strip() and not injected_provider
+        if (publication.provider_target_id or "") != target or missing_target:
             code = f"{publication.channel.value}_TARGET_MISMATCH"
             message = "Цель публикации не соответствует разрешению на отправку."
         else:
@@ -1934,9 +1933,7 @@ class PublicationService:
                 and publication.retry_count < settings.publication_max_retries
             ):
                 publication.retry_count += 1
-            event = (
-                "PUBLICATION_RECONCILIATION_REQUIRED" if uncertain else "PUBLICATION_FAILED"
-            )
+            event = "PUBLICATION_RECONCILIATION_REQUIRED" if uncertain else "PUBLICATION_FAILED"
             await ActivityLogService(self.session).record(
                 event,
                 operation_key=f"publication-failed:{publication.id}:{publication.retry_count}",
@@ -2094,9 +2091,7 @@ class PublicationService:
                 and publication.retry_count < settings.publication_max_retries
             ):
                 publication.retry_count += 1
-            event = (
-                "PUBLICATION_RECONCILIATION_REQUIRED" if uncertain else "PUBLICATION_FAILED"
-            )
+            event = "PUBLICATION_RECONCILIATION_REQUIRED" if uncertain else "PUBLICATION_FAILED"
             await ActivityLogService(self.session).record(
                 event,
                 operation_key=f"publication-failed:{publication.id}:{publication.retry_count}",
