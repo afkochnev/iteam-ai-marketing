@@ -41,6 +41,7 @@ from app.models.content import (
 from app.models.publication import (
     ACTIVE_PUBLICATION_STATUSES,
     PUBLICATION_ALLOWED_TRANSITIONS,
+    LegacyExternalPlacement,
     Publication,
     PublicationClaimEvent,
     PublicationReconciliation,
@@ -768,24 +769,6 @@ class PublicationService:
             )
         return publication
 
-    @staticmethod
-    def _validate_external_id(channel: object, external_id: str) -> None:
-        if not external_id.strip() or not external_id.strip().lstrip("-").isdigit():
-            raise AppError(
-                "PUBLICATION_EXTERNAL_ID_INVALID",
-                "Укажите корректный идентификатор внешней публикации.",
-                422,
-            )
-        if (
-            getattr(channel, "value", channel) == "TELEGRAM"
-            and not external_id.strip().lstrip("-").isdigit()
-        ):
-            raise AppError(
-                "PUBLICATION_EXTERNAL_ID_INVALID",
-                "Идентификатор Telegram должен быть числовым.",
-                422,
-            )
-
     async def reconcile_published(
         self,
         publication_id: UUID,
@@ -797,6 +780,7 @@ class PublicationService:
         note: str | None,
     ) -> PublicationResponse:
         publication = await self._locked(publication_id)
+        external_id = external_id.strip()
         if publication.status is PublicationStatus.PUBLISHED:
             existing = await self.session.scalar(
                 select(PublicationReconciliation)
@@ -822,7 +806,44 @@ class PublicationService:
                 "Для этой публикации нельзя подтвердить доставку.",
                 409,
             )
-        self._validate_external_id(publication.channel, external_id)
+        object_id = external_id.lstrip("0")
+        if not (
+            object_id.isascii()
+            and object_id.isdecimal()
+            and len(object_id) <= 19
+            and int(object_id) <= 2**63 - 1
+        ):
+            raise AppError(
+                "PUBLICATION_EXTERNAL_ID_INVALID",
+                "Укажите положительный числовой идентификатор внешней публикации.",
+                422,
+            )
+        target_id = publication.provider_target_id
+        if target_id is not None and target_id.removeprefix("-").isdecimal():
+            # Claims can retain a padded numeric chat ID. Receipts store the canonical number.
+            target_id = str(int(target_id))
+            other_placement = await self.session.scalar(
+                select(LegacyExternalPlacement.id)
+                .join(
+                    PublicationClaimEvent,
+                    PublicationClaimEvent.id == LegacyExternalPlacement.claim_event_id,
+                )
+                .where(
+                    or_(
+                        PublicationClaimEvent.publication_id != publication.id,
+                        PublicationClaimEvent.content_version_id != publication.content_version_id,
+                    ),
+                    LegacyExternalPlacement.channel == publication.channel,
+                    LegacyExternalPlacement.provider_target_id == target_id,
+                    LegacyExternalPlacement.external_id == object_id,
+                )
+            )
+            if other_placement is not None:
+                raise AppError(
+                    "PUBLICATION_EXTERNAL_PLACEMENT_CONFLICT",
+                    "Этот внешний объект уже подтверждён для другой публикации.",
+                    409,
+                )
         if published_at is not None:
             if published_at.tzinfo is None or published_at.utcoffset() is None:
                 raise AppError(
@@ -839,7 +860,7 @@ class PublicationService:
                 operator_user_id=user.id,
                 channel=publication.channel,
                 decision=ReconciliationDecision.CONFIRMED_PUBLISHED,
-                external_id=external_id.strip(),
+                external_id=external_id,
                 external_url=external_url,
                 external_published_at=published_at,
                 note=note,
@@ -850,7 +871,7 @@ class PublicationService:
         # intended atomic ordering observable and testable.
         await self.session.flush()
         publication.status = PublicationStatus.PUBLISHED
-        publication.external_id = external_id.strip()
+        publication.external_id = external_id
         publication.external_url = external_url
         publication.published_at = published_at
         publication.failure_code = None
@@ -861,7 +882,7 @@ class PublicationService:
             campaign_id=publication.campaign_id,
             user_id=user.id,
             content_item_id=publication.content_item_id,
-            metadata={"publication_id": str(publication.id), "external_id": external_id.strip()},
+            metadata={"publication_id": str(publication.id), "external_id": external_id},
         )
         await self.session.commit()
         await self.session.refresh(publication)
@@ -1600,8 +1621,8 @@ class PublicationService:
         key = started if queued in recorded else legacy
         return None if key in recorded else key
 
-    async def _record_provider_outcome(
-        self, publication_id: UUID, token: str, outcome: ProviderPublicationResult | str
+    async def _owned_after_provider_call(
+        self, publication_id: UUID, token: str, receipt: ProviderPublicationResult | None = None
     ) -> Publication | None:
         publication = await self._find_locked(publication_id)
         if publication is None:
@@ -1610,14 +1631,13 @@ class PublicationService:
             publication.status is PublicationStatus.PUBLISHING
             and publication.execution_token == token
         ):
-            await self._attempts.finish(publication_id, token, outcome)
             return publication
         # Recovery or a human decision superseded this execution during I/O.
         # Preserve a late external ID for reconciliation without changing the decision.
-        if not isinstance(outcome, str):
-            evidence = {"publication_id": str(publication_id), "external_id": outcome.external_id}
-            if outcome.provider_target_id is not None:
-                evidence["provider_target_id"] = outcome.provider_target_id
+        if receipt is not None:
+            evidence = {"publication_id": str(publication_id), "external_id": receipt.external_id}
+            if receipt.provider_target_id is not None:
+                evidence["provider_target_id"] = receipt.provider_target_id
             await ActivityLogService(self.session).record(
                 "PUBLICATION_LATE_PROVIDER_RECEIPT",
                 operation_key=self._claim_audit_key("late-receipt", publication_id, token),
@@ -1627,6 +1647,63 @@ class PublicationService:
             )
             await self.session.commit()
         return None
+
+    async def _record_provider_failure(
+        self, publication_id: UUID, token: str, failure_code: str
+    ) -> Publication | None:
+        publication = await self._owned_after_provider_call(publication_id, token)
+        if publication is not None:
+            await self._attempts.finish(publication, token, failure_code)
+        return publication
+
+    async def _complete_provider_receipt(
+        self, publication_id: UUID, token: str, result: ProviderPublicationResult
+    ) -> PublicationResponse | None:
+        publication = await self._owned_after_provider_call(publication_id, token, result)
+        if publication is None:
+            return None
+        conflict = await self._attempts.finish(publication, token, result)
+        if conflict is not None:
+            publication.status = PublicationStatus.FAILED
+            publication.failure_code = self._reconciliation_code(publication.channel)
+            publication.failure_message = (
+                "Внешний объект связан с другой отправкой. Требуется сверка."
+            )
+            publication.provider_target_id = result.provider_target_id
+            await ActivityLogService(self.session).record(
+                "PUBLICATION_RECONCILIATION_REQUIRED",
+                operation_key=self._claim_audit_key("placement-conflict", publication.id, token),
+                campaign_id=publication.campaign_id,
+                content_item_id=publication.content_item_id,
+                metadata={
+                    "reason": "EXTERNAL_PLACEMENT_CONFLICT",
+                    "publication_id": str(publication.id),
+                    "claim_event_id": str(conflict.claim_event_id),
+                    "placement_id": str(conflict.placement_id),
+                    "provider_target_id": result.provider_target_id,
+                    "external_id": result.external_id,
+                },
+            )
+        else:
+            publication.status = PublicationStatus.PUBLISHED
+            publication.external_id = result.external_id
+            publication.provider_target_id = (
+                result.provider_target_id or publication.provider_target_id
+            )
+            publication.external_url = result.external_url
+            publication.published_at = result.published_at
+            publication.failure_code = None
+            publication.failure_message = None
+            await ActivityLogService(self.session).record(
+                "PUBLICATION_PUBLISHED",
+                operation_key=f"publication-published:{publication.id}",
+                campaign_id=publication.campaign_id,
+                content_item_id=publication.content_item_id,
+                metadata={"publication_id": str(publication.id), "external_id": result.external_id},
+            )
+        await self.session.commit()
+        await self.session.refresh(publication)
+        return await self._response(publication)
 
     async def _begin_provider_attempt(
         self, publication: Publication, token: str, target: str, *, injected_provider: bool
@@ -1916,7 +1993,7 @@ class PublicationService:
         except VKProviderError as error:
             failure_code = safe_failure_code(publication.channel, error)
             uncertain = failure_code == "VK_RECONCILIATION_REQUIRED"
-            publication = await self._record_provider_outcome(
+            publication = await self._record_provider_failure(
                 publication_id, claim_token, failure_code
             )
             if publication is None:
@@ -1950,7 +2027,7 @@ class PublicationService:
             return await self._response(publication)
         except Exception:
             failure_code = "VK_RECONCILIATION_REQUIRED"
-            publication = await self._record_provider_outcome(
+            publication = await self._record_provider_failure(
                 publication_id, claim_token, failure_code
             )
             if publication is None:
@@ -1970,26 +2047,7 @@ class PublicationService:
             await self.session.commit()
             await self.session.refresh(publication)
             return await self._response(publication)
-        publication = await self._record_provider_outcome(publication_id, claim_token, result)
-        if publication is None:
-            return None
-        publication.status = PublicationStatus.PUBLISHED
-        publication.external_id = result.external_id
-        publication.provider_target_id = result.provider_target_id or publication.provider_target_id
-        publication.external_url = result.external_url
-        publication.published_at = result.published_at
-        publication.failure_code = None
-        publication.failure_message = None
-        await ActivityLogService(self.session).record(
-            "PUBLICATION_PUBLISHED",
-            operation_key=f"publication-published:{publication.id}",
-            campaign_id=publication.campaign_id,
-            content_item_id=publication.content_item_id,
-            metadata={"publication_id": str(publication.id), "external_id": result.external_id},
-        )
-        await self.session.commit()
-        await self.session.refresh(publication)
-        return await self._response(publication)
+        return await self._complete_provider_receipt(publication_id, claim_token, result)
 
     async def execute_telegram(
         self,
@@ -2075,7 +2133,7 @@ class PublicationService:
         except TelegramProviderError as error:
             failure_code = safe_failure_code(publication.channel, error)
             uncertain = failure_code == "TELEGRAM_RECONCILIATION_REQUIRED"
-            publication = await self._record_provider_outcome(
+            publication = await self._record_provider_failure(
                 publication_id, claim_token, failure_code
             )
             if publication is None:
@@ -2107,7 +2165,7 @@ class PublicationService:
             return await self._response(publication)
         except Exception:
             failure_code = "TELEGRAM_RECONCILIATION_REQUIRED"
-            publication = await self._record_provider_outcome(
+            publication = await self._record_provider_failure(
                 publication_id, claim_token, failure_code
             )
             if publication is None:
@@ -2127,26 +2185,7 @@ class PublicationService:
             await self.session.commit()
             await self.session.refresh(publication)
             return await self._response(publication)
-        publication = await self._record_provider_outcome(publication_id, claim_token, result)
-        if publication is None:
-            return None
-        publication.status = PublicationStatus.PUBLISHED
-        publication.external_id = result.external_id
-        publication.provider_target_id = result.provider_target_id or publication.provider_target_id
-        publication.external_url = result.external_url
-        publication.published_at = result.published_at
-        publication.failure_code = None
-        publication.failure_message = None
-        await ActivityLogService(self.session).record(
-            "PUBLICATION_PUBLISHED",
-            operation_key=f"publication-published:{publication.id}",
-            campaign_id=publication.campaign_id,
-            content_item_id=publication.content_item_id,
-            metadata={"publication_id": str(publication.id), "external_id": result.external_id},
-        )
-        await self.session.commit()
-        await self.session.refresh(publication)
-        return await self._response(publication)
+        return await self._complete_provider_receipt(publication_id, claim_token, result)
 
     async def recover_stuck_publishing(self, *, cutoff: datetime) -> int:
         """Move abandoned claims to conservative reconciliation state."""
@@ -2176,7 +2215,7 @@ class PublicationService:
             )
             if publication.execution_token is not None:
                 await self._attempts.finish(
-                    publication.id, publication.execution_token, publication.failure_code
+                    publication, publication.execution_token, publication.failure_code
                 )
             publication.execution_token = None
             await ActivityLogService(self.session).record(
@@ -2208,7 +2247,7 @@ class PublicationService:
         publication.failure_message = "Состояние доставки неоднозначно; требуется ручная проверка."
         if publication.execution_token is not None:
             await self._attempts.finish(
-                publication.id, publication.execution_token, publication.failure_code
+                publication, publication.execution_token, publication.failure_code
             )
         publication.execution_token = None
         await ActivityLogService(self.session).record(

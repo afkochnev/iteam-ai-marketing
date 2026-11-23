@@ -201,3 +201,43 @@ class LegacyPublicationAttempt(Base):
     external_id: Mapped[str | None] = mapped_column(String(255))
     provider_target_id: Mapped[str | None] = mapped_column(String(255))
     failure_code: Mapped[str | None] = mapped_column(String(100))
+
+
+class LegacyExternalPlacement(Base):
+    """Receipt-confirmed Telegram message or VK wall post from a single legacy claim."""
+
+    __tablename__ = "legacy_external_placements"
+    __table_args__ = (
+        UniqueConstraint("claim_event_id", name="uq_legacy_placement_claim"),
+        UniqueConstraint(
+            "channel", "provider_target_id", "external_id", name="uq_legacy_placement_object"
+        ),
+        CheckConstraint(
+            "CASE WHEN external_id ~ '^[1-9][0-9]{0,18}$' "
+            "THEN external_id::numeric <= 9223372036854775807 ELSE false END",
+            name="external_id",
+        ),
+        CheckConstraint(
+            "CASE WHEN provider_target_id ~ '^-?[1-9][0-9]{0,18}$' "
+            "THEN provider_target_id::numeric BETWEEN -9223372036854775808 AND 9223372036854775807 "
+            "ELSE false END",
+            name="target_id",
+        ),
+        CheckConstraint(
+            "channel = 'TELEGRAM' OR (channel = 'VK' AND left(provider_target_id, 1) = '-')",
+            name="channel_target",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    claim_event_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "legacy_publication_attempts.claim_event_id",
+            name="fk_legacy_placement_attempt",
+            ondelete="RESTRICT",
+        )
+    )
+    channel: Mapped[ContentChannel] = mapped_column(Enum(ContentChannel, name="content_channel"))
+    provider_target_id: Mapped[str] = mapped_column(String(255))
+    external_id: Mapped[str] = mapped_column(String(255))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
