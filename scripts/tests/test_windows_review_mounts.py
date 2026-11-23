@@ -155,6 +155,32 @@ class SnapshotMountTests(unittest.TestCase):
     def test_accepted_actual_mounts(self):
         self.assertEqual(self.check(*snapshot_fixture()), "backend-container")
 
+    def test_requested_and_effective_bindings_must_both_be_loopback(self):
+        rows, networks, release = snapshot_fixture()
+        backend = rows["backend"]
+        local = [{"HostIp": "127.0.0.1", "HostPort": "8000"}]
+        backend["HostConfig"]["PortBindings"] = {"8000/tcp": local}
+        backend["NetworkSettings"]["Ports"] = {"8000/tcp": None}
+        self.assertEqual(self.check(rows, networks, release), "backend-container")
+        backend["NetworkSettings"]["Ports"]["8000/tcp"] = local
+        self.assertEqual(self.check(rows, networks, release), "backend-container")
+        for ip in ("0.0.0.0", "::", ""):
+            with self.subTest(ip=ip):
+                backend["NetworkSettings"]["Ports"]["8000/tcp"] = [{"HostIp": ip}]
+                with self.assertRaisesRegex(RuntimeError, "LOOPBACK_BIND_REQUIRED"):
+                    self.check(rows, networks, release)
+        backend["NetworkSettings"]["Ports"] = {}
+        backend["HostConfig"]["PublishAllPorts"] = True
+        with self.assertRaisesRegex(RuntimeError, "LOOPBACK_BIND_REQUIRED"):
+            self.check(rows, networks, release)
+
+    def test_isolated_services_must_share_one_internal_network(self):
+        rows, networks, release = snapshot_fixture()
+        networks["different-internal"] = {"Internal": True}
+        rows["frontend"]["NetworkSettings"]["Networks"] = {"different-internal": {}}
+        with self.assertRaisesRegex(RuntimeError, "SHARED_INTERNAL_NETWORK_REQUIRED"):
+            self.check(rows, networks, release)
+
     def test_unrelated_volume_cannot_pass_with_same_images_and_build_sha(self):
         rows, networks, release = snapshot_fixture()
         rows["postgres"]["Mounts"][0]["Name"] = "another_postgres"
@@ -325,6 +351,20 @@ class ReviewHostTests(unittest.TestCase):
                 read.assert_not_called()
                 listener.assert_not_called()
                 marker.unlink()
+
+    def test_direct_bridge_rejects_redirected_volume_before_binding(self):
+        volumes = [{"Name": name, "Driver": "local", "Options": None}
+                   for _, name, _ in validation.VOLUMES.values()]
+        volumes[0]["Options"] = {"type": "nfs", "device": ":/other-database"}
+        with (
+            patch.object(bridge, "ROOT", self.root),
+            patch.object(bridge, "require_review_host"),
+            patch.object(validation, "docker_read", return_value=json.dumps(volumes)),
+            patch.object(bridge, "Bridge") as listener,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "REVIEW_VOLUME_IDENTITY_MISMATCH"):
+                bridge.main()
+        listener.assert_not_called()
 
     def test_existing_publisher_or_user_worker_including_stopped_blocks_start(self):
         for project in ("iteam_windows_publishing", "iteam_windows_user_posts"):

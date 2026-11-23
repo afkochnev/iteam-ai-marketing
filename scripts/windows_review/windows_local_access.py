@@ -14,7 +14,9 @@ import threading
 import time
 import urllib.request
 
-from review_validation import CONTEXT, docker_read, require_review_host, validate_inspect_mounts
+from review_validation import (
+    CONTEXT, docker_read, require_existing_review_volumes, require_review_host, validate_inspect_mounts,
+)
 
 PROJECT = 'iteam_windows_transfer'
 ROOT = Path(__file__).resolve().parent
@@ -63,6 +65,7 @@ def check_snapshot(rows, networks, release):
     if len(rows) != 4:
         raise RuntimeError('EXACTLY_FOUR_REVIEW_SERVICES_REQUIRED')
     by_service = {}
+    network_names = set()
     for row in rows:
         labels = row['Config'].get('Labels') or {}
         name = labels.get('com.docker.compose.service')
@@ -73,16 +76,22 @@ def check_snapshot(rows, networks, release):
         if row['HostConfig'].get('Privileged') or row['HostConfig'].get('NetworkMode') == 'host':
             raise RuntimeError('ISOLATION_REQUIRED')
         attached = row['NetworkSettings']['Networks']
-        if len(attached) != 1 or any(not networks[n].get('Internal') for n in attached):
+        if len(attached) != 1 or any(networks.get(n, {}).get('Internal') is not True for n in attached):
             raise RuntimeError('INTERNAL_NETWORK_REQUIRED')
+        network_names.update(attached)
         if name in ('backend', 'frontend') and row['Config']['Image'] != release['images'][name]:
             raise RuntimeError('EXACT_RELEASE_REQUIRED')
-        for bindings in (row['HostConfig'].get('PortBindings') or {}).values():
-            if any(b.get('HostIp') != '127.0.0.1' for b in bindings or []):
-                raise RuntimeError('LOOPBACK_BIND_REQUIRED')
+        if row['HostConfig'].get('PublishAllPorts'):
+            raise RuntimeError('LOOPBACK_BIND_REQUIRED')
+        for port_map in (row['HostConfig'].get('PortBindings'), row['NetworkSettings'].get('Ports')):
+            for bindings in (port_map or {}).values():
+                if any(b.get('HostIp') != '127.0.0.1' for b in bindings or []):
+                    raise RuntimeError('LOOPBACK_BIND_REQUIRED')
         by_service[name] = row
     if set(by_service) != SERVICES:
         raise RuntimeError('MISSING_REVIEW_SERVICE')
+    if len(network_names) != 1:
+        raise RuntimeError('SHARED_INTERNAL_NETWORK_REQUIRED')
     env = dict(v.split('=', 1) for v in by_service['backend']['Config']['Env'] if '=' in v)
     if any(env.get(k, '').lower() != 'false' for k in FLAGS) or any(env.get(k) for k in CREDENTIALS):
         raise RuntimeError('PUBLISHING_OR_EXECUTION_NOT_DISABLED')
@@ -94,6 +103,7 @@ def check_snapshot(rows, networks, release):
 
 def check_review(release):
     require_review_host(ROOT)
+    require_existing_review_volumes()
     ids = docker_read('ps', '-q', '--filter', 'label=com.docker.compose.project=' + PROJECT).decode().split()
     if not ids:
         raise RuntimeError('REVIEW_SERVICES_NOT_RUNNING')
