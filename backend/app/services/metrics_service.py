@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -226,6 +226,23 @@ class MetricsService:
         )
 
     async def sync(self, publication_id: UUID) -> PublicationMetricsSnapshot:
+        # An unchanged read reuses the previous snapshot. Serialize sampling as well as
+        # storage so a delayed older observation cannot become the latest visible value.
+        try:
+            await self.session.execute(
+                select(
+                    func.pg_advisory_xact_lock(
+                        func.hashtextextended(f"iteam:publication-metrics:{publication_id}", 0)
+                    )
+                )
+            )
+            return await self._sync_provider(publication_id)
+        except BaseException:
+            # Cancellation and validation failures must release the transaction-scoped lock.
+            await self.session.rollback()
+            raise
+
+    async def _sync_provider(self, publication_id: UUID) -> PublicationMetricsSnapshot:
         publication = await self._publication(publication_id)
         expected_target: str | None = None
         if publication.channel is ContentChannel.TELEGRAM:
@@ -295,8 +312,8 @@ class MetricsService:
                 "Провайдер не вернул ни одной наблюдаемой метрики.",
                 502,
             )
-        # Serialize observations only after the external read. A concurrent delivery or
-        # correction may have changed the publication while the provider was responding.
+        # The advisory lock only covers metrics readers. A delivery or correction may
+        # have changed the publication while the provider was responding.
         locked = await self.session.scalar(
             select(Publication)
             .where(
@@ -314,19 +331,15 @@ class MetricsService:
             raise AppError(
                 "METRICS_PUBLICATION_CHANGED", "Публикация изменилась во время чтения метрик.", 409
             )
-        try:
-            placement_id = await self._placement_id(locked, reject_conflict=True)
-            return await self._store(
-                locked,
-                placement_id=placement_id if verified else None,
-                source=MetricsSource.PROVIDER,
-                observed_at=result.observed_at,
-                provider=result.provider,
-                values=values,
-            )
-        except AppError:
-            await self.session.rollback()
-            raise
+        placement_id = await self._placement_id(locked, reject_conflict=True)
+        return await self._store(
+            locked,
+            placement_id=placement_id if verified else None,
+            source=MetricsSource.PROVIDER,
+            observed_at=result.observed_at,
+            provider=result.provider,
+            values=values,
+        )
 
     async def publication_metrics(self, publication_id: UUID) -> dict[str, Any]:
         publication = await self.session.get(Publication, publication_id, populate_existing=True)

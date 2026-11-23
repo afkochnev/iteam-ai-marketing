@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 
 from app.api.publications import publication_metrics
 from app.core.config import settings
@@ -49,38 +49,92 @@ def _response(**fields):
     return httpx.Response(200, json={"response": {"items": [post]}})
 
 
-async def test_published_placement_then_overlapping_first_observed_zero(
-    published, db_session, monkeypatch
+@pytest.mark.parametrize("seed_zero", [False, True], ids=["identical", "changed-then-restored"])
+async def test_overlapping_reads_preserve_observation_order(
+    published, db_session, monkeypatch, seed_zero
 ):
     empty = await publication_metrics(published.id, published.user, db_session)
     assert empty.external_placement_id is not None
     assert empty.latest is None and empty.history == []
 
-    both_reading = asyncio.Event()
-    calls = []
+    counts = [0, 1, 0] if seed_zero else [0, 0]
+    http_read = AsyncMock(side_effect=[_response(likes={"count": value}) for value in counts])
+    monkeypatch.setattr(httpx.AsyncClient, "post", http_read)
+    if seed_zero:
+        await MetricsService(db_session).sync(published.id)
 
-    async def read(_client, _url, *, data):
-        calls.append(data["posts"])
-        if len(calls) == 2:
-            both_reading.set()
-        await asyncio.wait_for(both_reading.wait(), timeout=10)
-        return _response(views={"count": 0})
+    first_sampled = asyncio.Event()
+    release_first = asyncio.Event()
+    real_read = VKMetricsProvider.get_metrics
 
-    monkeypatch.setattr(httpx.AsyncClient, "post", read)
+    async def pause_first(reader, *, external_id):
+        sample = await real_read(reader, external_id=external_id)
+        if not first_sampled.is_set():
+            first_sampled.set()
+            await release_first.wait()
+        return sample
 
-    async def sync():
-        async with async_session_factory() as session:
-            return (await MetricsService(session).sync(published.id)).id
+    monkeypatch.setattr(VKMetricsProvider, "get_metrics", pause_first)
+    async with (
+        async_session_factory() as first_session,
+        async_session_factory() as second_session,
+        asyncio.timeout(15),
+        asyncio.TaskGroup() as tasks,
+    ):
+        second_pid = await second_session.scalar(select(func.pg_backend_pid()))
+        first = tasks.create_task(MetricsService(first_session).sync(published.id))
+        await first_sampled.wait()
+        second = tasks.create_task(MetricsService(second_session).sync(published.id))
+        try:
+            # Wait until PostgreSQL observes the second reader behind the first.
+            # A reader that sampled and finished early must also fail this check.
+            while not await db_session.scalar(
+                select(func.cardinality(func.pg_blocking_pids(second_pid)))
+            ):
+                assert not second.done()
+                await asyncio.sleep(0.01)
+        finally:
+            release_first.set()
 
-    first, duplicate = await asyncio.wait_for(asyncio.gather(sync(), sync()), timeout=15)
-    assert first == duplicate
-    assert calls == ["-987_314", "-987_314"]
     observed = await publication_metrics(published.id, published.user, db_session)
-    assert observed.latest is not None and observed.history == [observed.latest]
-    assert observed.latest.id == first
-    assert observed.latest.external_placement_id == observed.external_placement_id
-    assert observed.latest.external_placement_id == empty.external_placement_id
-    assert observed.latest.views == 0 and observed.latest.likes is None
+    assert observed.latest is not None and observed.latest.id == second.result().id
+    assert observed.external_placement_id == empty.external_placement_id
+    assert all(row.external_placement_id == empty.external_placement_id for row in observed.history)
+    targets = [call.kwargs["data"]["posts"] for call in http_read.await_args_list]
+    assert targets == ["-987_314"] * len(counts)
+    assert observed.latest.views is None
+    if seed_zero:
+        assert first.result().id != second.result().id
+        assert [row.likes for row in observed.history] == [0, 1, 0]
+    else:
+        assert first.result().id == second.result().id
+        assert [row.likes for row in observed.history] == [0]
+
+
+async def test_cancellation_releases_metrics_lock_with_session_kept_open(
+    published, db_session, monkeypatch
+):
+    entered = asyncio.Event()
+
+    async def never_returns(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    async with async_session_factory() as cancelled_session, asyncio.timeout(10):
+        with monkeypatch.context() as blocked:
+            blocked.setattr(VKMetricsProvider, "get_metrics", never_returns)
+            task = asyncio.create_task(MetricsService(cancelled_session).sync(published.id))
+            try:
+                await entered.wait()
+            finally:
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+        monkeypatch.setattr(
+            httpx.AsyncClient, "post", AsyncMock(return_value=_response(likes={"count": 0}))
+        )
+        assert (await MetricsService(db_session).sync(published.id)).likes == 0
+        assert not cancelled_session.in_transaction()
 
 
 async def test_original_unlinked_observations_and_manual_remain_independent(
