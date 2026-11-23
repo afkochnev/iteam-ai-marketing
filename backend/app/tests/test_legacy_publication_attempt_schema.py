@@ -37,6 +37,12 @@ async def test_0032_preserves_claim_and_audit_without_inventing_a_provider_attem
     def rehearse(connection):
         context = MigrationContext.configure(connection)
         with Operations.context(context):
+            newer_revisions = directory.iterate_revisions(
+                context.get_current_revision(), migration.revision
+            )
+            for newer in newer_revisions:
+                newer.module.downgrade()
+                context.stamp(directory, newer.down_revision)
             migration.downgrade()
             context.stamp(directory, migration.down_revision)
             assert context.get_current_revision() == "20261123_0031"

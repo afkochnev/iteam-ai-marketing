@@ -34,6 +34,8 @@ class ProviderMetricsResult:
     clicks: int | None = None
     subscribers: int | None = None
     provider: str | None = None
+    provider_target_id: str | None = None
+    external_id: str | None = None
 
 
 class MetricsProvider(Protocol):
@@ -101,12 +103,13 @@ class TelegramMetricsProvider:
                         "TELEGRAM_METRICS_AUTH_ERROR", "Требуется user MTProto session."
                     )
                 peer = await client.get_entity(settings.telegram_metrics_peer)
-                if utils.get_peer_id(peer) != settings.telegram_metrics_chat_id:
+                peer_id = utils.get_peer_id(peer)
+                if type(peer_id) is not int or peer_id != settings.telegram_metrics_chat_id:
                     raise MetricsProviderError(
                         "TELEGRAM_METRICS_PEER_MISMATCH", "Peer метрик не совпадает с target."
                     )
                 message = await client.get_messages(peer, ids=message_id)
-                if message is None or message.id != message_id:
+                if message is None or type(message.id) is not int or message.id != message_id:
                     raise MetricsProviderError(
                         "TELEGRAM_METRICS_RESPONSE_INVALID", "Сообщение метрик недоступно."
                     )
@@ -145,6 +148,8 @@ class TelegramMetricsProvider:
                 return ProviderMetricsResult(
                     observed_at=datetime.now(UTC),
                     provider="telegram_mtproto",
+                    provider_target_id=str(peer_id),
+                    external_id=external_id,
                     views=views,
                     shares=shares,
                     comments=comments,
@@ -223,7 +228,9 @@ class VKMetricsProvider:
                 rows = rows["items"]
             if (
                 len(rows) != 1
+                or type(rows[0].get("id")) is not int
                 or rows[0].get("id") != post_id
+                or type(rows[0].get("owner_id")) is not int
                 or rows[0].get("owner_id") != owner_id
             ):
                 raise MetricsProviderError("VK_METRICS_POST_MISMATCH", "Exact VK post недоступен.")
@@ -236,6 +243,8 @@ class VKMetricsProvider:
             return ProviderMetricsResult(
                 observed_at=datetime.now(UTC),
                 provider="vk_wall",
+                provider_target_id=str(owner_id),
+                external_id=external_id,
                 views=count("views"),
                 likes=count("likes"),
                 comments=count("comments"),
