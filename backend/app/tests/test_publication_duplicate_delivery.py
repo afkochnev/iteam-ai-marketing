@@ -176,12 +176,10 @@ async def test_late_provider_result_preserves_recovered_claim(
         assert not events
 
 
-async def test_legacy_start_requires_reconciliation_before_new_authorized_send(
-    claim: _Claim, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
-):
+async def _legacy_queue(claim: _Claim, db_session: AsyncSession) -> Publication:
     row = await db_session.get(Publication, claim.id)
     assert row is not None
-    # Reproduce the queue and start records committed by the pre-upgrade worker.
+    # The pre-upgrade queue key is per publication and has no token-specific metadata.
     await db_session.execute(
         update(ActivityLog)
         .where(
@@ -192,6 +190,31 @@ async def test_legacy_start_requires_reconciliation_before_new_authorized_send(
             operation_key=f"publication-queued:{row.id}", metadata_={"publication_id": str(row.id)}
         )
     )
+    await db_session.commit()
+    return row
+
+
+async def test_legacy_queue_without_start_can_deliver_once(claim: _Claim, db_session: AsyncSession):
+    await _legacy_queue(claim, db_session)
+    provider = _provider()
+    async with async_session_factory() as session:
+        service = PublicationService(session)
+        wrong_channel = service.execute_vk
+        if claim.channel is ContentChannel.VK:
+            wrong_channel = service.execute_telegram
+        assert await wrong_channel(claim.id, provider, execution_token=claim.token) is None
+    assert await claim.deliver(provider, token="stale-token") is None
+    provider.publish.assert_not_awaited()
+    result = await claim.deliver(provider)
+    assert result is not None and result.status is PublicationStatus.PUBLISHED
+    assert await claim.deliver(provider) is None
+    provider.publish.assert_awaited_once()
+
+
+async def test_legacy_start_requires_reconciliation_before_new_authorized_send(
+    claim: _Claim, db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+):
+    row = await _legacy_queue(claim, db_session)
     await ActivityLogService(db_session).record(
         "PUBLICATION_STARTED",
         operation_key=f"publication-started:{row.id}",
