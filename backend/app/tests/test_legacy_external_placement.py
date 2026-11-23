@@ -142,6 +142,47 @@ async def test_late_receipt_and_manual_confirmation_leave_placement_unassigned(
     assert await db_session.scalar(select(LegacyExternalPlacement.id)) is None
 
 
+@pytest.mark.parametrize("channel", [ContentChannel.TELEGRAM, ContentChannel.VK])
+async def test_manual_confirmation_checks_object_identity_before_recording(
+    db_session, monkeypatch, channel
+):
+    first = await _issue_claim(db_session, monkeypatch, channel)
+    assert (await first.deliver(_provider("-987"))).status is PublicationStatus.PUBLISHED
+    # A timed-out Telegram claim retains its configured spelling of the chat ID.
+    monkeypatch.setattr(settings, "telegram_target_chat_id", "-000987")
+    second = await _other_campaign_claim(db_session, monkeypatch, channel)
+    async with _in_flight(second) as (delivery, release):
+        await _recover(db_session)
+        release.set()
+        assert await delivery is None
+
+    async def confirm(object_id):
+        return await PublicationService(db_session).reconcile_published(
+            second.id,
+            second.user,
+            external_id=object_id,
+            external_url=None,
+            published_at=None,
+            note="Verified manually",
+        )
+
+    for invalid in ("0", "000", "-314", "--314", "²", "３１４", "9223372036854775808"):
+        with pytest.raises(AppError) as rejected:
+            await confirm(invalid)
+        assert rejected.value.code == "PUBLICATION_EXTERNAL_ID_INVALID"
+    with pytest.raises(AppError) as conflict:
+        await confirm(" 00314 ")
+    assert conflict.value.code == "PUBLICATION_EXTERNAL_PLACEMENT_CONFLICT"
+    row = await db_session.get(Publication, second.id, populate_existing=True)
+    assert row.status is PublicationStatus.FAILED and row.external_id is None
+
+    for _ in range(2):
+        confirmed = await confirm(" 09223372036854775807 ")
+        assert confirmed.status is PublicationStatus.PUBLISHED
+        assert confirmed.external_id == "09223372036854775807"
+        assert len(confirmed.reconciliation_history) == 1
+
+
 async def _overlap_receipts(observer, first: _Claim, second: _Claim, monkeypatch):
     # Hold the first placement uncommitted until PostgreSQL reports the other writer waiting for it.
     async with (

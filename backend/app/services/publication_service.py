@@ -769,24 +769,6 @@ class PublicationService:
             )
         return publication
 
-    @staticmethod
-    def _validate_external_id(channel: object, external_id: str) -> None:
-        if not external_id.strip() or not external_id.strip().lstrip("-").isdigit():
-            raise AppError(
-                "PUBLICATION_EXTERNAL_ID_INVALID",
-                "Укажите корректный идентификатор внешней публикации.",
-                422,
-            )
-        if (
-            getattr(channel, "value", channel) == "TELEGRAM"
-            and not external_id.strip().lstrip("-").isdigit()
-        ):
-            raise AppError(
-                "PUBLICATION_EXTERNAL_ID_INVALID",
-                "Идентификатор Telegram должен быть числовым.",
-                422,
-            )
-
     async def reconcile_published(
         self,
         publication_id: UUID,
@@ -798,6 +780,7 @@ class PublicationService:
         note: str | None,
     ) -> PublicationResponse:
         publication = await self._locked(publication_id)
+        external_id = external_id.strip()
         if publication.status is PublicationStatus.PUBLISHED:
             existing = await self.session.scalar(
                 select(PublicationReconciliation)
@@ -823,10 +806,22 @@ class PublicationService:
                 "Для этой публикации нельзя подтвердить доставку.",
                 409,
             )
-        self._validate_external_id(publication.channel, external_id)
-        object_id = external_id.strip()
-        if publication.provider_target_id is not None and object_id.isdecimal():
-            # Reconciliation accepts decimal input with padding. Compare the actual object number.
+        object_id = external_id.lstrip("0")
+        if not (
+            object_id.isascii()
+            and object_id.isdecimal()
+            and len(object_id) <= 19
+            and int(object_id) <= 2**63 - 1
+        ):
+            raise AppError(
+                "PUBLICATION_EXTERNAL_ID_INVALID",
+                "Укажите положительный числовой идентификатор внешней публикации.",
+                422,
+            )
+        target_id = publication.provider_target_id
+        if target_id is not None and target_id.removeprefix("-").isdecimal():
+            # Claims can retain a padded numeric chat ID. Receipts store the canonical number.
+            target_id = str(int(target_id))
             other_placement = await self.session.scalar(
                 select(LegacyExternalPlacement.id)
                 .join(
@@ -834,10 +829,13 @@ class PublicationService:
                     PublicationClaimEvent.id == LegacyExternalPlacement.claim_event_id,
                 )
                 .where(
-                    PublicationClaimEvent.publication_id != publication.id,
+                    or_(
+                        PublicationClaimEvent.publication_id != publication.id,
+                        PublicationClaimEvent.content_version_id != publication.content_version_id,
+                    ),
                     LegacyExternalPlacement.channel == publication.channel,
-                    LegacyExternalPlacement.provider_target_id == publication.provider_target_id,
-                    LegacyExternalPlacement.external_id == str(int(object_id)),
+                    LegacyExternalPlacement.provider_target_id == target_id,
+                    LegacyExternalPlacement.external_id == object_id,
                 )
             )
             if other_placement is not None:
@@ -862,7 +860,7 @@ class PublicationService:
                 operator_user_id=user.id,
                 channel=publication.channel,
                 decision=ReconciliationDecision.CONFIRMED_PUBLISHED,
-                external_id=external_id.strip(),
+                external_id=external_id,
                 external_url=external_url,
                 external_published_at=published_at,
                 note=note,
@@ -873,7 +871,7 @@ class PublicationService:
         # intended atomic ordering observable and testable.
         await self.session.flush()
         publication.status = PublicationStatus.PUBLISHED
-        publication.external_id = external_id.strip()
+        publication.external_id = external_id
         publication.external_url = external_url
         publication.published_at = published_at
         publication.failure_code = None
@@ -884,7 +882,7 @@ class PublicationService:
             campaign_id=publication.campaign_id,
             user_id=user.id,
             content_item_id=publication.content_item_id,
-            metadata={"publication_id": str(publication.id), "external_id": external_id.strip()},
+            metadata={"publication_id": str(publication.id), "external_id": external_id},
         )
         await self.session.commit()
         await self.session.refresh(publication)
