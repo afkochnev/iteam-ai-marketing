@@ -2,9 +2,21 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from uuid import UUID
+from uuid import UUID, uuid4
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, String, Text, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+    text,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base, UUIDTimestampMixin
@@ -128,3 +140,104 @@ class PublicationReconciliation(UUIDTimestampMixin, Base):
     external_url: Mapped[str | None] = mapped_column(Text)
     external_published_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     note: Mapped[str | None] = mapped_column(Text)
+
+
+class PublicationClaimEvent(Base):
+    """A committed legacy execution claim. Direct dispatch owns its delivery."""
+
+    __tablename__ = "publication_claim_events"
+    __table_args__ = (
+        UniqueConstraint(
+            "publication_id", "claim_digest", name="uq_publication_claim_events_claim"
+        ),
+        CheckConstraint("claim_digest ~ '^[0-9a-f]{64}$'", name="digest_format"),
+        CheckConstraint("event_type = 'legacy.social.claimed'", name="legacy_event"),
+        CheckConstraint("schema_version = 1", name="schema_v1"),
+        CheckConstraint("delivery_owner = 'legacy_direct'", name="legacy_direct"),
+        Index("ix_publication_claim_events_content_version_id", "content_version_id"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    publication_id: Mapped[UUID] = mapped_column(ForeignKey("publications.id", ondelete="CASCADE"))
+    content_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("content_versions.id", ondelete="RESTRICT")
+    )
+    channel: Mapped[ContentChannel] = mapped_column(Enum(ContentChannel, name="content_channel"))
+    claim_digest: Mapped[str] = mapped_column(String(64))
+    event_type: Mapped[str] = mapped_column(String(32))
+    schema_version: Mapped[int] = mapped_column(Integer)
+    delivery_owner: Mapped[str] = mapped_column(String(24))
+
+
+class LegacyPublicationAttempt(Base):
+    """One logical provider invocation associated with a legacy publication claim."""
+
+    __tablename__ = "legacy_publication_attempts"
+    __table_args__ = (
+        CheckConstraint(
+            "(status = 'STARTED' AND finished_at IS NULL AND failure_code IS NULL "
+            "AND external_id IS NULL AND provider_target_id IS NULL) OR "
+            "(status = 'SUCCEEDED' AND finished_at IS NOT NULL AND failure_code IS NULL "
+            "AND external_id IS NOT NULL AND btrim(external_id) <> '') OR "
+            "(status IN ('FAILED', 'UNKNOWN') AND finished_at IS NOT NULL "
+            "AND failure_code IS NOT NULL AND failure_code ~ '^[A-Z][A-Z0-9_]{0,99}$' "
+            "AND external_id IS NULL AND provider_target_id IS NULL)",
+            name="outcome",
+        ),
+        CheckConstraint("finished_at IS NULL OR finished_at >= started_at", name="time_order"),
+    )
+
+    claim_event_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "publication_claim_events.id", name="fk_legacy_attempt_claim", ondelete="CASCADE"
+        ),
+        primary_key=True,
+    )
+    status: Mapped[str] = mapped_column(String(12))
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    claimed_target_id: Mapped[str | None] = mapped_column(String(255))
+    external_id: Mapped[str | None] = mapped_column(String(255))
+    provider_target_id: Mapped[str | None] = mapped_column(String(255))
+    failure_code: Mapped[str | None] = mapped_column(String(100))
+
+
+class LegacyExternalPlacement(Base):
+    """Receipt-confirmed Telegram message or VK wall post from a single legacy claim."""
+
+    __tablename__ = "legacy_external_placements"
+    __table_args__ = (
+        UniqueConstraint("claim_event_id", name="uq_legacy_placement_claim"),
+        UniqueConstraint(
+            "channel", "provider_target_id", "external_id", name="uq_legacy_placement_object"
+        ),
+        CheckConstraint(
+            "CASE WHEN external_id ~ '^[1-9][0-9]{0,18}$' "
+            "THEN external_id::numeric <= 9223372036854775807 ELSE false END",
+            name="external_id",
+        ),
+        CheckConstraint(
+            "CASE WHEN provider_target_id ~ '^-?[1-9][0-9]{0,18}$' "
+            "THEN provider_target_id::numeric BETWEEN -9223372036854775808 AND 9223372036854775807 "
+            "ELSE false END",
+            name="target_id",
+        ),
+        CheckConstraint(
+            "channel = 'TELEGRAM' OR (channel = 'VK' AND left(provider_target_id, 1) = '-')",
+            name="channel_target",
+        ),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
+    claim_event_id: Mapped[UUID] = mapped_column(
+        ForeignKey(
+            "legacy_publication_attempts.claim_event_id",
+            name="fk_legacy_placement_attempt",
+            ondelete="RESTRICT",
+        )
+    )
+    channel: Mapped[ContentChannel] = mapped_column(Enum(ContentChannel, name="content_channel"))
+    provider_target_id: Mapped[str] = mapped_column(String(255))
+    external_id: Mapped[str] = mapped_column(String(255))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

@@ -11,7 +11,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import runtime_admission_drill as drill
@@ -25,7 +25,7 @@ IMAGE = "sha256:" + "b" * 64
 
 def snapshot(*, committed=False):
     return {
-        "schema": fixture.SCHEMA, "database_identity_sha256": "sha256:" + "c" * 64,
+        "schema": fixture.CHECKOUT_SCHEMA, "database_identity_sha256": "sha256:" + "c" * 64,
         "all_tables_sha256": "sha256:" + ("e" if committed else "d") * 64,
         "table_counts": {"campaigns": 2 if committed else 1, "agent_runs": 3},
         "claim_status": "FAILED" if committed else "QUEUED", "claim_started": committed,
@@ -142,6 +142,19 @@ class CandidateArchiveTests(unittest.TestCase):
 
 
 class EvidenceTests(unittest.TestCase):
+    def test_snapshot_requires_the_exact_schema_of_each_drill(self):
+        historical_schema = "20261121_0030"
+        for expected, wrong in ((fixture.CHECKOUT_SCHEMA, historical_schema),
+                                (historical_schema, fixture.CHECKOUT_SCHEMA)):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as temporary:
+                candidate = {"candidate_sha": SHA, "candidate_image_id": IMAGE}
+                runtime = drill.Runtime(None, candidate, Path(temporary), {}, schema=expected)
+                runtime.python = Mock(return_value=dict(snapshot(), schema=expected))
+                self.assertEqual(runtime.snapshot()["schema"], expected)
+                runtime.python.return_value["schema"] = wrong
+                with self.assertRaisesRegex(drill.DrillError, "PROBE_INVALID"):
+                    runtime.snapshot()
+
     def test_health_is_candidate_protocol_bound_and_passive_never_ready_for_business(self):
         value = {"status": "ok", "database": "ok", "redis": "ok", "schema": "ok",
                  "build_sha": SHA, "admission_protocol": 1, "admission_mode": "passive",
@@ -214,7 +227,7 @@ class WorkerCommandTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             commands = Commands()
             runtime = drill.Runtime(commands, {"candidate_sha": SHA, "candidate_image_id": IMAGE},
-                                    Path(temporary), {})
+                                    Path(temporary), {}, schema=fixture.CHECKOUT_SCHEMA)
             roles = ("ai", "ai_control", "publication", "publication_control", "metrics", "")
             for role in roles:
                 with self.subTest(role=role):
@@ -238,6 +251,7 @@ class ActivationRuntime:
     """Unit driver double; real state primitives and durable files are used."""
     def __init__(self, root):
         self.root = root
+        self.schema = fixture.CHECKOUT_SCHEMA
         self.project = "iteam-admission-drill-" + "1" * 10
         self.operation = "2" * 32
         self.candidate = {"candidate_sha": SHA, "candidate_image_id": IMAGE}

@@ -67,7 +67,11 @@ from app.models.optimization import (  # noqa: E402
     CampaignOptimizationAction,
     CampaignOptimizationProposal,
 )
-from app.models.publication import Publication, PublicationReconciliation  # noqa: E402
+from app.models.publication import (  # noqa: E402
+    LegacyExternalPlacement,
+    Publication,
+    PublicationReconciliation,
+)
 from app.models.publication_metrics import PublicationMetricsSnapshot  # noqa: E402
 from app.models.publication_plan import PublicationPlan, PublicationPlanItem  # noqa: E402
 from app.models.task import Task, TaskDependency  # noqa: E402
@@ -101,6 +105,7 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.execute(delete(PublicationPlanItem))
         await session.execute(delete(PublicationPlan))
         await session.execute(delete(PublicationMetricsSnapshot))
+        await session.execute(delete(LegacyExternalPlacement))
         await session.execute(delete(Publication))
         await session.execute(delete(ContentDerivation))
         await session.execute(delete(ContentVersionSource))
@@ -147,6 +152,7 @@ async def db_session() -> AsyncIterator[AsyncSession]:
         await session.execute(delete(PublicationPlanItem))
         await session.execute(delete(PublicationPlan))
         await session.execute(delete(PublicationMetricsSnapshot))
+        await session.execute(delete(LegacyExternalPlacement))
         await session.execute(delete(Publication))
         await session.execute(delete(ContentDerivation))
         await session.execute(delete(ContentVersionSource))

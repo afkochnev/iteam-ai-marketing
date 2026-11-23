@@ -5,7 +5,7 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, Integer, Text, text
+from sqlalchemy import CheckConstraint, DateTime, Enum, ForeignKey, Index, Integer, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,11 +25,24 @@ class PublicationMetricsSnapshot(UUIDTimestampMixin, Base):
     __table_args__ = (
         Index("ix_publication_metrics_publication_id", "publication_id"),
         Index("ix_publication_metrics_observed_at", "observed_at"),
+        Index(
+            "ix_publication_metrics_placement",
+            "external_placement_id",
+            postgresql_where=text("external_placement_id IS NOT NULL"),
+        ),
+        CheckConstraint(
+            "external_placement_id IS NULL OR source = 'PROVIDER'", name="placement_source"
+        ),
         Index("ix_publication_metrics_publication_observed", "publication_id", "observed_at"),
     )
 
     publication_id: Mapped[UUID] = mapped_column(
         ForeignKey("publications.id", ondelete="RESTRICT"), nullable=False
+    )
+    external_placement_id: Mapped[UUID | None] = mapped_column(
+        ForeignKey(
+            "legacy_external_placements.id", name="fk_metrics_placement", ondelete="RESTRICT"
+        )
     )
     channel: Mapped[ContentChannel] = mapped_column(
         Enum(ContentChannel, name="content_channel", create_type=False), nullable=False

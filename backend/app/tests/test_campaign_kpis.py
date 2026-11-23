@@ -11,6 +11,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 from app.core.database import async_session_factory
 from app.core.errors import AppError
+from app.core.runtime_readiness import EXPECTED_MIGRATION_HEAD
 from app.models.campaign import Campaign, CampaignStatus
 from app.models.campaign_kpi import CampaignKPI, KPIMetric
 from app.models.content import ContentChannel
@@ -230,9 +231,8 @@ async def test_archive_readable_mutations_blocked(db_session, operation):
 async def test_fk_restrict_and_migration(db_session):
     pub, _ = await setup(db_session)
     await CampaignKPIService(db_session).create(pub.campaign_id, config())
-    assert (
-        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261121_0030"
-    )
+    revision = await db_session.scalar(text("SELECT version_num FROM alembic_version"))
+    assert revision == EXPECTED_MIGRATION_HEAD
     assert (
         await db_session.scalar(
             text(
