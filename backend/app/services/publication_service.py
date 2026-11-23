@@ -21,6 +21,7 @@ from app.core.vk_canary_retry import (
     RETRY_V2_KEY,
 )
 from app.integrations.telegram import (
+    ProviderPublicationResult,
     PublicationProvider,
     TelegramProvider,
     TelegramProviderError,
@@ -1063,10 +1064,17 @@ class PublicationService:
                 422,
             )
 
-    async def _locked(self, publication_id: UUID) -> Publication:
-        publication = await self.session.scalar(
-            select(Publication).where(Publication.id == publication_id).with_for_update()
+    async def _find_locked(self, publication_id: UUID) -> Publication | None:
+        publication: Publication | None = await self.session.scalar(
+            select(Publication)
+            .where(Publication.id == publication_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
+        return publication
+
+    async def _locked(self, publication_id: UUID) -> Publication:
+        publication = await self._find_locked(publication_id)
         if publication is None:
             raise AppError("PUBLICATION_NOT_FOUND", "Публикация не найдена.", 404)
         return publication
@@ -1548,6 +1556,55 @@ class PublicationService:
             }
         )
 
+    @staticmethod
+    def _claim_audit_key(action: str, publication_id: UUID, token: str) -> str:
+        fingerprint = hashlib.sha256(token.encode()).hexdigest()
+        return f"publication-{action}:{publication_id}:{fingerprint}"
+
+    async def _pending_start_key(self, publication_id: UUID, token: str) -> str | None:
+        # The caller holds the publication row lock through the STARTED commit.
+        queued = self._claim_audit_key("queued", publication_id, token)
+        started = self._claim_audit_key("started", publication_id, token)
+        legacy = f"publication-started:{publication_id}"
+        recorded = set(
+            await self.session.scalars(
+                select(ActivityLog.operation_key).where(
+                    ActivityLog.operation_key.in_((queued, started, legacy))
+                )
+            )
+        )
+        # Older claims have no per-token QUEUED record. Their bare STARTED may
+        # already represent a remote call, even if its outcome was never saved.
+        key = started if queued in recorded else legacy
+        return None if key in recorded else key
+
+    async def _result_owner(
+        self, publication_id: UUID, token: str, receipt: ProviderPublicationResult | None = None
+    ) -> Publication | None:
+        publication = await self._find_locked(publication_id)
+        if publication is None:
+            return None
+        if (
+            publication.status is PublicationStatus.PUBLISHING
+            and publication.execution_token == token
+        ):
+            return publication
+        # Recovery or a human decision superseded this execution during I/O.
+        # Preserve a late external ID for reconciliation without changing the decision.
+        if receipt is not None:
+            await ActivityLogService(self.session).record(
+                "PUBLICATION_LATE_PROVIDER_RECEIPT",
+                operation_key=self._claim_audit_key("late-receipt", publication_id, token),
+                campaign_id=publication.campaign_id,
+                content_item_id=publication.content_item_id,
+                metadata={
+                    "publication_id": str(publication_id),
+                    "external_id": receipt.external_id,
+                },
+            )
+            await self.session.commit()
+        return None
+
     async def claim_for_publish(
         self, publication_id: UUID, user: User | None = None
     ) -> PublicationResponse:
@@ -1648,7 +1705,9 @@ class PublicationService:
             )
         await ActivityLogService(self.session).record(
             "PUBLICATION_QUEUED",
-            operation_key=f"publication-queued:{publication.id}",
+            operation_key=self._claim_audit_key(
+                "queued", publication.id, publication.execution_token
+            ),
             campaign_id=publication.campaign_id,
             user_id=user.id if user else None,
             content_item_id=publication.content_item_id,
@@ -1666,9 +1725,7 @@ class PublicationService:
         execution_token: str | None = None,
     ) -> PublicationResponse | None:
         require_active_runtime()
-        publication = await self.session.scalar(
-            select(Publication).where(Publication.id == publication_id).with_for_update()
-        )
+        publication = await self._find_locked(publication_id)
         if publication is None or publication.status is not PublicationStatus.PUBLISHING:
             return None
         if publication.channel.value != "VK":
@@ -1682,6 +1739,26 @@ class PublicationService:
             return None
         if execution_token is not None and publication.execution_token != execution_token:
             return None
+        claim_token = publication.execution_token
+        diagnostic_retry = await self.has_canary_retry(publication.id)
+        new_authorization = diagnostic_retry and publication.retry_count == 2
+        consumed_key = CONSUMED_V2_KEY if new_authorization else CONSUMED_KEY
+        if diagnostic_retry and (
+            not await self._valid_canary_retry(publication)
+            or await self.session.scalar(
+                select(ActivityLog.id).where(ActivityLog.operation_key == consumed_key)
+            )
+            is not None
+        ):
+            return None
+        if diagnostic_retry:
+            suffix = "canary-retry-v2" if new_authorization else "canary-retry"
+            start_key = f"publication-started:{publication.id}:{suffix}"
+        else:
+            ordinary_key = await self._pending_start_key(publication.id, claim_token)
+            if ordinary_key is None:
+                return None
+            start_key = ordinary_key
         if (
             settings.vk_canary_publication_id is not None
             and publication.id != settings.vk_canary_publication_id
@@ -1703,17 +1780,6 @@ class PublicationService:
             await self.session.commit()
             await self.session.refresh(publication)
             return await self._response(publication)
-        diagnostic_retry = await self.has_canary_retry(publication.id)
-        new_authorization = diagnostic_retry and publication.retry_count == 2
-        consumed_key = CONSUMED_V2_KEY if new_authorization else CONSUMED_KEY
-        if diagnostic_retry and (
-            not await self._valid_canary_retry(publication)
-            or await self.session.scalar(
-                select(ActivityLog.id).where(ActivityLog.operation_key == consumed_key)
-            )
-            is not None
-        ):
-            return None
         if (
             publication.approved_for_publish_at is None
             or publication.approved_for_publish_by is None
@@ -1774,11 +1840,7 @@ class PublicationService:
             )
         await ActivityLogService(self.session).record(
             "PUBLICATION_STARTED",
-            operation_key=f"publication-started:{publication.id}:canary-retry-v2"
-            if new_authorization
-            else f"publication-started:{publication.id}:canary-retry"
-            if diagnostic_retry
-            else f"publication-started:{publication.id}",
+            operation_key=start_key,
             campaign_id=publication.campaign_id,
             content_item_id=publication.content_item_id,
             metadata={
@@ -1793,9 +1855,7 @@ class PublicationService:
                 text=version.content, chat_id=str(settings.vk_owner_id or "")
             )
         except VKProviderError as error:
-            publication = await self.session.scalar(
-                select(Publication).where(Publication.id == publication_id).with_for_update()
-            )
+            publication = await self._result_owner(publication_id, claim_token)
             if publication is None:
                 return None
             publication.status = PublicationStatus.FAILED
@@ -1830,9 +1890,7 @@ class PublicationService:
             await self.session.refresh(publication)
             return await self._response(publication)
         except Exception:
-            publication = await self.session.scalar(
-                select(Publication).where(Publication.id == publication_id).with_for_update()
-            )
+            publication = await self._result_owner(publication_id, claim_token)
             if publication is None:
                 return None
             publication.status = PublicationStatus.FAILED
@@ -1850,9 +1908,7 @@ class PublicationService:
             await self.session.commit()
             await self.session.refresh(publication)
             return await self._response(publication)
-        publication = await self.session.scalar(
-            select(Publication).where(Publication.id == publication_id).with_for_update()
-        )
+        publication = await self._result_owner(publication_id, claim_token, result)
         if publication is None:
             return None
         publication.status = PublicationStatus.PUBLISHED
@@ -1882,23 +1938,20 @@ class PublicationService:
     ) -> PublicationResponse | None:
         """Publish a claimed record; provider errors are persisted without raw payloads."""
         require_active_runtime()
-        publication = await self.session.scalar(
-            select(Publication).where(Publication.id == publication_id).with_for_update()
-        )
+        publication = await self._find_locked(publication_id)
         if publication is None or publication.status is not PublicationStatus.PUBLISHING:
             return None
         if publication.channel.value != "TELEGRAM":
-            publication.status = PublicationStatus.FAILED
-            publication.failure_code = "PUBLICATION_CHANNEL_UNSUPPORTED"
-            publication.failure_message = "Для этого канала Telegram publisher не применяется."
-            await self.session.commit()
-            await self.session.refresh(publication)
-            return await self._response(publication)
+            return None
         if publication.execution_token is None:
             return None
         if execution_token is None and provider is None:
             return None
         if execution_token is not None and publication.execution_token != execution_token:
+            return None
+        claim_token = publication.execution_token
+        start_key = await self._pending_start_key(publication.id, claim_token)
+        if start_key is None:
             return None
         if (
             publication.approved_for_publish_at is None
@@ -1938,7 +1991,7 @@ class PublicationService:
             return await self._response(publication)
         await ActivityLogService(self.session).record(
             "PUBLICATION_STARTED",
-            operation_key=f"publication-started:{publication.id}",
+            operation_key=start_key,
             campaign_id=publication.campaign_id,
             content_item_id=publication.content_item_id,
             metadata={
@@ -1954,9 +2007,7 @@ class PublicationService:
                 chat_id=settings.telegram_target_chat_id or "",
             )
         except TelegramProviderError as error:
-            publication = await self.session.scalar(
-                select(Publication).where(Publication.id == publication_id).with_for_update()
-            )
+            publication = await self._result_owner(publication_id, claim_token)
             if publication is None:
                 return None
             publication.status = PublicationStatus.FAILED
@@ -1989,9 +2040,7 @@ class PublicationService:
             await self.session.refresh(publication)
             return await self._response(publication)
         except Exception:
-            publication = await self.session.scalar(
-                select(Publication).where(Publication.id == publication_id).with_for_update()
-            )
+            publication = await self._result_owner(publication_id, claim_token)
             if publication is None:
                 return None
             publication.status = PublicationStatus.FAILED
@@ -2009,9 +2058,7 @@ class PublicationService:
             await self.session.commit()
             await self.session.refresh(publication)
             return await self._response(publication)
-        publication = await self.session.scalar(
-            select(Publication).where(Publication.id == publication_id).with_for_update()
-        )
+        publication = await self._result_owner(publication_id, claim_token, result)
         if publication is None:
             return None
         publication.status = PublicationStatus.PUBLISHED
@@ -2044,6 +2091,7 @@ class PublicationService:
                         Publication.updated_at < cutoff,
                     )
                     .with_for_update(skip_locked=True)
+                    .execution_options(populate_existing=True)
                 )
             ).all()
         )
