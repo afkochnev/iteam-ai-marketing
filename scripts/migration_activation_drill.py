@@ -186,7 +186,7 @@ def adversarial_passive(request: dict, images: dict[str, str]) -> dict:
     with tempfile.TemporaryDirectory(prefix=admission.TEMP_PREFIX) as temporary:
         root = Path(temporary).resolve()
         root.chmod(0o700)
-        runtime = admission.Runtime(commands, metadata, root, infra)
+        runtime = admission.Runtime(commands, metadata, root, infra, schema=SCHEMA)
         try:
             runtime.start()
             passive, _ = admission.passive_checks(runtime)

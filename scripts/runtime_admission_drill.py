@@ -366,7 +366,8 @@ def environment(*, sha: str) -> dict[str, str]:
 
 
 class Runtime:
-    def __init__(self, commands: Commands, candidate: dict, root: Path, infra_images: dict):
+    def __init__(self, commands: Commands, candidate: dict, root: Path, infra_images: dict, *, schema: str):
+        self.schema = schema
         self.commands, self.candidate, self.root = commands, candidate, root
         self.project = PROJECT_PREFIX + uuid.uuid4().hex[:10]
         self.operation = uuid.uuid4().hex
@@ -475,9 +476,9 @@ class Runtime:
         else:
             raise DrillError("FIXTURE_NOT_READY")
         self.commands.stage = "SCHEMA_PREPARE"
-        self.run("migrate", ["alembic", "upgrade", fixture.SCHEMA], mode="active")
+        self.run("migrate", ["alembic", "upgrade", self.schema], mode="active")
         self.commands.stage = "CANARY_SEED"
-        seed = self.python(fixture.SEED_CODE)
+        seed = self.python(fixture.SEED_CODE, self.schema)
         require(seed.get("status") == "PASS" and seed.get("queued_canaries") == 7
                 and seed.get("stale_get_canary") is True and seed.get("stale_recovery_canary") is True,
                 "FIXTURE_SEED_FAILED")
@@ -496,7 +497,7 @@ class Runtime:
             overrides = {"DATABASE_URL": self.env["DATABASE_URL"].replace("@postgres:", "@127.0.0.1:")}
             network = "container:" + self.project + "-postgres"
         value = self.python(fixture.SNAPSHOT_CODE, overrides=overrides, network=network)
-        require(value.get("schema") == fixture.SCHEMA
+        require(value.get("schema") == self.schema
                 and IMAGE_PATTERN.fullmatch(str(value.get("all_tables_sha256")))
                 and IMAGE_PATTERN.fullmatch(str(value.get("database_identity_sha256")))
                 and type(value.get("table_counts")) is dict
@@ -684,7 +685,7 @@ def passive_checks(runtime: Runtime) -> tuple[dict, dict]:
         "matrix": matrix, "business_writes_blocked": True, "claims_blocked": True,
         "provider_connections": 0, "provider_witness_selftest_connections": 4,
         "all_tables_sha256": before["all_tables_sha256"], "table_counts": before["table_counts"],
-        "database_identity_sha256": before["database_identity_sha256"], "schema": fixture.SCHEMA,
+        "database_identity_sha256": before["database_identity_sha256"], "schema": runtime.schema,
         "broker_snapshot_sha256": redis_before["sha256"], "broker_keys": redis_before["key_count"],
         "redis_witness": observed, "real_broker_queued_canaries": 7,
         "fixture_kind": "ADVERSARIAL_TARGET_SCHEMA", "business_ready": False,
@@ -696,7 +697,7 @@ def passive_checks(runtime: Runtime) -> tuple[dict, dict]:
 def activation_checks(runtime: Runtime, passive: dict, baseline: dict, state_dir: Path) -> dict:
     binding = {"authorization": AUTHORIZATION, "operation_id": runtime.operation,
                "project": runtime.project, "candidate_sha": runtime.candidate["candidate_sha"],
-               "candidate_image_id": runtime.candidate["candidate_image_id"], "target_schema_head": fixture.SCHEMA}
+               "candidate_image_id": runtime.candidate["candidate_image_id"], "target_schema_head": runtime.schema}
     with ops.locked_state(state_dir):
         state = CandidateActivationState(state_dir, binding)
         try:
@@ -750,7 +751,7 @@ def activation_checks(runtime: Runtime, passive: dict, baseline: dict, state_dir
             runtime.commands.stage = "CONTAINED_SNAPSHOT"
             after = runtime.snapshot(fenced=True)
             require(after == committed, "COMMITTED_DATA_CHANGED")
-            evidence = {"target_schema_head": fixture.SCHEMA, "committed_write_preserved": True,
+            evidence = {"target_schema_head": runtime.schema, "committed_write_preserved": True,
                         "new_claims_blocked": physical["new_claims_blocked"], "runtime_stopped": physical["runtime_stopped"],
                         "evidence_sha256": digest({"physical": physical, "after": after})}
             runtime.commands.stage = "CONTAINMENT_RECORD"
@@ -765,7 +766,7 @@ def activation_checks(runtime: Runtime, passive: dict, baseline: dict, state_dir
             require(blocked, "CONTAINMENT_FAILED")
             return {
                 "status": "PASS", "project": runtime.project, "operation_id": runtime.operation,
-                "passive_checks_sha256": digest(passive), "baseline_schema": fixture.SCHEMA,
+                "passive_checks_sha256": digest(passive), "baseline_schema": runtime.schema,
                 "http_write_committed": True, "real_worker_claim_committed": True,
                 "active_stale_get_recovery_committed": True, "claim_status": committed["claim_status"],
                 "committed_all_tables_sha256": committed["all_tables_sha256"],
@@ -791,7 +792,7 @@ def run_scenario(commands: Commands, candidate: dict, infra: dict, *, activate: 
     with tempfile.TemporaryDirectory(prefix=TEMP_PREFIX) as temporary:
         root = Path(temporary).resolve()
         root.chmod(0o700)
-        runtime = Runtime(commands, candidate, root, infra)
+        runtime = Runtime(commands, candidate, root, infra, schema=fixture.CHECKOUT_SCHEMA)
         report = None
         failure = None
         try:
