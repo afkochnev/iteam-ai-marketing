@@ -21,7 +21,7 @@ from app.services.publication_service import PublicationService
 from app.tests.test_publications import _approved_post
 
 
-async def plan_post(session: AsyncSession):
+async def plan_post(session: AsyncSession, channel: ContentChannel = ContentChannel.VK):
     user, campaign, post, version = await _approved_post(session)
     source_id = await session.scalar(
         select(ContentDerivation.source_content_version_id).where(
@@ -45,7 +45,7 @@ async def plan_post(session: AsyncSession):
         publication_plan_id=plan.id,
         position=2,
         scheduled_at=datetime.now(UTC) + timedelta(days=5),
-        channel=ContentChannel.VK,
+        channel=channel,
         source_content_item_id=source.content_item_id,
         source_content_version_id=source.id,
         topic="Format choice",
@@ -57,7 +57,7 @@ async def plan_post(session: AsyncSession):
     )
     session.add(item)
     await session.flush()
-    post.channel = ContentChannel.VK
+    post.channel = channel
     post.metadata_ = {
         "publication_plan_id": str(plan.id),
         "publication_plan_item_id": str(item.id),
