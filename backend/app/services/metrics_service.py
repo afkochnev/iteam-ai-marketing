@@ -226,23 +226,6 @@ class MetricsService:
         )
 
     async def sync(self, publication_id: UUID) -> PublicationMetricsSnapshot:
-        # An unchanged read reuses the previous snapshot. Serialize sampling as well as
-        # storage so a delayed older observation cannot become the latest visible value.
-        try:
-            await self.session.execute(
-                select(
-                    func.pg_advisory_xact_lock(
-                        func.hashtextextended(f"iteam:publication-metrics:{publication_id}", 0)
-                    )
-                )
-            )
-            return await self._sync_provider(publication_id)
-        except BaseException:
-            # Cancellation and validation failures must release the transaction-scoped lock.
-            await self.session.rollback()
-            raise
-
-    async def _sync_provider(self, publication_id: UUID) -> PublicationMetricsSnapshot:
         publication = await self._publication(publication_id)
         expected_target: str | None = None
         if publication.channel is ContentChannel.TELEGRAM:
@@ -270,6 +253,26 @@ class MetricsService:
                     "Публикация относится к другой внешней площадке.",
                     409,
                 )
+        # An unchanged read reuses the previous snapshot. Serialize sampling as well as
+        # storage so a delayed older observation cannot become the latest visible value.
+        try:
+            await self.session.execute(
+                select(
+                    func.pg_advisory_xact_lock(
+                        func.hashtextextended(f"iteam:publication-metrics:{publication_id}", 0)
+                    )
+                )
+            )
+            return await self._sync_provider(publication, provider, provider_name)
+        except BaseException:
+            # Cancellation and validation failures must release the transaction-scoped lock.
+            await self.session.rollback()
+            raise
+
+    async def _sync_provider(
+        self, publication: Publication, provider: MetricsProvider, provider_name: str
+    ) -> PublicationMetricsSnapshot:
+        publication_id = publication.id
         channel = publication.channel
         version_id = publication.content_version_id
         target_id = publication.provider_target_id
