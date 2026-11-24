@@ -58,7 +58,16 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
   const onGenerationSucceeded = useCallback(() => refresh(true), [refresh]);
   const generation = useStudioGeneration(campaignId, onGenerationSucceeded);
 
-  const asset = selection && (listing.page?.items.find((candidate) => candidate.id === selection.asset.id) ?? selection.asset);
+  const selectedAsset = selection?.asset;
+  const assets = listing.page?.items.map((listed) => {
+    if (listed.id !== selectedAsset?.id) return listed;
+    const selected = selectedAsset.latest_version;
+    const latest = listed.latest_version;
+    return selected.version_number > latest.version_number || (selected.id === latest.id && selected.approval)
+      ? selectedAsset
+      : listed;
+  });
+  const asset = assets?.find((candidate) => candidate.id === selectedAsset?.id) ?? selectedAsset;
   const version = selection?.version ?? asset?.latest_version;
   const versionConflict = isVersionConflict(error);
 
@@ -92,7 +101,6 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
       const latest = page.items[0];
       if (!latest) throw new Error("Не найдена актуальная версия материала.");
       setSelection((selected) => selected && selected.asset.id === latest.asset_id ? {
-        ...selected,
         asset: { ...selected.asset, latest_version: latest },
       } : selected);
       refresh();
@@ -223,11 +231,11 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
           <h3>Материалы</h3>
           {listing.loading && <p role="status">Загружаем материалы…</p>}
           {listing.error != null && <FriendlyError error={listing.error} fallback="Не удалось загрузить материалы студии." onRetry={() => listing.refresh()} />}
-          {listing.page && (
+          {listing.page && assets && (
             <>
-              {listing.page.items.length === 0 ? <p>В студии пока нет материалов.</p> : (
+              {assets.length === 0 ? <p>В студии пока нет материалов.</p> : (
                 <ul className="studio-choice-list">
-                  {listing.page.items.map((candidate) => (
+                  {assets.map((candidate) => (
                     <li key={candidate.id} className="studio-asset">
                       <button type="button" className="secondary" disabled={busy || !!editor} aria-pressed={asset?.id === candidate.id} onClick={() => selectAsset(candidate)}>
                         {candidate.latest_version.payload.title}

@@ -189,6 +189,7 @@ describe("campaign content studio", () => {
     const initial = storeVersion(article({ illustration_version_id: null }));
     render(<StudioWorkspace campaignId={campaignId} />);
     fireEvent.click(await library().findByRole("button", { name: initial.payload.title }));
+    fireEvent.click(await screen.findByRole("button", { name: "Смотреть v1" }));
     fireEvent.click(screen.getByRole("button", { name: "Новая версия на основе v1" }));
     fireEvent.change(screen.getByLabelText("Текст статьи"), { target: { value: "Локальные правки" } });
 
@@ -199,6 +200,7 @@ describe("campaign content studio", () => {
       illustration_version_id: null,
       payload: { ...initial.payload, body: "Правки другого редактора" },
     }));
+    api.assets.mockResolvedValue(page([{ id: initial.asset_id, kind: initial.kind, latest_version: initial }]));
     const conflict = new ApiError("Материал изменился. Откройте новую версию.", 409, "STUDIO_VERSION_CONFLICT");
     api.saveArticle.mockRejectedValueOnce(conflict).mockRejectedValueOnce(conflict);
     fireEvent.click(screen.getByRole("button", { name: "Сохранить черновик статьи" }));
@@ -220,6 +222,9 @@ describe("campaign content studio", () => {
     });
     await screen.findByText(/Доступна версия v2/);
     fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    expect(await screen.findByRole("heading", { name: initial.payload.title + " · v2" })).toBeInTheDocument();
+    expect(library().getByText(/Статья · v2/)).toBeInTheDocument();
+    fireEvent.click(library().getByRole("button", { name: initial.payload.title }));
     fireEvent.click(screen.getByRole("button", { name: "Новая версия на основе v2" }));
     expect(screen.getByLabelText("Текст статьи")).toHaveValue("Правки другого редактора");
     fireEvent.change(screen.getByLabelText("Текст статьи"), { target: { value: "Объединённые правки" } });
