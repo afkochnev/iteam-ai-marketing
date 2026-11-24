@@ -15,7 +15,9 @@ COPY app ./app
 COPY alembic ./alembic
 COPY alembic.ini ./
 
-RUN useradd --create-home --uid 10001 appuser && chown -R appuser:appuser /app
+RUN useradd --create-home --uid 10001 appuser \
+    && chown -R appuser:appuser /app \
+    && install -d -m 0700 -o appuser -g appuser /var/lib/iteam/creative-media
 USER appuser
 
 EXPOSE 8000

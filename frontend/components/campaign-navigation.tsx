@@ -8,6 +8,7 @@ export const campaignSections = [
   ["", "Обзор"],
   ["strategy", "Стратегия"],
   ["content", "Контент"],
+  ["studio", "Студия контента"],
   ["plan", "Медиаплан"],
   ["performance", "Результаты"],
   ["tasks", "Задачи"],

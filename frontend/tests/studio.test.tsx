@@ -1,0 +1,209 @@
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { StudioWorkspace } from "@/components/studio/workspace";
+import type { StudioAsset, StudioVersion } from "@/lib/studio";
+
+const api = vi.hoisted(() => ({
+  assets: vi.fn(),
+  versions: vi.fn(),
+  saveArticle: vi.fn(),
+  uploadIllustration: vi.fn(),
+  approve: vi.fn(),
+  media: vi.fn(),
+  generate: vi.fn(),
+  generationJob: vi.fn(),
+}));
+vi.mock("@/lib/studio", () => ({ studioApi: api }));
+
+const campaignId = "campaign-1";
+const timestamp = "2026-11-24T12:00:00Z";
+const approval = { approved_at: timestamp, approved_by: "editor-1" };
+const original = { sha256: "a".repeat(64), width: 1200, height: 800, mime_type: "image/png", size_bytes: 749 };
+
+function illustration(overrides: Partial<Extract<StudioVersion, { kind: "ILLUSTRATION" }>> = {}): Extract<StudioVersion, { kind: "ILLUSTRATION" }> {
+  return {
+    id: "visual-1",
+    asset_id: "visual-asset",
+    kind: "ILLUSTRATION",
+    version_number: 1,
+    supersedes_version_id: null,
+    source_version_id: null,
+    illustration_version_id: null,
+    snapshot_hash: "b".repeat(64),
+    created_by: "editor-1",
+    created_at: timestamp,
+    approval: null,
+    payload: {
+      title: "Иллюстрация для статьи",
+      brief: "Команда у доски",
+      brand_profile: "Нейтральные цвета",
+      alt_text: "Команда у доски с диаграммой",
+      usage_rights: "Собственное изображение",
+      caption: "Обсуждение плана",
+      original,
+      variants: [{ ...original, name: "square", width: 800 }],
+      provenance: { source: "UPLOAD" },
+    },
+    ...overrides,
+  };
+}
+
+function article(overrides: Partial<Extract<StudioVersion, { kind: "ARTICLE" }>> = {}): Extract<StudioVersion, { kind: "ARTICLE" }> {
+  return {
+    id: "article-1",
+    asset_id: "article-asset",
+    kind: "ARTICLE",
+    version_number: 1,
+    supersedes_version_id: null,
+    source_version_id: null,
+    illustration_version_id: "visual-1",
+    snapshot_hash: "c".repeat(64),
+    created_by: "editor-1",
+    created_at: timestamp,
+    approval: null,
+    payload: { title: "Стратегическая сессия", body: "Текст статьи" },
+    ...overrides,
+  };
+}
+
+function page<T>(items: T[]) {
+  return { items, total: items.length, limit: 50, offset: 0 };
+}
+
+function library() {
+  return within(screen.getByRole("region", { name: "Материалы студии" }));
+}
+
+function fillIllustration() {
+  const draft = illustration().payload;
+  fireEvent.change(screen.getByLabelText("Название иллюстрации"), { target: { value: draft.title } });
+  fireEvent.change(screen.getByLabelText("Бриф иллюстрации"), { target: { value: draft.brief } });
+  fireEvent.change(screen.getByLabelText("Профиль бренда"), { target: { value: draft.brand_profile } });
+  fireEvent.change(screen.getByLabelText("Альтернативный текст"), { target: { value: draft.alt_text } });
+  fireEvent.change(screen.getByLabelText("Права использования"), { target: { value: draft.usage_rights } });
+}
+
+let versions: StudioVersion[];
+
+function storeVersion(version: StudioVersion) {
+  versions = [version, ...versions.filter((candidate) => candidate.id !== version.id)];
+  return version;
+}
+
+describe("campaign content studio", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    sessionStorage.clear();
+    versions = [];
+    class PreviewURL extends URL {
+      static createObjectURL = vi.fn(() => "blob:studio-preview");
+      static revokeObjectURL = vi.fn();
+    }
+    vi.stubGlobal("URL", PreviewURL);
+
+    api.assets.mockImplementation(async (_campaign: string, _offset: number, _signal: AbortSignal, kind?: string) => {
+      const grouped = new Map<string, StudioAsset>();
+      for (const version of versions) {
+        if (kind && version.kind !== kind) continue;
+        if ((grouped.get(version.asset_id)?.latest_version.version_number ?? 0) >= version.version_number) continue;
+        grouped.set(version.asset_id, { id: version.asset_id, kind: version.kind, latest_version: version });
+      }
+      return page([...grouped.values()]);
+    });
+    api.versions.mockImplementation(async (_campaign: string, assetId: string) => page(
+      versions.filter((version) => version.asset_id === assetId).sort((left, right) => right.version_number - left.version_number),
+    ));
+    api.uploadIllustration.mockImplementation(async () => storeVersion(illustration()));
+    api.saveArticle.mockImplementation(async () => storeVersion(article()));
+    api.approve.mockImplementation(async (_campaign: string, id: string) => {
+      const version = versions.find((candidate) => candidate.id === id);
+      if (!version) throw new Error("Нет версии");
+      return storeVersion({ ...version, approval });
+    });
+    api.media.mockResolvedValue(new Blob(["preview"], { type: "image/png" }));
+  });
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("uploads and approves an illustration, binds its exact version to an article, and approves the article", async () => {
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(screen.getByRole("button", { name: "Новая иллюстрация" }));
+    fillIllustration();
+    const file = new File(["preview"], "visual.png", { type: "image/png" });
+    const uploadInput = screen.getByLabelText<HTMLInputElement>("Файл изображения");
+    fireEvent.change(uploadInput, { target: { files: [file] } });
+    fireEvent.submit(uploadInput.form!);
+
+    expect(await screen.findByRole("heading", { name: "Иллюстрация для статьи · v1" })).toBeInTheDocument();
+    expect(api.uploadIllustration).toHaveBeenCalledWith(campaignId, expect.objectContaining({ usage_rights: "Собственное изображение" }), file, undefined);
+    expect(await screen.findByRole("img", { name: "Команда у доски с диаграммой" })).toBeInTheDocument();
+    expect(screen.getByText("Загружено редактором")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Утвердить версию v1" }));
+    await waitFor(() => expect(screen.getByText("Версия v1 утверждена.")).toBeInTheDocument());
+    expect(api.approve).toHaveBeenCalledWith(campaignId, "visual-1");
+
+    // A newer draft must not replace the approved illustration version in the picker.
+    storeVersion(illustration({ id: "visual-2", version_number: 2, supersedes_version_id: "visual-1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Новая статья" }));
+    fireEvent.change(screen.getByLabelText("Название статьи"), { target: { value: "Стратегическая сессия" } });
+    fireEvent.change(screen.getByLabelText("Текст статьи"), { target: { value: "Текст статьи" } });
+    fireEvent.click(screen.getByRole("button", { name: "Выбрать · версия иллюстрации" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Иллюстрация для статьи · иллюстрация" }));
+    const exact = await screen.findByRole("button", { name: "Выбрать v1 · утверждена" });
+    expect(screen.queryByRole("button", { name: "Выбрать v2 · черновик" })).not.toBeInTheDocument();
+    fireEvent.click(exact);
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить черновик статьи" }));
+
+    expect(await screen.findByRole("heading", { name: "Стратегическая сессия · v1" })).toBeInTheDocument();
+    expect(api.saveArticle).toHaveBeenCalledWith(campaignId, expect.objectContaining({ illustration_version_id: "visual-1" }), undefined);
+    fireEvent.click(screen.getByRole("button", { name: "Утвердить версию v1" }));
+    await waitFor(() => expect(api.approve).toHaveBeenCalledWith(campaignId, "article-1"));
+  });
+
+  it("opens an exact historical media variant and starts edits from the latest version", async () => {
+    storeVersion(illustration({ approval }));
+    storeVersion(illustration({ id: "visual-2", version_number: 2, supersedes_version_id: "visual-1" }));
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(await library().findByRole("button", { name: "Иллюстрация для статьи" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Смотреть v1" }));
+    expect(screen.getByRole("heading", { name: "Иллюстрация для статьи · v1" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Вариант предпросмотра"), { target: { value: "square" } });
+    await waitFor(() => expect(api.media).toHaveBeenCalledWith(campaignId, "visual-1", "square", expect.any(AbortSignal)));
+    fireEvent.click(screen.getByRole("button", { name: "Новая версия на основе v2" }));
+    expect(screen.getByText("Новая версия иллюстрации на основе v2")).toBeInTheDocument();
+    expect(screen.getByLabelText("Бриф иллюстрации")).toHaveValue("Команда у доски");
+    expect(screen.getByLabelText("Как получить изображение")).toHaveValue("keep");
+    expect(screen.queryByLabelText("Файл изображения")).not.toBeInTheDocument();
+    api.uploadIllustration.mockImplementationOnce(async () => storeVersion(illustration({
+      id: "visual-3", version_number: 3, supersedes_version_id: "visual-2",
+    })));
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить новую версию" }));
+    expect(await screen.findByRole("heading", { name: "Иллюстрация для статьи · v3" })).toBeInTheDocument();
+    expect(api.uploadIllustration).toHaveBeenCalledWith(campaignId, expect.objectContaining({ usage_rights: "Собственное изображение" }), undefined, {
+      asset_id: "visual-asset", expected_current_version_id: "visual-2",
+    });
+  });
+
+  it("tracks generation by job, then opens the exact generated version and its provenance", async () => {
+    const draft = illustration();
+    const generated = illustration({ payload: { ...draft.payload, provenance: { source: "GENERATED", model: "studio-model", prompt: "Нарисуй команду" } } });
+    api.generate.mockResolvedValue({ id: "job-1", status: "PENDING", asset_id: null, version_id: null, error_code: null });
+    api.generationJob.mockImplementation(async () => {
+      storeVersion(generated);
+      return { id: "job-1", status: "SUCCEEDED", asset_id: draft.asset_id, version_id: draft.id, error_code: null };
+    });
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(screen.getByRole("button", { name: "Новая иллюстрация" }));
+    fillIllustration();
+    fireEvent.change(screen.getByLabelText("Как получить изображение"), { target: { value: "generate" } });
+    fireEvent.click(screen.getByRole("button", { name: "Начать генерацию" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Открыть черновик иллюстрации" }));
+
+    expect(await screen.findByRole("heading", { name: "Иллюстрация для статьи · v1" })).toBeInTheDocument();
+    expect(screen.getByText("studio-model")).toBeInTheDocument();
+    expect(screen.getByText("Нарисуй команду")).toBeInTheDocument();
+    expect(api.generate).toHaveBeenCalledWith(campaignId, expect.objectContaining({ usage_rights: "Собственное изображение" }), undefined);
+    expect(api.generationJob).toHaveBeenCalledWith(campaignId, "job-1", expect.any(AbortSignal));
+    expect(api.uploadIllustration).not.toHaveBeenCalled();
+  });
+});
