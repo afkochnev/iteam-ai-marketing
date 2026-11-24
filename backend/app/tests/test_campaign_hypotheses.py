@@ -194,7 +194,10 @@ async def test_list_and_exact_version_keep_campaign_and_snapshot_identity(
 
 
 async def test_hypothesis_reads_require_active_membership_in_default_workspace(
-    hypotheses_client: AsyncClient, db_session: AsyncSession, workspace: Workspace
+    hypotheses_client: AsyncClient,
+    db_session: AsyncSession,
+    workspace: Workspace,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = hypotheses_client
     admin = await _user(db_session, UserRole.ADMIN)
@@ -210,8 +213,19 @@ async def test_hypothesis_reads_require_active_membership_in_default_workspace(
     await db_session.flush()
     path = f"/api/v1/campaigns/{campaign.id}/hypotheses"
     detail = f"{path}/{uuid4()}/versions/1"
-    assert (await client.get(path)).status_code == 401
-    assert (await client.get(detail)).status_code == 401
+
+    async def reject_snapshot_session() -> AsyncSession:
+        raise AssertionError("Invalid credentials must be rejected before opening a snapshot")
+
+    with monkeypatch.context() as invalid_credentials:
+        invalid_credentials.setitem(
+            app.dependency_overrides, get_read_snapshot_session, reject_snapshot_session
+        )
+        assert (await client.get(path)).status_code == 401
+        assert (await client.get(detail)).status_code == 401
+        client.cookies.set(settings.auth_cookie_name, "invalid-token")
+        assert (await client.get(path)).status_code == 401
+        assert (await client.get(detail)).status_code == 401
     _authenticate(client, admin)
     assert (await client.get(path)).status_code == 403
     assert (await client.get(detail)).status_code == 403

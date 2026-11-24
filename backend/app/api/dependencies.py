@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from typing import Annotated
+from uuid import UUID
 
 import jwt
 from fastapi import Cookie, Depends, status
@@ -30,32 +31,36 @@ async def get_read_snapshot_session() -> AsyncIterator[AsyncSession]:
 ReadSnapshotSession = Annotated[AsyncSession, Depends(get_read_snapshot_session)]
 
 
-async def get_current_user(
-    session: SessionDependency,
+async def _get_access_identity(
     access_token: Annotated[str | None, Cookie(alias=settings.auth_cookie_name)] = None,
-) -> User:
-    return await _authenticate_user(session, access_token)
-
-
-async def get_current_snapshot_user(
-    session: ReadSnapshotSession,
-    access_token: Annotated[str | None, Cookie(alias=settings.auth_cookie_name)] = None,
-) -> User:
-    return await _authenticate_user(session, access_token)
-
-
-async def _authenticate_user(session: AsyncSession, access_token: str | None) -> User:
+) -> tuple[UUID, int]:
     if access_token is None:
         raise AppError(
             "AUTHENTICATION_REQUIRED", "Требуется авторизация.", status.HTTP_401_UNAUTHORIZED
         )
     try:
-        user_id = decode_access_token(access_token)
-        auth_version = decode_auth_version(access_token)
+        return decode_access_token(access_token), decode_auth_version(access_token)
     except (jwt.InvalidTokenError, ValueError):
         raise AppError(
             "AUTHENTICATION_REQUIRED", "Требуется авторизация.", status.HTTP_401_UNAUTHORIZED
         ) from None
+
+
+AccessIdentity = Annotated[tuple[UUID, int], Depends(_get_access_identity)]
+
+
+async def get_current_user(identity: AccessIdentity, session: SessionDependency) -> User:
+    return await _authenticate_user(session, *identity)
+
+
+async def get_current_snapshot_user(
+    identity: AccessIdentity,
+    session: ReadSnapshotSession,
+) -> User:
+    return await _authenticate_user(session, *identity)
+
+
+async def _authenticate_user(session: AsyncSession, user_id: UUID, auth_version: int) -> User:
     user = await UserRepository(session).get_by_id(user_id)
     if user is None or user.auth_version != auth_version:
         raise AppError(
