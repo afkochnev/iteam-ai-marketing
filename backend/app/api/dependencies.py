@@ -1,3 +1,4 @@
+from collections.abc import AsyncIterator
 from typing import Annotated
 
 import jwt
@@ -5,13 +6,28 @@ from fastapi import Cookie, Depends, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.core.database import get_db_session
+from app.core.database import async_session_factory, get_db_session
 from app.core.errors import AppError
 from app.core.security import decode_access_token, decode_auth_version
 from app.models.user import User, UserRole
 from app.repositories.users import UserRepository
 
 SessionDependency = Annotated[AsyncSession, Depends(get_db_session)]
+
+
+async def get_read_snapshot_session() -> AsyncIterator[AsyncSession]:
+    """Give read projections one PostgreSQL snapshot without write access."""
+    async with async_session_factory(autoflush=False) as session:
+        await session.connection(
+            execution_options={
+                "isolation_level": "REPEATABLE READ",
+                "postgresql_readonly": True,
+            }
+        )
+        yield session
+
+
+ReadSnapshotSession = Annotated[AsyncSession, Depends(get_read_snapshot_session)]
 
 
 async def get_current_user(
