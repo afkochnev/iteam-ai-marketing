@@ -9,6 +9,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base, UUIDTimestampMixin
 from app.models.user import User
 
+DEFAULT_WORKSPACE_ID = UUID("4183ac32-0f61-54da-ad9e-ebb31696101b")
+
 
 class WorkspaceRole(StrEnum):
     WORKSPACE_ADMIN = "WORKSPACE_ADMIN"

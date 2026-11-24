@@ -20,7 +20,7 @@ from sqlalchemy import event, func, select, text, update
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.distribution_workspace import get_distribution_read_session
+from app.api.dependencies import get_read_snapshot_session
 from app.core.config import settings
 from app.core.database import async_session_factory, engine
 from app.core.errors import AppError
@@ -260,7 +260,7 @@ async def _plan_item(
 
 @asynccontextmanager
 async def _read_session() -> AsyncIterator[AsyncSession]:
-    dependency = get_distribution_read_session()
+    dependency = get_read_snapshot_session()
     try:
         yield await anext(dependency)
     finally:

@@ -15,15 +15,14 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
+from app.models.workspace import DEFAULT_WORKSPACE_ID
 
 
 class MarketingHypothesis(Base):
     __tablename__ = "marketing_hypotheses"
     __table_args__ = (
         UniqueConstraint("id", "workspace_id", "campaign_id"),
-        CheckConstraint(
-            "workspace_id = '4183ac32-0f61-54da-ad9e-ebb31696101b'", name="legacy_workspace"
-        ),
+        CheckConstraint(f"workspace_id = '{DEFAULT_WORKSPACE_ID}'", name="legacy_workspace"),
     )
 
     id: Mapped[UUID] = mapped_column(primary_key=True, default=uuid4)
