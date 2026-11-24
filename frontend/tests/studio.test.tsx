@@ -244,6 +244,74 @@ describe("campaign content studio", () => {
     });
   });
 
+  it("keeps the illustration form open when dispatch fails immediately", async () => {
+    const brief = "Локальный бриф для новой иллюстрации";
+    api.generate.mockResolvedValue({
+      id: "job-1", status: "FAILED", asset_id: null, version_id: null,
+      error_code: "CREATIVE_GENERATION_QUEUE_UNAVAILABLE",
+    });
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(screen.getByRole("button", { name: "Новая иллюстрация" }));
+    fillIllustration();
+    fireEvent.change(screen.getByLabelText("Бриф иллюстрации"), { target: { value: brief } });
+    fireEvent.change(screen.getByLabelText("Как получить изображение"), { target: { value: "generate" } });
+    fireEvent.click(screen.getByRole("button", { name: "Начать генерацию" }));
+
+    expect(await screen.findByText("Генерация завершилась ошибкой.")).toBeInTheDocument();
+    expect(screen.getByText("CREATIVE_GENERATION_QUEUE_UNAVAILABLE")).toBeInTheDocument();
+    expect(screen.getByLabelText("Бриф иллюстрации")).toHaveValue(brief);
+    expect(screen.getByLabelText("Как получить изображение")).toHaveValue("generate");
+    expect(api.generate).toHaveBeenCalledExactlyOnceWith(campaignId, expect.objectContaining({ brief }), undefined);
+    expect(api.generationJob).not.toHaveBeenCalled();
+  });
+
+  it("restores submitted illustration edits after a queued generation hits a version conflict", async () => {
+    const initial = illustration();
+    storeVersion(initial);
+    const brief = "Локальный бриф для новой версии";
+    const caption = "Локальная подпись";
+    api.generate.mockResolvedValue({
+      id: "job-1", status: "PENDING", asset_id: initial.asset_id, version_id: null, error_code: null,
+    });
+    api.generationJob.mockImplementation(async () => {
+      storeVersion(illustration({
+        id: "visual-2", version_number: 2, supersedes_version_id: initial.id,
+        payload: { ...initial.payload, brief: "Бриф другого редактора", caption: "Другая подпись" },
+      }));
+      return {
+        id: "job-1", status: "FAILED", asset_id: initial.asset_id, version_id: null,
+        error_code: "STUDIO_VERSION_CONFLICT",
+      };
+    });
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(await library().findByRole("button", { name: initial.payload.title }));
+    fireEvent.click(screen.getByRole("button", { name: "Новая версия на основе v1" }));
+    fireEvent.change(screen.getByLabelText("Бриф иллюстрации"), { target: { value: brief } });
+    fireEvent.change(screen.getByLabelText("Подпись"), { target: { value: caption } });
+    fireEvent.change(screen.getByLabelText("Как получить изображение"), { target: { value: "generate" } });
+    fireEvent.click(screen.getByRole("button", { name: "Начать генерацию" }));
+
+    const restore = await screen.findByRole("button", { name: "Вернуться к брифу" });
+    expect(screen.getByText("Генерация завершилась ошибкой.")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Бриф иллюстрации")).not.toBeInTheDocument();
+    fireEvent.click(restore);
+
+    expect(await screen.findByText(/Доступна версия v2/)).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Ваши правки остались в форме.");
+    expect(screen.getByLabelText("Бриф иллюстрации")).toHaveValue(brief);
+    expect(screen.getByLabelText("Подпись")).toHaveValue(caption);
+    expect(screen.getByLabelText("Как получить изображение")).toHaveValue("generate");
+    expect(screen.getByRole("button", { name: "Начать генерацию" })).toBeDisabled();
+    expect(api.generate).toHaveBeenCalledExactlyOnceWith(campaignId, expect.objectContaining({ brief, caption }), {
+      asset_id: initial.asset_id, expected_current_version_id: initial.id,
+    });
+    expect(api.generationJob).toHaveBeenCalledWith(campaignId, "job-1", expect.any(AbortSignal));
+
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Новая версия на основе v2" }));
+    expect(screen.getByLabelText("Бриф иллюстрации")).toHaveValue("Бриф другого редактора");
+  });
+
   it("tracks generation by job, then opens the exact generated version and its provenance", async () => {
     const draft = illustration();
     const generated = illustration({ payload: { ...draft.payload, provenance: { source: "GENERATED", model: "studio-model", prompt: "Нарисуй команду" } } });

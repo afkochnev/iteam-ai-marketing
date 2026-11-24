@@ -70,6 +70,8 @@ export function IllustrationEditor({
   campaignId,
   previous,
   busy,
+  draft,
+  versionConflict,
   generationInProgress,
   onSave,
   onCancel,
@@ -77,18 +79,21 @@ export function IllustrationEditor({
   campaignId: string;
   previous?: VersionOf<"ILLUSTRATION">;
   busy: boolean;
+  draft?: StudioIllustrationInput;
+  versionConflict: boolean;
   generationInProgress: boolean;
   onSave: (input: StudioIllustrationInput, change: IllustrationChange) => void;
   onCancel: () => void;
 }) {
-  const [method, setMethod] = useState<IllustrationChange["method"]>(previous ? "keep" : "upload");
-  const [source, setSource] = useState(initialReference(previous?.source_version_id));
+  const [method, setMethod] = useState<IllustrationChange["method"]>(draft ? "generate" : previous ? "keep" : "upload");
+  const [source, setSource] = useState(initialReference(draft ? draft.source_version_id : previous?.source_version_id));
+  const payload = draft ?? previous?.payload;
   const [fileError, setFileError] = useState("");
   const generationBlocked = method === "generate" && generationInProgress;
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (generationBlocked) return;
+    if (generationBlocked || versionConflict) return;
     const fields = new FormData(event.currentTarget);
     const input = {
       title: textValue(fields, "title"),
@@ -117,12 +122,12 @@ export function IllustrationEditor({
     <form className="card studio-editor" onSubmit={submit}>
       <fieldset disabled={busy}>
         <legend>{previous ? `Новая версия иллюстрации на основе v${previous.version_number}` : "Новая иллюстрация"}</legend>
-        <label>Название иллюстрации<input name="title" maxLength={255} defaultValue={previous?.payload.title} required /></label>
-        <label>Бриф иллюстрации<textarea name="brief" maxLength={5_000} rows={4} defaultValue={previous?.payload.brief} required /></label>
-        <label>Профиль бренда<textarea name="brand_profile" maxLength={2_000} rows={3} defaultValue={previous?.payload.brand_profile} required /></label>
-        <label>Альтернативный текст<input name="alt_text" maxLength={300} defaultValue={previous?.payload.alt_text} required /></label>
-        <label>Подпись<input name="caption" maxLength={1_000} defaultValue={previous?.payload.caption ?? ""} /></label>
-        <label>Права использования<textarea name="usage_rights" maxLength={1_000} rows={2} defaultValue={previous?.payload.usage_rights} required /></label>
+        <label>Название иллюстрации<input name="title" maxLength={255} defaultValue={payload?.title} required /></label>
+        <label>Бриф иллюстрации<textarea name="brief" maxLength={5_000} rows={4} defaultValue={payload?.brief} required /></label>
+        <label>Профиль бренда<textarea name="brand_profile" maxLength={2_000} rows={3} defaultValue={payload?.brand_profile} required /></label>
+        <label>Альтернативный текст<input name="alt_text" maxLength={300} defaultValue={payload?.alt_text} required /></label>
+        <label>Подпись<input name="caption" maxLength={1_000} defaultValue={payload?.caption ?? ""} /></label>
+        <label>Права использования<textarea name="usage_rights" maxLength={1_000} rows={2} defaultValue={payload?.usage_rights} required /></label>
         <StudioVersionPicker campaignId={campaignId} label="Исходная версия" value={source} onChange={setSource} />
         <label>Как получить изображение
           <select value={method} onChange={(event) => {
@@ -138,7 +143,7 @@ export function IllustrationEditor({
         {generationBlocked && <p className="notice">В этой студии уже выполняется генерация. Её состояние показано выше.</p>}
         {fileError && method === "upload" && <p className="error" role="alert">{fileError}</p>}
         <div className="actions">
-          <button type="submit" disabled={generationBlocked}>
+          <button type="submit" disabled={generationBlocked || versionConflict}>
             {!busy && method === "keep" && "Сохранить новую версию"}
             {!busy && method === "upload" && "Загрузить черновик иллюстрации"}
             {!busy && method === "generate" && "Начать генерацию"}
