@@ -34,6 +34,17 @@ async def get_current_user(
     session: SessionDependency,
     access_token: Annotated[str | None, Cookie(alias=settings.auth_cookie_name)] = None,
 ) -> User:
+    return await _authenticate_user(session, access_token)
+
+
+async def get_current_snapshot_user(
+    session: ReadSnapshotSession,
+    access_token: Annotated[str | None, Cookie(alias=settings.auth_cookie_name)] = None,
+) -> User:
+    return await _authenticate_user(session, access_token)
+
+
+async def _authenticate_user(session: AsyncSession, access_token: str | None) -> User:
     if access_token is None:
         raise AppError(
             "AUTHENTICATION_REQUIRED", "Требуется авторизация.", status.HTTP_401_UNAUTHORIZED
@@ -56,6 +67,7 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+CurrentSnapshotUser = Annotated[User, Depends(get_current_snapshot_user)]
 
 
 async def require_admin(current_user: CurrentUser) -> User:

@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import get_read_snapshot_session
 from app.core.config import settings
-from app.core.database import engine
+from app.core.database import engine, get_db_session
 from app.core.security import encode_access_token
 from app.main import app
 from app.models.campaign import Campaign
@@ -32,10 +32,16 @@ async def hypotheses_client(
     async def read_test_data() -> AsyncIterator[AsyncSession]:
         yield db_session
 
+    async def reject_request_session() -> AsyncSession:
+        raise AssertionError("Hypothesis authentication must use the projection session")
+
+    request_session_override = app.dependency_overrides[get_db_session]
     app.dependency_overrides[get_read_snapshot_session] = read_test_data
+    app.dependency_overrides[get_db_session] = reject_request_session
     try:
         yield client
     finally:
+        app.dependency_overrides[get_db_session] = request_session_override
         app.dependency_overrides.pop(get_read_snapshot_session)
 
 
@@ -239,3 +245,18 @@ async def test_hypothesis_reads_require_active_membership_in_default_workspace(
         assert (await client.get(path, params=params)).status_code == 422
     for number in (0, 2_147_483_648):
         assert (await client.get(f"{path}/{uuid4()}/versions/{number}")).status_code == 422
+
+    admin.auth_version += 1
+    await db_session.flush()
+    for url in (path, detail):
+        response = await client.get(url)
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
+
+    _authenticate(client, admin)
+    admin.is_active = False
+    await db_session.flush()
+    for url in (path, detail):
+        response = await client.get(url)
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "USER_INACTIVE"
