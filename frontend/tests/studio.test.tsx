@@ -202,10 +202,11 @@ describe("campaign content studio", () => {
     }));
     api.assets.mockResolvedValue(page([{ id: initial.asset_id, kind: initial.kind, latest_version: initial }]));
     const conflict = new ApiError("Материал изменился. Откройте новую версию.", 409, "STUDIO_VERSION_CONFLICT");
-    api.saveArticle.mockRejectedValueOnce(conflict).mockRejectedValueOnce(conflict);
+    api.saveArticle.mockRejectedValueOnce(conflict);
+    api.versions.mockRejectedValueOnce(new Error("Временная ошибка загрузки"));
     fireEvent.click(screen.getByRole("button", { name: "Сохранить черновик статьи" }));
 
-    expect(await screen.findByText(/Доступна версия v2/)).toBeInTheDocument();
+    const retryVersion = await screen.findByRole("button", { name: "Повторить загрузку актуальной версии" });
     expect(screen.getByRole("alert")).toHaveTextContent("Ваши правки остались в форме.");
     expect(screen.getByLabelText("Текст статьи")).toHaveValue("Локальные правки");
     expect(api.saveArticle).toHaveBeenCalledTimes(1);
@@ -214,13 +215,16 @@ describe("campaign content studio", () => {
       expected_current_version_id: initial.id,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Сохранить черновик статьи" }));
-    await waitFor(() => expect(api.saveArticle).toHaveBeenCalledTimes(2));
-    expect(api.saveArticle).toHaveBeenLastCalledWith(campaignId, expect.objectContaining({ body: "Локальные правки" }), {
-      asset_id: initial.asset_id,
-      expected_current_version_id: initial.id,
-    });
-    await screen.findByText(/Доступна версия v2/);
+    const save = screen.getByRole<HTMLButtonElement>("button", { name: "Сохранить черновик статьи" });
+    expect(save).toBeDisabled();
+    fireEvent.submit(save.form!);
+    expect(api.saveArticle).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(retryVersion);
+    expect(await screen.findByText(/Доступна версия v2/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Текст статьи")).toHaveValue("Локальные правки");
+    expect(save).toBeDisabled();
+    expect(api.saveArticle).toHaveBeenCalledTimes(1);
     fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
     expect(await screen.findByRole("heading", { name: initial.payload.title + " · v2" })).toBeInTheDocument();
     expect(library().getByText(/Статья · v2/)).toBeInTheDocument();
@@ -310,6 +314,75 @@ describe("campaign content studio", () => {
     fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
     fireEvent.click(await screen.findByRole("button", { name: "Новая версия на основе v2" }));
     expect(screen.getByLabelText("Бриф иллюстрации")).toHaveValue("Бриф другого редактора");
+  });
+
+
+  it.each([
+    ["FAILED", "Генерация завершилась ошибкой."],
+    ["UNKNOWN", "Результат генерации не подтверждён."],
+  ] as const)("restores a submitted brief after a reload when generation is %s", async (status, message) => {
+    const previous = storeVersion(illustration({ approval }));
+    const brief = "Бриф, сохранённый с заданием";
+    const storageKey = `iteam:creative-generation:${campaignId}`;
+    sessionStorage.setItem(storageKey, "job-restored");
+    api.generationJob.mockResolvedValue({
+      id: "job-restored",
+      status,
+      asset_id: previous.asset_id,
+      version_id: null,
+      error_code: "CREATIVE_GENERATION_ERROR",
+      recovery: {
+        draft: {
+          title: "Иллюстрация из задания",
+          brief,
+          brand_profile: "Правила бренда",
+          alt_text: "Описание изображения",
+          usage_rights: "Собственное изображение",
+          caption: null,
+          source_version_id: previous.id,
+        },
+        previous,
+      },
+    });
+    render(<StudioWorkspace campaignId={campaignId} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Вернуться к брифу" }));
+    expect(screen.getByText(message)).toBeInTheDocument();
+    expect(screen.getByText("Новая версия иллюстрации на основе v1")).toBeInTheDocument();
+    expect(screen.getByLabelText("Название иллюстрации")).toHaveValue("Иллюстрация из задания");
+    expect(screen.getByLabelText("Бриф иллюстрации")).toHaveValue(brief);
+    expect(screen.getByLabelText("Подпись")).toHaveValue("");
+    expect(sessionStorage.getItem(storageKey)).toBe("job-restored");
+    expect(api.generationJob).toHaveBeenCalledWith(campaignId, "job-restored", expect.any(AbortSignal));
+    expect(api.generate).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    fireEvent.click(screen.getByRole("button", { name: "Скрыть задачу" }));
+    expect(sessionStorage.getItem(storageKey)).toBeNull();
+    expect(screen.queryByText(message)).not.toBeInTheDocument();
+  });
+
+  it("can check an existing generation again after signing back in", async () => {
+    const storageKey = `iteam:creative-generation:${campaignId}`;
+    sessionStorage.setItem(storageKey, "job-existing");
+    api.generationJob
+      .mockRejectedValueOnce(new ApiError("Требуется авторизация.", 401, "AUTHENTICATION_REQUIRED"))
+      .mockResolvedValueOnce({
+        id: "job-existing", status: "FAILED", asset_id: null, version_id: null,
+        error_code: "CREATIVE_GENERATION_ERROR", recovery: null,
+      });
+    render(<StudioWorkspace campaignId={campaignId} />);
+
+    const signIn = await screen.findByRole("link", { name: "Войти в новой вкладке" });
+    expect(signIn).toHaveAttribute("href", "/login");
+    expect(sessionStorage.getItem(storageKey)).toBe("job-existing");
+    fireEvent.click(screen.getByRole("button", { name: "Проверить состояние" }));
+
+    expect(await screen.findByText("Генерация завершилась ошибкой.")).toBeInTheDocument();
+    expect(api.generationJob).toHaveBeenCalledTimes(2);
+    expect(api.generate).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(storageKey)).toBeNull();
+    expect(screen.queryByRole("button", { name: "Вернуться к брифу" })).not.toBeInTheDocument();
   });
 
   it("tracks generation by job, then opens the exact generated version and its provenance", async () => {

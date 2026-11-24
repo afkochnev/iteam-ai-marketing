@@ -18,12 +18,14 @@ export function ArticleEditor({
   campaignId,
   previous,
   busy,
+  versionConflict,
   onSave,
   onCancel,
 }: {
   campaignId: string;
   previous?: VersionOf<"ARTICLE">;
   busy: boolean;
+  versionConflict: boolean;
   onSave: (input: StudioArticleInput) => void;
   onCancel: () => void;
 }) {
@@ -32,6 +34,7 @@ export function ArticleEditor({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (busy || versionConflict) return;
     const fields = new FormData(event.currentTarget);
     onSave({
       title: textValue(fields, "title"),
@@ -56,7 +59,7 @@ export function ArticleEditor({
           approvedIllustrations
         />
         <div className="actions">
-          <button type="submit">{busy ? "Сохраняем…" : "Сохранить черновик статьи"}</button>
+          <button type="submit" disabled={versionConflict}>{busy ? "Сохраняем…" : "Сохранить черновик статьи"}</button>
           <button type="button" className="secondary" onClick={onCancel}>Отмена</button>
         </div>
       </fieldset>

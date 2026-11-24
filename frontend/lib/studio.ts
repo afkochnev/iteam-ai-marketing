@@ -71,12 +71,21 @@ export interface StudioPage<T> {
   offset: number;
 }
 
+export interface StudioGenerationRecovery {
+  draft: Omit<StudioIllustrationInput, "caption" | "source_version_id"> & {
+    caption: string | null;
+    source_version_id: string | null;
+  };
+  previous: StudioVersion | null;
+}
+
 export interface StudioGenerationJob {
   id: string;
   status: "PENDING" | "RUNNING" | "SUCCEEDED" | "FAILED" | "UNKNOWN";
   asset_id: string | null;
   version_id: string | null;
   error_code: string | null;
+  recovery?: StudioGenerationRecovery | null;
 }
 
 export interface StudioRevision {

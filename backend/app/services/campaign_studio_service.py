@@ -152,6 +152,14 @@ class CampaignStudioService:
             offset=offset,
         )
 
+    async def read_version(
+        self, user_id: UUID, campaign_id: UUID, version_id: UUID
+    ) -> ContentAssetVersionResponse:
+        await self.require_campaign_access(user_id, campaign_id)
+        version = await self._get_version(campaign_id, version_id)
+        approval = await self.session.get(ContentAssetApproval, version.id)
+        return self._response(version, approval)
+
     async def create_article(
         self,
         user_id: UUID,

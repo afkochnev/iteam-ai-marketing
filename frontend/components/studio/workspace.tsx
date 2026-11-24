@@ -49,6 +49,7 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState<unknown>(null);
+  const [versionLookupFailed, setVersionLookupFailed] = useState(false);
   const [historyRefresh, setHistoryRefresh] = useState(0);
   const resultRequest = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => resultRequest.current?.abort(), []);
@@ -78,13 +79,31 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
   const asset = assets?.find((candidate) => candidate.id === selectedAsset?.id) ?? selectedAsset;
   const version = selection?.version ?? asset?.latest_version;
   const versionConflict = isVersionConflict(error);
-  const failedGeneration = generation.job?.status === "FAILED" ? generation.job : undefined;
-  const recoverableDraft = failedGeneration?.id === generationDraft?.jobId ? generationDraft : undefined;
+  const conflictingRevision = versionConflict ? editor?.previous : undefined;
+  const failedGeneration = generation.job?.status === "FAILED" || generation.job?.status === "UNKNOWN"
+    ? generation.job
+    : undefined;
+  const recovery = failedGeneration?.recovery;
+  const recoveredBase = recovery?.previous;
+  const localDraft = failedGeneration && failedGeneration.id === generationDraft?.jobId && recovery === undefined
+    ? generationDraft
+    : undefined;
+  const recoverableDraft = recovery && (!recoveredBase || recoveredBase.kind === "ILLUSTRATION")
+    ? {
+      input: {
+        ...recovery.draft,
+        caption: recovery.draft.caption ?? undefined,
+        source_version_id: recovery.draft.source_version_id ?? undefined,
+      },
+      previous: recoveredBase ?? undefined,
+    }
+    : localDraft;
 
   function openEditor(next?: Editor) {
     setEditor(next);
     setNotice("");
     setError(null);
+    setVersionLookupFailed(false);
   }
 
   function startRevision(current: StudioVersion) {
@@ -99,10 +118,9 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
     refresh(true);
   }
 
-  async function handleSaveError(reason: unknown, previous?: StudioVersion) {
-    setError(reason);
-    if (!previous || !isVersionConflict(reason)) return;
-
+  async function loadLatestVersion(previous: StudioVersion) {
+    setVersionLookupFailed(false);
+    setNotice("");
     const controller = new AbortController();
     resultRequest.current = controller;
     try {
@@ -116,7 +134,22 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
       refresh();
       setNotice(`Доступна версия v${latest.version_number}. Скопируйте нужные правки, затем закройте редактор и откройте новую редакцию.`);
     } catch {
-      if (!controller.signal.aborted) setNotice("Не удалось загрузить актуальную версию. Скопируйте нужные правки перед обновлением страницы.");
+      if (!controller.signal.aborted) setVersionLookupFailed(true);
+    }
+  }
+
+  async function handleSaveError(reason: unknown, previous?: StudioVersion) {
+    setError(reason);
+    if (previous && isVersionConflict(reason)) await loadLatestVersion(previous);
+  }
+
+  async function retryVersionLookup() {
+    if (busy || !conflictingRevision) return;
+    setBusy(true);
+    try {
+      await loadLatestVersion(conflictingRevision);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -146,10 +179,9 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
         showNewVersion(await studioApi.uploadIllustration(campaignId, input, file, revision));
       } else {
         const job = await studioApi.generate(campaignId, input, revision);
-        const pending = job.status === "PENDING" || job.status === "RUNNING";
-        setGenerationDraft(pending ? { jobId: job.id, input, previous } : undefined);
+        setGenerationDraft(job.status === "SUCCEEDED" ? undefined : { jobId: job.id, input, previous });
         generation.update(job);
-        if (job.status !== "FAILED") setEditor(undefined);
+        if (job.status !== "FAILED" && job.status !== "UNKNOWN") setEditor(undefined);
       }
     } catch (reason) {
       await handleSaveError(reason, previous);
@@ -162,7 +194,6 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
     if (!recoverableDraft) return;
 
     const { input, previous } = recoverableDraft;
-    setGenerationDraft(undefined);
     openEditor({ kind: "ILLUSTRATION", previous, draft: input });
     if (!previous || failedGeneration?.error_code !== VERSION_CONFLICT) return;
 
@@ -175,6 +206,11 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  function dismissGeneration() {
+    setGenerationDraft(undefined);
+    generation.dismiss();
   }
 
   async function approve(shown: StudioVersion) {
@@ -244,15 +280,33 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
       {versionConflict ? (
         <p className="error" role="alert">Материал изменился после открытия редактора. Ваши правки остались в форме.</p>
       ) : error != null && <FriendlyError error={error} fallback="Не удалось выполнить действие в студии." />}
+      {conflictingRevision && versionLookupFailed && (
+        <div className="notice">
+          <p role="status">Не удалось загрузить актуальную версию.</p>
+          <button type="button" className="secondary" disabled={busy} onClick={() => void retryVersionLookup()}>
+            Повторить загрузку актуальной версии
+          </button>
+        </div>
+      )}
       {generation.label && (
         <div className="notice studio-generation">
           <p role="status">{generation.label}</p>
           {generation.job?.error_code && <p>Код: <code>{generation.job.error_code}</code></p>}
-          {generation.stopped && <p>Автоматическая проверка приостановлена. Можно запросить состояние существующей задачи.</p>}
+          {generation.authenticationError ? (
+            <FriendlyError error={generation.authenticationError} onRetry={generation.resume} retryLabel="Проверить состояние" />
+          ) : generation.stopped && (
+            <p>Автоматическая проверка приостановлена. Можно запросить состояние существующей задачи.</p>
+          )}
+          {failedGeneration?.status === "UNKNOWN" && <p>Новая генерация создаст отдельную задачу.</p>}
           <div className="actions">
-            {generation.stopped && <button type="button" className="secondary" onClick={generation.resume}>Проверить состояние</button>}
+            {generation.stopped && !generation.authenticationError && (
+              <button type="button" className="secondary" onClick={generation.resume}>Проверить состояние</button>
+            )}
             {recoverableDraft && (
               <button type="button" className="secondary" disabled={busy || !!editor} onClick={() => void reopenGenerationDraft()}>Вернуться к брифу</button>
+            )}
+            {failedGeneration && (
+              <button type="button" className="secondary" disabled={busy || !!editor} onClick={dismissGeneration}>Скрыть задачу</button>
             )}
             {generation.job?.status === "SUCCEEDED" && generation.job.asset_id && generation.job.version_id && (
               <button type="button" className="secondary" disabled={busy || !!editor} onClick={() => void openGeneratedVersion()}>Открыть черновик иллюстрации</button>
@@ -293,6 +347,7 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
               campaignId={campaignId}
               previous={editor.previous}
               busy={busy}
+              versionConflict={versionConflict}
               onCancel={() => openEditor()}
               onSave={(input) => void saveArticle(input)}
             />

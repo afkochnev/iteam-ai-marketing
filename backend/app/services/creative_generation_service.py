@@ -10,7 +10,11 @@ from app.core.errors import AppError
 from app.integrations.creative_media import CreativeImageSize, StoredCreativeImage
 from app.models.creative_generation import CreativeGenerationJob, CreativeGenerationStatus
 from app.models.workspace import DEFAULT_WORKSPACE_ID
-from app.schemas.content_asset import IllustrationDraft, IllustrationProvenance
+from app.schemas.content_asset import (
+    ContentAssetVersionResponse,
+    IllustrationDraft,
+    IllustrationProvenance,
+)
 from app.services.campaign_studio_service import CampaignStudioService
 
 PENDING_LIFETIME = timedelta(minutes=30)
@@ -23,6 +27,15 @@ class GenerationJob(BaseModel):
     asset_id: UUID | None
     version_id: UUID | None
     error_code: str | None
+
+
+class GenerationRecovery(BaseModel):
+    draft: IllustrationDraft
+    previous: ContentAssetVersionResponse | None
+
+
+class GenerationJobDetails(GenerationJob):
+    recovery: GenerationRecovery | None = None
 
 
 class CreativeGenerationService:
@@ -74,6 +87,28 @@ class CreativeGenerationService:
         return self._dto(job)
 
     async def get_job(self, user_id: UUID, campaign_id: UUID, job_id: UUID) -> GenerationJob:
+        return self._dto(await self._get_job(user_id, campaign_id, job_id))
+
+    async def get_job_details(
+        self, user_id: UUID, campaign_id: UUID, job_id: UUID
+    ) -> GenerationJobDetails:
+        job = await self._get_job(user_id, campaign_id, job_id)
+        recovery = None
+        if job.requested_by == user_id and job.status in (
+            CreativeGenerationStatus.FAILED,
+            CreativeGenerationStatus.UNKNOWN,
+        ):
+            previous = None
+            if job.expected_current_version_id is not None:
+                previous = await CampaignStudioService(self.session).read_version(
+                    user_id, campaign_id, job.expected_current_version_id
+                )
+            recovery = GenerationRecovery(draft=self._draft(job), previous=previous)
+        return GenerationJobDetails(**self._dto(job).model_dump(), recovery=recovery)
+
+    async def _get_job(
+        self, user_id: UUID, campaign_id: UUID, job_id: UUID
+    ) -> CreativeGenerationJob:
         await CampaignStudioService(self.session).require_campaign_access(user_id, campaign_id)
         job = await self.session.scalar(
             select(CreativeGenerationJob).where(
@@ -84,7 +119,7 @@ class CreativeGenerationService:
         )
         if job is None:
             raise AppError("CREATIVE_GENERATION_NOT_FOUND", "Задача генерации не найдена.", 404)
-        return self._dto(job)
+        return job
 
     async def mark_dispatch_failed(self, job_id: UUID) -> GenerationJob | None:
         job = await self.session.scalar(

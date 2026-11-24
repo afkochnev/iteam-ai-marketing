@@ -40,7 +40,11 @@ from app.schemas.content_asset import (
     UsageRights,
 )
 from app.services.campaign_studio_service import CampaignStudioService
-from app.services.creative_generation_service import CreativeGenerationService, GenerationJob
+from app.services.creative_generation_service import (
+    CreativeGenerationService,
+    GenerationJob,
+    GenerationJobDetails,
+)
 
 router = APIRouter(prefix="/campaigns/{campaign_id}/studio", tags=["campaign-studio"])
 PageLimit = Annotated[int, Query(ge=1, le=100)]
@@ -285,11 +289,14 @@ async def request_studio_generation(
     return job
 
 
-@router.get("/illustrations/generation-jobs/{job_id}", response_model=GenerationJob)
+@router.get("/illustrations/generation-jobs/{job_id}", response_model=GenerationJobDetails)
 async def get_studio_generation(
     campaign_id: UUID,
     job_id: UUID,
     user: CurrentSnapshotUser,
     session: ReadSnapshotSession,
-) -> GenerationJob:
-    return await CreativeGenerationService(session).get_job(user.id, campaign_id, job_id)
+    response: Response,
+) -> GenerationJobDetails:
+    result = await CreativeGenerationService(session).get_job_details(user.id, campaign_id, job_id)
+    response.headers["Cache-Control"] = "private, no-store"
+    return result

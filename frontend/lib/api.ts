@@ -146,7 +146,8 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export async function requestBlob(path: string, signal: AbortSignal): Promise<Blob> {
   const response = await fetch(`${API_URL}${path}`, { credentials: "include", signal });
   if (!response.ok) {
-    throw new ApiError("Не удалось загрузить изображение.", response.status);
+    const body = (await response.json().catch(() => ({}))) as ApiErrorBody;
+    throw new ApiError(body?.error?.message ?? "Не удалось загрузить изображение.", response.status, body?.error?.code);
   }
   return response.blob();
 }

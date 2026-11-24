@@ -1,7 +1,7 @@
 from collections.abc import AsyncIterator
 from io import BytesIO
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -14,8 +14,11 @@ from app.core.database import get_db_session
 from app.core.security import encode_access_token
 from app.main import app
 from app.models.campaign import Campaign
+from app.models.creative_generation import CreativeGenerationStatus
 from app.models.user import User, UserRole
 from app.models.workspace import DEFAULT_WORKSPACE_ID, Workspace, WorkspaceMembership, WorkspaceRole
+from app.services.creative_generation_service import CreativeGenerationService
+from app.workers import creative_generation_tasks
 
 pytestmark = pytest.mark.integration
 
@@ -188,3 +191,105 @@ async def test_article_and_illustration_workflow(
     assert assets.status_code == 200, assets.text
     assert assets.json()["total"] == 1
     assert assets.json()["items"][0]["latest_version"]["id"] == visual_v2["id"]
+
+
+@pytest.mark.parametrize(
+    "status", [CreativeGenerationStatus.FAILED, CreativeGenerationStatus.UNKNOWN]
+)
+async def test_only_job_owner_recovers_submitted_generation_draft_and_exact_base(
+    studio_client: AsyncClient,
+    db_session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    status: CreativeGenerationStatus,
+) -> None:
+    monkeypatch.setattr(settings, "creative_media_root", tmp_path)
+    monkeypatch.setattr(settings, "creative_image_model", "test-image-model")
+    monkeypatch.setattr(creative_generation_tasks, "dispatch_creative_generation", lambda _: None)
+    editor, reader, campaign, other_campaign = await seed_studio(db_session)
+    client = studio_client
+    path = f"/api/v1/campaigns/{campaign.id}/studio"
+    authenticate(client, editor)
+
+    article = await client.post(f"{path}/assets/articles", json={"title": "Guide", "body": "Draft"})
+    assert article.status_code == 201, article.text
+    input_fields = {
+        "title": "Guide illustration",
+        "brief": "Show a simple workflow",
+        "brand_profile": "Use blue and white",
+        "alt_text": "A flowchart",
+        "usage_rights": "Original work",
+        "caption": "Figure one",
+        "source_version_id": article.json()["id"],
+    }
+    base = await client.post(
+        f"{path}/assets/illustrations",
+        data=input_fields,
+        files={"file": ("cover.png", sample_png(), "image/png")},
+    )
+    assert base.status_code == 201, base.text
+    base_id, asset_id = base.json()["id"], base.json()["asset_id"]
+    approval = await client.post(f"{path}/versions/{base_id}/approve")
+    assert approval.status_code == 200, approval.text
+
+    submitted_draft = {**input_fields, "brief": "Use two connected blue shapes"}
+    revision = {
+        "asset_id": asset_id,
+        "expected_current_version_id": base_id,
+    }
+    submitted = await client.post(
+        f"{path}/illustrations/generate", json={**submitted_draft, **revision}
+    )
+    assert submitted.status_code == 202, submitted.text
+    assert "recovery" not in submitted.json()
+    job_id = UUID(submitted.json()["id"])
+    job_url = f"{path}/illustrations/generation-jobs/{job_id}"
+    pending = await client.get(job_url)
+    assert pending.status_code == 200, pending.text
+    assert pending.json()["status"] == CreativeGenerationStatus.PENDING
+    assert pending.json()["recovery"] is None
+
+    advanced = await client.post(
+        f"{path}/assets/illustrations/{asset_id}/versions",
+        data={**input_fields, "expected_current_version_id": base_id},
+    )
+    assert advanced.status_code == 201, advanced.text
+    assert advanced.json()["version_number"] == 2
+
+    jobs = CreativeGenerationService(db_session)
+    if status == CreativeGenerationStatus.FAILED:
+        assert await jobs.mark_dispatch_failed(job_id) is not None
+    else:
+        claimed = await jobs.claim(job_id)
+        assert claimed is not None and claimed.claim_token is not None
+        await jobs.finish_unsuccessfully(
+            job_id, claimed.claim_token, "TEST_PROVIDER_UNKNOWN", outcome_unknown=True
+        )
+
+    recovered = await client.get(job_url)
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.headers["cache-control"] == "private, no-store"
+    assert recovered.json()["status"] == status
+    recovery = recovered.json()["recovery"]
+    assert recovery["draft"] == submitted_draft
+    assert recovery["previous"] == approval.json()
+    assert recovery["previous"]["id"] != advanced.json()["id"]
+
+    other_path = f"/api/v1/campaigns/{other_campaign.id}/studio"
+    wrong_campaign = await client.get(f"{other_path}/illustrations/generation-jobs/{job_id}")
+    assert wrong_campaign.status_code == 404
+
+    authenticate(client, reader)
+    assert (await client.get(job_url)).status_code == 403
+    db_session.add(
+        WorkspaceMembership(
+            workspace_id=DEFAULT_WORKSPACE_ID,
+            user_id=reader.id,
+            role=WorkspaceRole.MARKETING_MANAGER,
+        )
+    )
+    await db_session.flush()
+    visible_status = await client.get(job_url)
+    assert visible_status.status_code == 200, visible_status.text
+    assert visible_status.json()["status"] == status
+    assert visible_status.json()["recovery"] is None
