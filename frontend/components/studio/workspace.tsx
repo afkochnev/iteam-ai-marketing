@@ -6,6 +6,7 @@ import { ArticleEditor, IllustrationEditor, type IllustrationChange } from "@/co
 import { useStudioGeneration } from "@/components/studio/generation";
 import { StudioPagination, useStudioPage } from "@/components/studio/pages";
 import { StudioHistory, StudioVersionDetails, VersionBadge } from "@/components/studio/version-details";
+import { ApiError } from "@/lib/api";
 import {
   studioApi,
   type StudioArticleInput,
@@ -28,6 +29,10 @@ interface Selection {
 
 function asRevision(previous?: StudioVersion): StudioRevision | undefined {
   return previous ? { asset_id: previous.asset_id, expected_current_version_id: previous.id } : undefined;
+}
+
+function isVersionConflict(reason: unknown) {
+  return reason instanceof ApiError && reason.code === "STUDIO_VERSION_CONFLICT";
 }
 
 export function StudioWorkspace({ campaignId }: { campaignId: string }) {
@@ -55,6 +60,7 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
 
   const asset = selection && (listing.page?.items.find((candidate) => candidate.id === selection.asset.id) ?? selection.asset);
   const version = selection?.version ?? asset?.latest_version;
+  const versionConflict = isVersionConflict(error);
 
   function openEditor(next?: Editor) {
     setEditor(next);
@@ -74,14 +80,37 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
     refresh(true);
   }
 
+  async function handleSaveError(reason: unknown, previous?: StudioVersion) {
+    setError(reason);
+    if (!previous || !isVersionConflict(reason)) return;
+
+    const controller = new AbortController();
+    resultRequest.current = controller;
+    try {
+      const page = await studioApi.versions(campaignId, previous.asset_id, 0, controller.signal);
+      if (controller.signal.aborted) return;
+      const latest = page.items[0];
+      if (!latest) throw new Error("Не найдена актуальная версия материала.");
+      setSelection((selected) => selected && selected.asset.id === latest.asset_id ? {
+        ...selected,
+        asset: { ...selected.asset, latest_version: latest },
+      } : selected);
+      refresh();
+      setNotice(`Доступна версия v${latest.version_number}. Скопируйте нужные правки, затем закройте редактор и откройте новую редакцию.`);
+    } catch {
+      if (!controller.signal.aborted) setNotice("Не удалось загрузить актуальную версию. Скопируйте нужные правки перед обновлением страницы.");
+    }
+  }
+
   async function saveArticle(input: StudioArticleInput) {
     setBusy(true);
     setError(null);
     setNotice("");
+    const previous = editor?.previous;
     try {
-      showNewVersion(await studioApi.saveArticle(campaignId, input, asRevision(editor?.previous)));
+      showNewVersion(await studioApi.saveArticle(campaignId, input, asRevision(previous)));
     } catch (reason) {
-      setError(reason);
+      await handleSaveError(reason, previous);
     } finally {
       setBusy(false);
     }
@@ -91,7 +120,8 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
     setBusy(true);
     setError(null);
     setNotice("");
-    const revision = asRevision(editor?.previous);
+    const previous = editor?.previous;
+    const revision = asRevision(previous);
     try {
       if (change.method !== "generate") {
         const file = change.method === "upload" ? change.file : undefined;
@@ -102,7 +132,7 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
         setEditor(undefined);
       }
     } catch (reason) {
-      setError(reason);
+      await handleSaveError(reason, previous);
     } finally {
       setBusy(false);
     }
@@ -172,7 +202,9 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
         </div>
       </header>
       {notice && <p className="notice" role="status">{notice}</p>}
-      {error != null && <FriendlyError error={error} fallback="Не удалось выполнить действие в студии." />}
+      {versionConflict ? (
+        <p className="error" role="alert">Материал изменился после открытия редактора. Ваши правки остались в форме.</p>
+      ) : error != null && <FriendlyError error={error} fallback="Не удалось выполнить действие в студии." />}
       {generation.label && (
         <div className="notice studio-generation">
           <p role="status">{generation.label}</p>

@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StudioWorkspace } from "@/components/studio/workspace";
+import { ApiError } from "@/lib/api";
 import type { StudioAsset, StudioVersion } from "@/lib/studio";
 
 const api = vi.hoisted(() => ({
@@ -181,6 +182,60 @@ describe("campaign content studio", () => {
     expect(await screen.findByRole("heading", { name: "Иллюстрация для статьи · v3" })).toBeInTheDocument();
     expect(api.uploadIllustration).toHaveBeenCalledWith(campaignId, expect.objectContaining({ usage_rights: "Собственное изображение" }), undefined, {
       asset_id: "visual-asset", expected_current_version_id: "visual-2",
+    });
+  });
+
+  it("keeps local edits after a version conflict and opens a new revision from the latest version", async () => {
+    const initial = storeVersion(article({ illustration_version_id: null }));
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(await library().findByRole("button", { name: initial.payload.title }));
+    fireEvent.click(screen.getByRole("button", { name: "Новая версия на основе v1" }));
+    fireEvent.change(screen.getByLabelText("Текст статьи"), { target: { value: "Локальные правки" } });
+
+    const latest = storeVersion(article({
+      id: "article-2",
+      version_number: 2,
+      supersedes_version_id: initial.id,
+      illustration_version_id: null,
+      payload: { ...initial.payload, body: "Правки другого редактора" },
+    }));
+    const conflict = new ApiError("Материал изменился. Откройте новую версию.", 409, "STUDIO_VERSION_CONFLICT");
+    api.saveArticle.mockRejectedValueOnce(conflict).mockRejectedValueOnce(conflict);
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить черновик статьи" }));
+
+    expect(await screen.findByText(/Доступна версия v2/)).toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("Ваши правки остались в форме.");
+    expect(screen.getByLabelText("Текст статьи")).toHaveValue("Локальные правки");
+    expect(api.saveArticle).toHaveBeenCalledTimes(1);
+    expect(api.saveArticle).toHaveBeenLastCalledWith(campaignId, expect.objectContaining({ body: "Локальные правки" }), {
+      asset_id: initial.asset_id,
+      expected_current_version_id: initial.id,
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить черновик статьи" }));
+    await waitFor(() => expect(api.saveArticle).toHaveBeenCalledTimes(2));
+    expect(api.saveArticle).toHaveBeenLastCalledWith(campaignId, expect.objectContaining({ body: "Локальные правки" }), {
+      asset_id: initial.asset_id,
+      expected_current_version_id: initial.id,
+    });
+    await screen.findByText(/Доступна версия v2/);
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    fireEvent.click(screen.getByRole("button", { name: "Новая версия на основе v2" }));
+    expect(screen.getByLabelText("Текст статьи")).toHaveValue("Правки другого редактора");
+    fireEvent.change(screen.getByLabelText("Текст статьи"), { target: { value: "Объединённые правки" } });
+    api.saveArticle.mockImplementationOnce(async () => storeVersion(article({
+      id: "article-3",
+      version_number: 3,
+      supersedes_version_id: latest.id,
+      illustration_version_id: null,
+      payload: { ...initial.payload, body: "Объединённые правки" },
+    })));
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить черновик статьи" }));
+
+    expect(await screen.findByRole("heading", { name: `${initial.payload.title} · v3` })).toBeInTheDocument();
+    expect(api.saveArticle).toHaveBeenLastCalledWith(campaignId, expect.objectContaining({ body: "Объединённые правки" }), {
+      asset_id: latest.asset_id,
+      expected_current_version_id: latest.id,
     });
   });
 
