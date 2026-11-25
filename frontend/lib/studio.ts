@@ -109,11 +109,14 @@ export const studioApi = {
     if (kind) params.set("kind", kind);
     return request<StudioPage<StudioAsset>>(studioPath(campaignId, `/assets?${params}`), { signal });
   },
-  versions(campaignId: string, assetId: string, offset: number, signal: AbortSignal) {
+  versions(campaignId: string, assetId: string, offset: number, signal: AbortSignal, limit = PAGE_SIZE) {
     return request<StudioPage<StudioVersion>>(
-      studioPath(campaignId, `/assets/${encodeURIComponent(assetId)}/versions?limit=${PAGE_SIZE}&offset=${offset}`),
+      studioPath(campaignId, `/assets/${encodeURIComponent(assetId)}/versions?limit=${limit}&offset=${offset}`),
       { signal },
     );
+  },
+  version(campaignId: string, versionId: string, signal: AbortSignal) {
+    return request<StudioVersion>(studioPath(campaignId, `/versions/${encodeURIComponent(versionId)}`), { signal });
   },
   saveArticle(campaignId: string, input: StudioArticleInput, revision?: StudioRevision) {
     const path = revision ? `/assets/articles/${encodeURIComponent(revision.asset_id)}/versions` : "/assets/articles";

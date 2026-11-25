@@ -151,7 +151,8 @@ async def test_article_and_illustration_workflow(
     blocked = await client.post(article_approval_path)
     assert blocked.status_code == 409
     assert blocked.json()["error"]["code"] == "ILLUSTRATION_APPROVAL_REQUIRED"
-    assert (await client.post(f"{path}/versions/{visual_id}/approve")).status_code == 200
+    approved_visual = await client.post(f"{path}/versions/{visual_id}/approve")
+    assert approved_visual.status_code == 200, approved_visual.text
     approved = await client.post(article_approval_path)
     assert approved.status_code == 200, approved.text
     assert approved.json()["approval"]["approved_by"] == str(editor.id)
@@ -191,6 +192,15 @@ async def test_article_and_illustration_workflow(
     assert assets.status_code == 200, assets.text
     assert assets.json()["total"] == 1
     assert assets.json()["items"][0]["latest_version"]["id"] == visual_v2["id"]
+
+    historical_version = await client.get(f"{path}/versions/{visual_id}")
+    assert historical_version.status_code == 200, historical_version.text
+    assert historical_version.headers["cache-control"] == "private, no-store"
+    assert historical_version.json() == approved_visual.json()
+    assert (await client.get(f"{other_path}/versions/{visual_id}")).status_code == 404
+
+    authenticate(client, outsider)
+    assert (await client.get(f"{path}/versions/{visual_id}")).status_code == 403
 
 
 @pytest.mark.parametrize(

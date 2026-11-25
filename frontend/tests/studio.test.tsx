@@ -7,6 +7,7 @@ import type { StudioAsset, StudioVersion } from "@/lib/studio";
 const api = vi.hoisted(() => ({
   assets: vi.fn(),
   versions: vi.fn(),
+  version: vi.fn(),
   saveArticle: vi.fn(),
   uploadIllustration: vi.fn(),
   approve: vi.fn(),
@@ -111,9 +112,12 @@ describe("campaign content studio", () => {
       }
       return page([...grouped.values()]);
     });
-    api.versions.mockImplementation(async (_campaign: string, assetId: string) => page(
-      versions.filter((version) => version.asset_id === assetId).sort((left, right) => right.version_number - left.version_number),
-    ));
+    api.versions.mockImplementation(async (_campaign: string, assetId: string, offset: number, _signal: AbortSignal, limit = 50) => {
+      const history = versions.filter((version) => version.asset_id === assetId)
+        .sort((left, right) => right.version_number - left.version_number);
+      return { items: history.slice(offset, offset + limit), total: history.length, limit, offset };
+    });
+    api.version.mockImplementation(async (_campaign: string, id: string) => versions.find((candidate) => candidate.id === id));
     api.uploadIllustration.mockImplementation(async () => storeVersion(illustration()));
     api.saveArticle.mockImplementation(async () => storeVersion(article()));
     api.approve.mockImplementation(async (_campaign: string, id: string) => {
@@ -391,6 +395,9 @@ describe("campaign content studio", () => {
     api.generate.mockResolvedValue({ id: "job-1", status: "PENDING", asset_id: null, version_id: null, error_code: null });
     api.generationJob.mockImplementation(async () => {
       storeVersion(generated);
+      for (let number = 2; number <= 51; number += 1) {
+        storeVersion(illustration({ id: `visual-${number}`, version_number: number, supersedes_version_id: `visual-${number - 1}` }));
+      }
       return { id: "job-1", status: "SUCCEEDED", asset_id: draft.asset_id, version_id: draft.id, error_code: null };
     });
     render(<StudioWorkspace campaignId={campaignId} />);
@@ -403,6 +410,9 @@ describe("campaign content studio", () => {
     expect(await screen.findByRole("heading", { name: "Иллюстрация для статьи · v1" })).toBeInTheDocument();
     expect(screen.getByText("studio-model")).toBeInTheDocument();
     expect(screen.getByText("Нарисуй команду")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Новая версия на основе v51" })).toBeInTheDocument();
+    expect(api.version).toHaveBeenCalledExactlyOnceWith(campaignId, generated.id, expect.any(AbortSignal));
+    expect(api.versions).toHaveBeenCalledWith(campaignId, generated.asset_id, 0, expect.any(AbortSignal), 1);
     expect(api.generate).toHaveBeenCalledWith(campaignId, expect.objectContaining({ usage_rights: "Собственное изображение" }), undefined);
     expect(api.generationJob).toHaveBeenCalledWith(campaignId, "job-1", expect.any(AbortSignal));
     expect(api.uploadIllustration).not.toHaveBeenCalled();

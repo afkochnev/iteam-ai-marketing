@@ -115,6 +115,19 @@ async def list_studio_versions(
     )
 
 
+@router.get("/versions/{version_id}", response_model=ContentAssetVersionResponse)
+async def get_studio_version(
+    campaign_id: UUID,
+    version_id: UUID,
+    user: CurrentSnapshotUser,
+    session: ReadSnapshotSession,
+    response: Response,
+) -> ContentAssetVersionResponse:
+    version = await CampaignStudioService(session).read_version(user.id, campaign_id, version_id)
+    response.headers["Cache-Control"] = "private, no-store"
+    return version
+
+
 @router.post("/assets/articles", status_code=201, response_model=ContentAssetVersionResponse)
 async def create_studio_article(
     campaign_id: UUID, draft: ArticleDraft, user: CurrentUser, session: SessionDependency

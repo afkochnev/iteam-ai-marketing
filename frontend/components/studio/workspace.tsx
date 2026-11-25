@@ -245,14 +245,15 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
     const controller = new AbortController();
     resultRequest.current = controller;
     try {
-      const page = await studioApi.versions(campaignId, assetId, 0, controller.signal);
+      const [generated, page] = await Promise.all([
+        studioApi.version(campaignId, versionId, controller.signal),
+        studioApi.versions(campaignId, assetId, 0, controller.signal, 1),
+      ]);
       if (controller.signal.aborted) return;
-      const latest = page.items.reduce<StudioVersion | undefined>(
-        (newest, candidate) => !newest || candidate.version_number > newest.version_number ? candidate : newest,
-        undefined,
-      );
-      const generated = page.items.find((candidate) => candidate.id === versionId);
-      if (!latest || !generated) throw new Error("Версия пока не найдена в списке версий.");
+      const latest = page.items[0];
+      if (!latest || generated.id !== versionId || generated.asset_id !== assetId) {
+        throw new Error("Сохранённая версия задачи не найдена.");
+      }
       setSelection({ asset: { id: assetId, kind: latest.kind, latest_version: latest }, version: generated });
     } catch (reason) {
       if (!controller.signal.aborted) setError(reason);
