@@ -207,7 +207,9 @@ describe("campaign content studio", () => {
     api.assets.mockResolvedValue(page([{ id: initial.asset_id, kind: initial.kind, latest_version: initial }]));
     const conflict = new ApiError("Материал изменился. Откройте новую версию.", 409, "STUDIO_VERSION_CONFLICT");
     api.saveArticle.mockRejectedValueOnce(conflict);
-    api.versions.mockRejectedValueOnce(new Error("Временная ошибка загрузки"));
+    api.versions
+      .mockRejectedValueOnce(new Error("Временная ошибка загрузки"))
+      .mockRejectedValueOnce(new ApiError("Требуется авторизация.", 401, "AUTHENTICATION_REQUIRED"));
     fireEvent.click(screen.getByRole("button", { name: "Сохранить черновик статьи" }));
 
     const retryVersion = await screen.findByRole("button", { name: "Повторить загрузку актуальной версии" });
@@ -225,7 +227,18 @@ describe("campaign content studio", () => {
     expect(api.saveArticle).toHaveBeenCalledTimes(1);
 
     fireEvent.click(retryVersion);
+    const signIn = await screen.findByRole("link", { name: "Войти в новой вкладке" });
+    expect(signIn).toHaveAttribute("href", "/login");
+    expect(signIn).toHaveAttribute("target", "_blank");
+    expect(screen.getByText(/Ваши правки остались в форме/)).toBeInTheDocument();
+    expect(screen.getByLabelText("Текст статьи")).toHaveValue("Локальные правки");
+    expect(save).toBeDisabled();
+    fireEvent.submit(save.form!);
+    expect(api.saveArticle).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Повторить загрузку актуальной версии" }));
     expect(await screen.findByText(/Доступна версия v2/)).toBeInTheDocument();
+    expect(signIn).not.toBeInTheDocument();
     expect(screen.getByLabelText("Текст статьи")).toHaveValue("Локальные правки");
     expect(save).toBeDisabled();
     expect(api.saveArticle).toHaveBeenCalledTimes(1);

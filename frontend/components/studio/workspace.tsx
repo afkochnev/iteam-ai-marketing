@@ -28,6 +28,7 @@ interface GenerationDraft {
 }
 
 const VERSION_CONFLICT = "STUDIO_VERSION_CONFLICT";
+const RETRY_VERSION_LOOKUP_LABEL = "Повторить загрузку актуальной версии";
 
 interface Selection {
   asset: StudioAsset;
@@ -49,7 +50,7 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState<unknown>(null);
-  const [versionLookupFailed, setVersionLookupFailed] = useState(false);
+  const [versionLookupFailure, setVersionLookupFailure] = useState<{ authenticationError?: ApiError }>();
   const [historyRefresh, setHistoryRefresh] = useState(0);
   const resultRequest = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => resultRequest.current?.abort(), []);
@@ -103,7 +104,7 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
     setEditor(next);
     setNotice("");
     setError(null);
-    setVersionLookupFailed(false);
+    setVersionLookupFailure(undefined);
   }
 
   function startRevision(current: StudioVersion) {
@@ -119,7 +120,7 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
   }
 
   async function loadLatestVersion(previous: StudioVersion) {
-    setVersionLookupFailed(false);
+    setVersionLookupFailure(undefined);
     setNotice("");
     const controller = new AbortController();
     resultRequest.current = controller;
@@ -133,8 +134,10 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
       } : selected);
       refresh();
       setNotice(`Доступна версия v${latest.version_number}. Скопируйте нужные правки, затем закройте редактор и откройте новую редакцию.`);
-    } catch {
-      if (!controller.signal.aborted) setVersionLookupFailed(true);
+    } catch (reason) {
+      if (controller.signal.aborted) return;
+      const authenticationError = reason instanceof ApiError && reason.status === 401 ? reason : undefined;
+      setVersionLookupFailure({ authenticationError });
     }
   }
 
@@ -281,13 +284,21 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
       {versionConflict ? (
         <p className="error" role="alert">Материал изменился после открытия редактора. Ваши правки остались в форме.</p>
       ) : error != null && <FriendlyError error={error} fallback="Не удалось выполнить действие в студии." />}
-      {conflictingRevision && versionLookupFailed && (
-        <div className="notice">
-          <p role="status">Не удалось загрузить актуальную версию.</p>
-          <button type="button" className="secondary" disabled={busy} onClick={() => void retryVersionLookup()}>
-            Повторить загрузку актуальной версии
-          </button>
-        </div>
+      {conflictingRevision && versionLookupFailure && (
+        versionLookupFailure.authenticationError ? (
+          <FriendlyError
+            error={versionLookupFailure.authenticationError}
+            onRetry={() => void retryVersionLookup()}
+            retryLabel={RETRY_VERSION_LOOKUP_LABEL}
+          />
+        ) : (
+          <div className="notice">
+            <p role="status">Не удалось загрузить актуальную версию.</p>
+            <button type="button" className="secondary" disabled={busy} onClick={() => void retryVersionLookup()}>
+              {RETRY_VERSION_LOOKUP_LABEL}
+            </button>
+          </div>
+        )
       )}
       {generation.label && (
         <div className="notice studio-generation">
