@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type FormEvent } from "react";
 import { FriendlyError } from "@/components/friendly-error";
+import { ApiError } from "@/lib/api";
 import { studioApi, type StudioWebsitePage, type StudioWebsiteStatus } from "@/lib/studio";
 
 export function StudioWebsiteSandbox({ campaignId, versionId, disabled }: {
@@ -12,19 +13,31 @@ export function StudioWebsiteSandbox({ campaignId, versionId, disabled }: {
   const [status, setStatus] = useState<StudioWebsiteStatus>();
   const [loadError, setLoadError] = useState<unknown>();
   const [loadAttempt, setLoadAttempt] = useState(0);
+  const [loadingStatus, setLoadingStatus] = useState(false);
   const [error, setError] = useState<unknown>();
   const [busy, setBusy] = useState(false);
   useEffect(() => {
     const controller = new AbortController();
     void studioApi.websiteStatus(campaignId, versionId, controller.signal).then((result) => {
-      if (!controller.signal.aborted) setStatus(result);
+      if (controller.signal.aborted) return;
+      setStatus(result);
+      if (result.page) setError(undefined);
     }).catch((reason: unknown) => {
       if (!controller.signal.aborted) setLoadError(reason);
+    }).finally(() => {
+      if (!controller.signal.aborted) setLoadingStatus(false);
     });
     return () => controller.abort();
   }, [campaignId, versionId, loadAttempt]);
 
+  function reloadStatus() {
+    setLoadError(undefined);
+    setLoadingStatus(true);
+    setLoadAttempt((attempt) => attempt + 1);
+  }
+
   async function save(action: () => Promise<StudioWebsitePage>) {
+    setLoadError(undefined);
     setError(undefined);
     setBusy(true);
     try {
@@ -45,14 +58,12 @@ export function StudioWebsiteSandbox({ campaignId, versionId, disabled }: {
     }));
   }
 
-  if (loadError != null) {
-    return <FriendlyError error={loadError} fallback="Не удалось проверить тестовую CMS." onRetry={() => {
-      setLoadError(undefined);
-      setLoadAttempt((attempt) => attempt + 1);
-    }} />;
+  if (!status && loadError != null) {
+    return <FriendlyError error={loadError} fallback="Не удалось проверить тестовую CMS." onRetry={reloadStatus} />;
   }
   if (!status?.enabled) return null;
   const page = status.page;
+  const draftConflict = error instanceof ApiError && error.code === "WEBSITE_DRAFT_ALREADY_EXISTS";
 
   return (
     <section className="section-block" aria-label="Тестовая CMS">
@@ -78,10 +89,20 @@ export function StudioWebsiteSandbox({ campaignId, versionId, disabled }: {
         <form onSubmit={createDraft}>
           <label>SEO-заголовок <input name="seo_title" maxLength={120} /></label>
           <label>SEO-описание <textarea name="seo_description" rows={2} maxLength={320} /></label>
-          <button type="submit" disabled={busy || disabled}>Создать черновик в тестовой CMS</button>
+          <button type="submit" disabled={busy || disabled || loadingStatus}>Создать черновик в тестовой CMS</button>
         </form>
       )}
-      {error != null && <FriendlyError error={error} fallback="Не удалось выполнить действие в тестовой CMS." />}
+      {draftConflict ? (
+        <>
+          <p role="alert">Для этой версии уже есть черновик с другими SEO-полями.</p>
+          <button type="button" className="secondary" disabled={busy || loadingStatus} onClick={reloadStatus}>
+            {loadingStatus ? "Загружаем черновик…" : "Открыть существующий черновик"}
+          </button>
+          {loadError != null && <FriendlyError error={loadError} fallback="Не удалось загрузить существующий черновик." />}
+        </>
+      ) : (
+        error != null && <FriendlyError error={error} fallback="Не удалось выполнить действие в тестовой CMS." />
+      )}
     </section>
   );
 }
