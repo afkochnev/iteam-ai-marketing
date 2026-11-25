@@ -5,6 +5,7 @@ import { FriendlyError } from "@/components/friendly-error";
 import { StatusBadge } from "@/components/status-badge";
 import { StudioPagination, useStudioPage } from "@/components/studio/pages";
 import { StudioWebsiteSandbox } from "@/components/studio/website-sandbox";
+import { StudioWordPress } from "@/components/studio/wordpress";
 import { formatDateTime } from "@/lib/campaigns";
 import { studioApi, type StudioAsset, type StudioMedia, type StudioVersion } from "@/lib/studio";
 
@@ -111,6 +112,7 @@ export function StudioVersionDetails({
         <>
           <WebsitePackageDownload key={version.id} campaignId={campaignId} versionId={version.id} disabled={busy} />
           <StudioWebsiteSandbox key={`site-${version.id}`} campaignId={campaignId} versionId={version.id} disabled={busy} />
+          <StudioWordPress key={`wordpress-${version.id}`} campaignId={campaignId} versionId={version.id} disabled={busy} />
         </>
       )}
     </section>

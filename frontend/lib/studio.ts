@@ -111,6 +111,28 @@ export interface StudioWebsiteStatus {
   page: StudioWebsitePage | null;
 }
 
+export type StudioWordPressAction = "draft" | "image" | "publish";
+
+export interface StudioWordPressConfirmation {
+  target_url: string;
+  target_author_id: string;
+}
+
+export interface StudioWordPressStatus {
+  target_url: string | null;
+  target_author_id: string | null;
+  target_changed: boolean;
+  operations: {
+    action: StudioWordPressAction;
+    status: "queued" | "running" | "unknown" | "failed" | "succeeded";
+    remote_id: string | null;
+    remote_url: string | null;
+    failure_code: string | null;
+    reconciliation_pending: boolean;
+    reconciliation_finished_at: string | null;
+  }[];
+}
+
 const PAGE_SIZE = 50;
 
 function studioPath(campaignId: string, path: string) {
@@ -171,6 +193,18 @@ export const studioApi = {
       signal,
       "Не удалось скачать пакет для сайта.",
     );
+  },
+  wordpressStatus(campaignId: string, versionId: string, signal: AbortSignal) {
+    const path = studioPath(campaignId, `/versions/${encodeURIComponent(versionId)}/wordpress`);
+    return request<StudioWordPressStatus>(path, { signal });
+  },
+  wordpressCommand(
+    campaignId: string, versionId: string, action: StudioWordPressAction,
+    confirmation: StudioWordPressConfirmation, reconcile: boolean,
+  ) {
+    const suffix = reconcile ? "/reconcile" : "";
+    const path = studioPath(campaignId, `/versions/${encodeURIComponent(versionId)}/wordpress/${action}${suffix}`);
+    return request<StudioWordPressStatus>(path, jsonPost(confirmation));
   },
   websiteStatus(campaignId: string, versionId: string, signal: AbortSignal) {
     return request<StudioWebsiteStatus>(websiteSandboxPath(campaignId, versionId), { signal });

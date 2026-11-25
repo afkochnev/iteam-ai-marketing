@@ -3,18 +3,24 @@ from base64 import b64encode
 from collections.abc import AsyncIterator
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 from uuid import UUID, uuid4
 from zipfile import ZipFile
 
 import pytest
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, MockTransport, ReadTimeout, Request, Response
 from PIL import Image
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.dependencies import get_read_snapshot_session
 from app.core.config import settings
 from app.core.database import get_db_session
 from app.core.security import encode_access_token
+from app.integrations.studio_wordpress import (
+    WordPressArticle,
+    WordPressStudioClient,
+    WordPressTarget,
+)
 from app.main import app
 from app.models.campaign import Campaign
 from app.models.creative_generation import CreativeGenerationStatus
@@ -22,6 +28,7 @@ from app.models.user import User, UserRole
 from app.models.workspace import DEFAULT_WORKSPACE_ID, Workspace, WorkspaceMembership, WorkspaceRole
 from app.services.creative_generation_service import CreativeGenerationService
 from app.workers import creative_generation_tasks
+from app.workers.studio_wordpress_worker import run_next_wordpress_operation
 
 pytestmark = pytest.mark.integration
 
@@ -490,3 +497,230 @@ async def test_only_job_owner_recovers_submitted_generation_draft_and_exact_base
     assert visible_status.status_code == 200, visible_status.text
     assert visible_status.json()["status"] == status
     assert visible_status.json()["recovery"] is None
+
+
+async def test_wordpress_reads_the_full_approved_article_in_a_bounded_response() -> None:
+    article = WordPressArticle("iteam-fixture", "Guide", "<p>" + "\U0001f600" * 100_000 + "</p>")
+
+    def wordpress(request: Request) -> Response:
+        assert request.method == "GET"
+        assert request.url.path == "/wp-json/wp/v2/posts"
+        assert request.url.params["per_page"] == "2"
+        assert set(request.url.params["_fields"].split(",")) == {
+            "id",
+            "type",
+            "status",
+            "slug",
+            "author",
+            "title.raw",
+            "content.raw",
+            "featured_media",
+            "link",
+        }
+        payload = json.dumps(
+            [
+                {
+                    "id": 41,
+                    "type": "post",
+                    "status": "draft",
+                    "slug": article.slug,
+                    "author": 7,
+                    "title": {"raw": article.title},
+                    "content": {"raw": article.html},
+                    "featured_media": 0,
+                }
+            ],
+            ensure_ascii=True,
+        )
+        assert len(payload) > 1_000_000
+        return Response(200, content=payload)
+
+    async with AsyncClient(transport=MockTransport(wordpress)) as remote:
+        target = WordPressTarget("https://wordpress.example.test", 7)
+        adapter = WordPressStudioClient(remote, target, "editor", "test")
+        draft = await adapter.find_draft(article)
+        assert draft is not None and draft.id == 41
+        assert not adapter.write_attempted
+
+
+async def test_staging_wordpress_reconciles_lost_responses_without_repeating_writes(
+    studio_client: AsyncClient,
+    db_session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    origin = "https://wordpress.example.test/staging"
+    monkeypatch.setattr(settings, "studio_wordpress_url", origin)
+    monkeypatch.setattr(settings, "studio_wordpress_author_id", 7)
+    monkeypatch.setattr(settings, "creative_media_root", tmp_path)
+    editor, outsider, campaign, _ = await seed_studio(db_session)
+    authenticate(studio_client, editor)
+    path = f"/api/v1/campaigns/{campaign.id}/studio"
+    visual = await studio_client.post(
+        f"{path}/assets/illustrations",
+        data={
+            "title": "Cover",
+            "brief": "One green card",
+            "brand_profile": "Green and white",
+            "alt_text": "A card",
+            "usage_rights": "Original editorial artwork",
+        },
+        files={"file": ("cover.png", sample_png(), "image/png")},
+    )
+    assert visual.status_code == 201, visual.text
+    image_version = visual.json()["id"]
+    assert (await studio_client.post(f"{path}/versions/{image_version}/approve")).status_code == 200
+    image_response = await studio_client.get(f"{path}/versions/{image_version}/media/website")
+    assert image_response.status_code == 200, image_response.text
+    image_bytes = image_response.content
+    article = await studio_client.post(
+        f"{path}/assets/articles",
+        json={"title": "Guide", "body": "A < B\nNext", "illustration_version_id": image_version},
+    )
+    assert article.status_code == 201, article.text
+    version = article.json()["id"]
+    route = f"{path}/versions/{version}/wordpress"
+    confirmation = {"target_url": origin, "target_author_id": "7"}
+    assert (await studio_client.post(f"{route}/draft", json=confirmation)).status_code == 409
+    assert (await studio_client.post(f"{path}/versions/{version}/approve")).status_code == 200
+    authenticate(studio_client, outsider)
+    assert (await studio_client.post(f"{route}/draft", json=confirmation)).status_code == 403
+    authenticate(studio_client, editor)
+    assert (
+        await studio_client.post(
+            f"{route}/draft",
+            json={
+                **confirmation,
+                "target_author_id": "99",
+            },
+        )
+    ).status_code == 409
+
+    calls: list[tuple[str, str]] = []
+    post: dict[str, Any] = {}
+    image: dict[str, Any] = {}
+    visible_in_lookup = False
+
+    def wordpress(request: Request) -> Response:
+        endpoint = request.url.path.removeprefix("/staging/wp-json/wp/v2")
+        calls.append((request.method, endpoint))
+        assert request.url.host == "wordpress.example.test"
+        if endpoint == "/staging/uploads/cover.webp":
+            assert "Authorization" not in request.headers
+            return Response(200, content=image_bytes)
+        assert "Authorization" in request.headers
+        assert request.url.params["context"] == "edit"
+        match request.method, endpoint:
+            case "GET", "/users/me":
+                return Response(200, json={"id": 7})
+            case "POST", "/posts":
+                payload = json.loads(request.content)
+                assert payload["status"] == "draft"
+                assert payload["content"] == "<p>A &lt; B</p>\n<p>Next</p>"
+                post.update(
+                    id=41,
+                    type="post",
+                    author=7,
+                    status="draft",
+                    slug=payload["slug"],
+                    title={"raw": payload["title"]},
+                    content={"raw": payload["content"]},
+                    featured_media=0,
+                )
+                raise ReadTimeout("fixture lost draft response", request=request)
+            case "GET", "/posts":
+                assert request.url.params["slug"] == post["slug"]
+                assert request.url.params["status"] == "draft,publish"
+                return Response(200, json=[post] if visible_in_lookup else [])
+            case "GET", "/posts/41":
+                return Response(200, json=post)
+            case "POST", "/media":
+                assert image_bytes in request.content
+                image.update(
+                    id=55,
+                    type="attachment",
+                    author=7,
+                    slug=f"{post['slug']}-image",
+                    post=41,
+                    mime_type="image/webp",
+                    alt_text="A card",
+                    source_url=f"{origin}/uploads/cover.webp",
+                )
+                raise ReadTimeout("fixture lost media response", request=request)
+            case "GET", "/media":
+                assert request.url.params["slug"] == image["slug"]
+                assert request.url.params["status"] == "inherit"
+                return Response(200, json=[image])
+            case "GET", "/media/55":
+                return Response(200, json=image)
+            case "POST", "/posts/41":
+                payload = json.loads(request.content)
+                assert payload["status"] == "publish" and payload["featured_media"] == 55
+                assert payload["content"] == post["content"]["raw"]
+                post.update(status="publish", featured_media=55, link=f"{origin}/{post['slug']}/")
+                raise ReadTimeout("fixture lost publication response", request=request)
+        raise AssertionError((request.method, endpoint))
+
+    sessions = async_sessionmaker(
+        await db_session.connection(),
+        join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+
+    async def state() -> dict[str, Any]:
+        response = await studio_client.get(route)
+        assert response.status_code == 200, response.text
+        return {item["action"]: item for item in response.json()["operations"]}
+
+    async with AsyncClient(transport=MockTransport(wordpress)) as remote:
+        adapter = WordPressStudioClient(remote, WordPressTarget(origin, 7), "editor", "test")
+        assert (await studio_client.post(f"{route}/draft", json=confirmation)).status_code == 200
+        assert (await studio_client.post(f"{route}/draft", json=confirmation)).status_code == 200
+        assert calls == []
+        assert await run_next_wordpress_operation(sessions, adapter)
+        assert (await state())["draft"]["status"] == "unknown"
+        assert not await run_next_wordpress_operation(sessions, adapter)
+        assert (await studio_client.post(f"{route}/publish", json=confirmation)).status_code == 409
+        reconcile = f"{route}/draft/reconcile"
+        assert (await studio_client.post(reconcile, json=confirmation)).status_code == 200
+        assert await run_next_wordpress_operation(sessions, adapter)
+        assert (await state())["draft"]["status"] == "unknown"
+        assert (await state())["draft"]["reconciliation_finished_at"]
+        visible_in_lookup = True
+        assert (await studio_client.post(reconcile, json=confirmation)).status_code == 200
+        assert await run_next_wordpress_operation(sessions, adapter)
+        assert (await state())["draft"]["remote_id"] == "41"
+
+        assert (await studio_client.post(f"{route}/publish", json=confirmation)).status_code == 200
+        assert (await studio_client.post(f"{route}/publish", json=confirmation)).status_code == 200
+        assert await run_next_wordpress_operation(sessions, adapter)
+        blocked = await state()
+        assert blocked["image"]["status"] == "unknown"
+        assert blocked["publish"]["status"] == "queued"
+        assert not await run_next_wordpress_operation(sessions, adapter)
+        reconcile = f"{route}/image/reconcile"
+        assert (await studio_client.post(reconcile, json=confirmation)).status_code == 200
+        assert await run_next_wordpress_operation(sessions, adapter)
+        assert (await state())["image"]["remote_id"] == "55"
+        assert (await state())["publish"]["status"] == "queued"
+        assert await run_next_wordpress_operation(sessions, adapter)
+        assert (await state())["publish"]["status"] == "unknown"
+        assert not await run_next_wordpress_operation(sessions, adapter)
+
+        reconcile = f"{route}/publish/reconcile"
+        assert (await studio_client.post(reconcile, json=confirmation)).status_code == 200
+        assert await run_next_wordpress_operation(sessions, adapter)
+        published = (await state())["publish"]
+        assert published["status"] == "succeeded"
+        assert published["remote_id"] == "41"
+        assert published["remote_url"] == post["link"]
+        assert not await run_next_wordpress_operation(sessions, adapter)
+
+    assert [endpoint for method, endpoint in calls if method == "POST"] == [
+        "/posts",
+        "/media",
+        "/posts/41",
+    ]
+    monkeypatch.setattr(settings, "app_env", "production")
+    assert (await studio_client.get(route)).json()["target_url"] is None
+    assert (await studio_client.post(f"{route}/draft", json=confirmation)).status_code == 404
