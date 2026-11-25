@@ -1,4 +1,5 @@
 import json
+import os
 from base64 import b64encode
 from collections.abc import AsyncIterator
 from io import BytesIO
@@ -8,7 +9,16 @@ from uuid import UUID, uuid4
 from zipfile import ZipFile
 
 import pytest
-from httpx import ASGITransport, AsyncClient, MockTransport, ReadTimeout, Request, Response
+from httpx import (
+    URL,
+    ASGITransport,
+    AsyncClient,
+    AsyncHTTPTransport,
+    MockTransport,
+    ReadTimeout,
+    Request,
+    Response,
+)
 from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -543,6 +553,32 @@ async def test_wordpress_reads_the_full_approved_article_in_a_bounded_response()
         assert not adapter.write_attempted
 
 
+async def create_wordpress_article(client: AsyncClient, path: str) -> tuple[str, bytes]:
+    visual = await client.post(
+        f"{path}/assets/illustrations",
+        data={
+            "title": "Cover",
+            "brief": "One green card",
+            "brand_profile": "Green and white",
+            "alt_text": "A card",
+            "usage_rights": "Original editorial artwork",
+        },
+        files={"file": ("cover.png", sample_png(), "image/png")},
+    )
+    assert visual.status_code == 201, visual.text
+    image_version = visual.json()["id"]
+    assert (await client.post(f"{path}/versions/{image_version}/approve")).status_code == 200
+    image_response = await client.get(f"{path}/versions/{image_version}/media/website")
+    assert image_response.status_code == 200, image_response.text
+    image_bytes = image_response.content
+    article = await client.post(
+        f"{path}/assets/articles",
+        json={"title": "Guide", "body": "A < B\nNext", "illustration_version_id": image_version},
+    )
+    assert article.status_code == 201, article.text
+    return article.json()["id"], image_bytes
+
+
 async def test_staging_wordpress_reconciles_lost_responses_without_repeating_writes(
     studio_client: AsyncClient,
     db_session: AsyncSession,
@@ -556,29 +592,7 @@ async def test_staging_wordpress_reconciles_lost_responses_without_repeating_wri
     editor, outsider, campaign, _ = await seed_studio(db_session)
     authenticate(studio_client, editor)
     path = f"/api/v1/campaigns/{campaign.id}/studio"
-    visual = await studio_client.post(
-        f"{path}/assets/illustrations",
-        data={
-            "title": "Cover",
-            "brief": "One green card",
-            "brand_profile": "Green and white",
-            "alt_text": "A card",
-            "usage_rights": "Original editorial artwork",
-        },
-        files={"file": ("cover.png", sample_png(), "image/png")},
-    )
-    assert visual.status_code == 201, visual.text
-    image_version = visual.json()["id"]
-    assert (await studio_client.post(f"{path}/versions/{image_version}/approve")).status_code == 200
-    image_response = await studio_client.get(f"{path}/versions/{image_version}/media/website")
-    assert image_response.status_code == 200, image_response.text
-    image_bytes = image_response.content
-    article = await studio_client.post(
-        f"{path}/assets/articles",
-        json={"title": "Guide", "body": "A < B\nNext", "illustration_version_id": image_version},
-    )
-    assert article.status_code == 201, article.text
-    version = article.json()["id"]
+    version, image_bytes = await create_wordpress_article(studio_client, path)
     route = f"{path}/versions/{version}/wordpress"
     confirmation = {"target_url": origin, "target_author_id": "7"}
     assert (await studio_client.post(f"{route}/draft", json=confirmation)).status_code == 409
@@ -724,3 +738,117 @@ async def test_staging_wordpress_reconciles_lost_responses_without_repeating_wri
     monkeypatch.setattr(settings, "app_env", "production")
     assert (await studio_client.get(route)).json()["target_url"] is None
     assert (await studio_client.post(f"{route}/draft", json=confirmation)).status_code == 404
+
+
+@pytest.mark.skipif(
+    not os.environ.get("ITEAM_WORDPRESS_ACCEPTANCE_URL"),
+    reason="Requires an isolated WordPress fixture",
+)
+async def test_studio_reconciles_writes_on_a_real_wordpress_site(
+    studio_client: AsyncClient,
+    db_session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    origin = os.environ["ITEAM_WORDPRESS_ACCEPTANCE_URL"]
+    author_id = int(os.environ["ITEAM_WORDPRESS_ACCEPTANCE_AUTHOR_ID"])
+    password = os.environ["ITEAM_WORDPRESS_ACCEPTANCE_PASSWORD"]
+    target = WordPressTarget.from_config(origin, author_id)
+    assert target is not None and URL(target.url).host == "127.0.0.1"
+    monkeypatch.setattr(settings, "studio_wordpress_url", target.url)
+    monkeypatch.setattr(settings, "studio_wordpress_author_id", target.author_id)
+    monkeypatch.setattr(settings, "creative_media_root", tmp_path)
+
+    editor, _, campaign, _ = await seed_studio(db_session)
+    authenticate(studio_client, editor)
+    path = f"/api/v1/campaigns/{campaign.id}/studio"
+    version, image_bytes = await create_wordpress_article(studio_client, path)
+    approved = await studio_client.post(f"{path}/versions/{version}/approve")
+    assert approved.status_code == 200, approved.text
+    route = f"{path}/versions/{version}/wordpress"
+    confirmation = {"target_url": target.url, "target_author_id": str(target.author_id)}
+
+    sessions = async_sessionmaker(
+        await db_session.connection(),
+        join_transaction_mode="create_savepoint",
+        expire_on_commit=False,
+    )
+    writes: list[tuple[str, int]] = []
+
+    class LostWriteResponses(AsyncHTTPTransport):
+        async def handle_async_request(self, request: Request) -> Response:
+            response = await super().handle_async_request(request)
+            if request.method == "POST":
+                writes.append((request.url.path, response.status_code))
+                if response.is_success:
+                    try:
+                        await response.aread()
+                    finally:
+                        await response.aclose()
+                    raise ReadTimeout(
+                        "Fixture dropped a committed WordPress response", request=request
+                    )
+            return response
+
+    async def operation(action: str) -> dict[str, Any]:
+        response = await studio_client.get(route)
+        assert response.status_code == 200, response.text
+        return next(item for item in response.json()["operations"] if item["action"] == action)
+
+    async def command(action: str) -> None:
+        response = await studio_client.post(f"{route}/{action}", json=confirmation)
+        assert response.status_code == 200, response.text
+
+    async with (
+        AsyncClient(transport=LostWriteResponses(trust_env=False)) as remote,
+        AsyncClient(trust_env=False) as public,
+    ):
+        username = "studio-author"
+        adapter = WordPressStudioClient(remote, target, username, password)
+        await adapter.verify_actor()
+
+        async def reconcile_accepted_write(action: str) -> dict[str, Any]:
+            assert await run_next_wordpress_operation(sessions, adapter)
+            unknown = await operation(action)
+            assert unknown["status"] == "unknown", (unknown, writes)
+            assert unknown["failure_code"] == "WORDPRESS_CONNECTION_ERROR", (unknown, writes)
+            assert not await run_next_wordpress_operation(sessions, adapter)
+            await command(f"{action}/reconcile")
+            assert await run_next_wordpress_operation(sessions, adapter)
+            verified = await operation(action)
+            assert verified["status"] == "succeeded", (verified, writes)
+            return verified
+
+        await command("draft")
+        await command("draft")
+        post_id = (await reconcile_accepted_write("draft"))["remote_id"]
+        posts_url = f"{target.url}/wp-json/wp/v2/posts"
+        draft_url = f"{posts_url}/{post_id}"
+        assert (await public.get(draft_url)).status_code in (401, 403, 404)
+
+        await command("publish")
+        media_id = (await reconcile_accepted_write("image"))["remote_id"]
+        published = await reconcile_accepted_write("publish")
+        assert published["remote_id"] == post_id
+        assert not await run_next_wordpress_operation(sessions, adapter)
+
+        article = await public.get(draft_url)
+        assert article.status_code == 200, article.text
+        assert article.json()["featured_media"] == int(media_id)
+        assert article.json()["author"] == target.author_id
+        assert article.json()["link"] == published["remote_url"]
+        page = await public.get(published["remote_url"])
+        assert page.status_code == 200
+        assert "A &lt; B" in page.text and "Next" in page.text
+        media = await public.get(f"{target.url}/wp-json/wp/v2/media/{media_id}")
+        assert media.status_code == 200, media.text
+        assert media.json()["alt_text"] == "A card"
+        uploaded = await public.get(media.json()["source_url"])
+        assert uploaded.status_code == 200
+        assert uploaded.content == image_bytes
+
+    assert writes == [
+        ("/wp-json/wp/v2/posts", 201),
+        ("/wp-json/wp/v2/media", 201),
+        (f"/wp-json/wp/v2/posts/{post_id}", 200),
+    ]
