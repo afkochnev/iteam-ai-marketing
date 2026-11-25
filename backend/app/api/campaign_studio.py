@@ -45,6 +45,7 @@ from app.services.creative_generation_service import (
     GenerationJob,
     GenerationJobDetails,
 )
+from app.services.studio_website_package import build_website_package
 
 router = APIRouter(prefix="/campaigns/{campaign_id}/studio", tags=["campaign-studio"])
 PageLimit = Annotated[int, Query(ge=1, le=100)]
@@ -126,6 +127,24 @@ async def get_studio_version(
     version = await CampaignStudioService(session).read_version(user.id, campaign_id, version_id)
     response.headers["Cache-Control"] = "private, no-store"
     return version
+
+
+@router.get("/versions/{version_id}/website-package", response_class=Response)
+async def download_studio_website_package(
+    campaign_id: UUID, version_id: UUID, user: CurrentSnapshotUser, session: ReadSnapshotSession
+) -> Response:
+    package = await build_website_package(
+        CampaignStudioService(session), user.id, campaign_id, version_id
+    )
+    return Response(
+        content=package,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="article-{version_id}.zip"',
+            "Cache-Control": "private, no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
 
 
 @router.post("/assets/articles", status_code=201, response_model=ContentAssetVersionResponse)

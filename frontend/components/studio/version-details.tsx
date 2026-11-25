@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { FriendlyError } from "@/components/friendly-error";
 import { StatusBadge } from "@/components/status-badge";
 import { StudioPagination, useStudioPage } from "@/components/studio/pages";
+import { StudioWebsiteSandbox } from "@/components/studio/website-sandbox";
 import { formatDateTime } from "@/lib/campaigns";
 import { studioApi, type StudioAsset, type StudioMedia, type StudioVersion } from "@/lib/studio";
 
@@ -69,11 +70,13 @@ export function StudioVersionDetails({
   version,
   busy,
   onApprove,
+  allowWebsiteDownload = false,
 }: {
   campaignId: string;
   version: StudioVersion;
   busy: boolean;
   onApprove?: () => void;
+  allowWebsiteDownload?: boolean;
 }) {
   return (
     <section className="section-block" aria-label="Выбранная версия">
@@ -104,7 +107,63 @@ export function StudioVersionDetails({
           <button type="button" disabled={busy} onClick={onApprove}>Утвердить версию v{version.version_number}</button>
         </div>
       )}
+      {allowWebsiteDownload && version.kind === "ARTICLE" && version.approval && (
+        <>
+          <WebsitePackageDownload key={version.id} campaignId={campaignId} versionId={version.id} disabled={busy} />
+          <StudioWebsiteSandbox key={`site-${version.id}`} campaignId={campaignId} versionId={version.id} disabled={busy} />
+        </>
+      )}
     </section>
+  );
+}
+
+function WebsitePackageDownload({ campaignId, versionId, disabled }: {
+  campaignId: string;
+  versionId: string;
+  disabled: boolean;
+}) {
+  const downloadRequest = useRef<AbortController | null>(null);
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  useEffect(() => () => downloadRequest.current?.abort(), []);
+
+  async function download() {
+    if (downloadRequest.current) return;
+    const controller = new AbortController();
+    downloadRequest.current = controller;
+    setError(null);
+    setDownloading(true);
+    try {
+      const file = await studioApi.websitePackage(campaignId, versionId, controller.signal);
+      if (controller.signal.aborted) return;
+      const url = URL.createObjectURL(file);
+      const link = document.createElement("a");
+      try {
+        link.href = url;
+        link.download = `article-${versionId}.zip`;
+        document.body.appendChild(link);
+        link.click();
+      } finally {
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+      }
+    } catch (reason) {
+      if (!controller.signal.aborted) setError(reason);
+    } finally {
+      downloadRequest.current = null;
+      if (!controller.signal.aborted) setDownloading(false);
+    }
+  }
+
+  return (
+    <div>
+      <div className="actions">
+        <button type="button" className="secondary" disabled={disabled || downloading} onClick={() => void download()}>
+          {downloading ? "Готовим пакет…" : "Скачать пакет для сайта"}
+        </button>
+      </div>
+      {error != null && <FriendlyError error={error} fallback="Не удалось скачать пакет для сайта." />}
+    </div>
   );
 }
 

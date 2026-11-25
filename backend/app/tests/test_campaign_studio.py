@@ -1,7 +1,10 @@
+import json
+from base64 import b64encode
 from collections.abc import AsyncIterator
 from io import BytesIO
 from pathlib import Path
 from uuid import UUID, uuid4
+from zipfile import ZipFile
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -103,6 +106,7 @@ async def test_article_and_illustration_workflow(
             "brief": "Show one simple workflow",
             "brand_profile": "Green and white",
             "alt_text": "A green card",
+            "caption": "A picture <green>",
             "usage_rights": "Original artwork by the editorial team",
             "source_version_id": article_v1["id"],
         },
@@ -135,8 +139,8 @@ async def test_article_and_illustration_workflow(
     article_id = article_v1["asset_id"]
     revision_path = f"{path}/assets/articles/{article_id}/versions"
     request = {
-        "title": "Guide",
-        "body": "Revised draft",
+        "title": "Guide <2026>",
+        "body": "Revised draft\nNext & final",
         "illustration_version_id": visual_id,
         "expected_current_version_id": article_v1["id"],
     }
@@ -199,8 +203,191 @@ async def test_article_and_illustration_workflow(
     assert historical_version.json() == approved_visual.json()
     assert (await client.get(f"{other_path}/versions/{visual_id}")).status_code == 404
 
+    package_path = f"{path}/versions/{article_v2['id']}/website-package"
+    next_article = await client.post(
+        revision_path,
+        json={
+            **request,
+            "body": "New draft",
+            "expected_current_version_id": article_v2["id"],
+            "illustration_version_id": visual_v2["id"],
+        },
+    )
+    assert next_article.status_code == 201, next_article.text
+    assert (
+        await client.get(f"{path}/versions/{next_article.json()['id']}/website-package")
+    ).status_code == 409
+    assert (await client.get(f"{path}/versions/{visual_id}/website-package")).status_code == 422
+    assert (
+        await client.get(f"{other_path}/versions/{article_v2['id']}/website-package")
+    ).status_code == 404
+
+    package = await client.get(package_path)
+    assert package.status_code == 200, package.text
+    assert package.headers["content-type"] == "application/zip"
+    assert package.headers["cache-control"] == "private, no-store"
+    assert package.headers["content-disposition"] == (
+        f'attachment; filename="article-{article_v2["id"]}.zip"'
+    )
+    with ZipFile(BytesIO(package.content)) as archive:
+        assert set(archive.namelist()) == {"article.html", "manifest.json", "illustration.webp"}
+        assert archive.read("illustration.webp") == variant.content
+        manifest = json.loads(archive.read("manifest.json"))
+        assert manifest["campaign_id"] == str(campaign.id)
+        assert manifest["article"]["version_id"] == article_v2["id"]
+        assert manifest["article"]["snapshot_hash"] == article_v2["snapshot_hash"]
+        assert manifest["illustration"]["version_id"] == visual_id
+        assert manifest["illustration"]["snapshot_hash"] == visual_v1["snapshot_hash"]
+        assert manifest["illustration"]["usage_rights"] == visual_v1["payload"]["usage_rights"]
+        assert "brief" not in manifest["illustration"]
+        html = archive.read("article.html").decode("utf-8")
+        assert "<h1>Guide &lt;2026&gt;</h1>" in html
+        assert "Revised draft\nNext &amp; final" in html
+        assert 'src="illustration.webp" alt="A green card"' in html
+        assert "<figcaption>A picture &lt;green&gt;</figcaption>" in html
+        assert "New draft" not in html
+    assert (await client.get(package_path)).content == package.content
+
+    digest = manifest["illustration"]["media"]["sha256"]
+    (tmp_path / digest[:2] / digest).write_bytes(b"corrupt image")
+    unavailable = await client.get(package_path)
+    assert unavailable.status_code == 503
+    assert unavailable.json()["error"]["code"] == "CREATIVE_MEDIA_UNAVAILABLE"
+
     authenticate(client, outsider)
     assert (await client.get(f"{path}/versions/{visual_id}")).status_code == 403
+    assert (await client.get(package_path)).status_code == 403
+
+
+async def test_website_package_for_approved_article_without_illustration(
+    studio_client: AsyncClient, db_session: AsyncSession
+) -> None:
+    editor, _, campaign, _ = await seed_studio(db_session)
+    authenticate(studio_client, editor)
+    path = f"/api/v1/campaigns/{campaign.id}/studio"
+    draft = await studio_client.post(
+        f"{path}/assets/articles", json={"title": "План кампании", "body": "Текст статьи"}
+    )
+    assert draft.status_code == 201, draft.text
+    version = f"{path}/versions/{draft.json()['id']}"
+    package_path = f"{version}/website-package"
+    rejected = await studio_client.get(package_path)
+    assert rejected.status_code == 409
+    assert rejected.json()["error"]["code"] == "STUDIO_ARTICLE_APPROVAL_REQUIRED"
+
+    assert (await studio_client.post(f"{version}/approve")).status_code == 200
+    package = await studio_client.get(package_path)
+    assert package.status_code == 200, package.text
+    with ZipFile(BytesIO(package.content)) as archive:
+        assert set(archive.namelist()) == {"article.html", "manifest.json"}
+        assert "<h1>План кампании</h1>" in archive.read("article.html").decode("utf-8")
+        assert json.loads(archive.read("manifest.json"))["illustration"] is None
+
+
+async def test_sandbox_draft_and_publication_pin_exact_approved_materials(
+    studio_client: AsyncClient,
+    db_session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "creative_media_root", tmp_path)
+    editor, outsider, campaign, other_campaign = await seed_studio(db_session)
+    client = studio_client
+    authenticate(client, editor)
+    path = f"/api/v1/campaigns/{campaign.id}/studio"
+    visual = await client.post(
+        f"{path}/assets/illustrations",
+        data={
+            "title": "Diagram",
+            "brief": "Draw a diagram",
+            "brand_profile": "Green and white",
+            "alt_text": "Figure <one>",
+            "caption": "Example",
+            "usage_rights": "Original work",
+        },
+        files={"file": ("cover.png", sample_png(), "image/png")},
+    )
+    assert visual.status_code == 201, visual.text
+    visual_id = visual.json()["id"]
+    assert (await client.post(f"{path}/versions/{visual_id}/approve")).status_code == 200
+    draft = await client.post(
+        f"{path}/assets/articles",
+        json={
+            "title": "Title <original>",
+            "body": "First & final",
+            "illustration_version_id": visual_id,
+        },
+    )
+    assert draft.status_code == 201, draft.text
+    article = draft.json()
+    version_path = f"{path}/versions/{article['id']}"
+    sandbox = f"{version_path}/website-sandbox"
+    metadata = {"seo_title": "Search title", "seo_description": 'With "quotes"'}
+    assert (await client.get(sandbox)).json() == {"enabled": False, "page": None}
+    assert (await client.post(f"{sandbox}/draft", json=metadata)).status_code == 404
+    monkeypatch.setattr(settings, "studio_website_sandbox_enabled", True)
+    assert (await client.post(f"{sandbox}/draft", json=metadata)).status_code == 409
+    assert (await client.post(f"{version_path}/approve")).status_code == 200
+    assert (await client.get(sandbox)).json() == {"enabled": True, "page": None}
+
+    response = await client.post(f"{sandbox}/draft", json=metadata)
+    assert response.status_code == 200, response.text
+    page = response.json()
+    assert page["article_version_id"] == article["id"]
+    assert page["illustration_version_id"] == visual_id
+    assert page["published_at"] is None
+    assert (await client.post(f"{sandbox}/draft", json=metadata)).json() == page
+    different = await client.post(f"{sandbox}/draft", json={"seo_title": "New SEO title"})
+    assert different.status_code == 409
+    page_id = page["id"]
+    public_url = f"/api/v1/website-sandbox/{page_id}"
+    preview_url = f"{sandbox}/{page_id}/preview"
+    publish_url = f"{sandbox}/{page_id}/publish"
+    assert (await client.get(public_url)).status_code == 404
+    assert (await client.post(f"{sandbox}/{uuid4()}/publish")).status_code == 404
+
+    preview = await client.get(preview_url)
+    assert preview.status_code == 200, preview.text
+    assert preview.headers["x-robots-tag"] == "noindex, nofollow"
+    assert "<title>Search title</title>" in preview.text
+    assert 'content="With &quot;quotes&quot;"' in preview.text
+    assert "<h1>Title &lt;original&gt;</h1>" in preview.text
+    assert "First &amp; final" in preview.text
+    assert 'alt="Figure &lt;one&gt;"' in preview.text
+    media = await client.get(f"{path}/versions/{visual_id}/media/website")
+    assert media.status_code == 200
+    assert b64encode(media.content).decode("ascii") in preview.text
+
+    other_path = sandbox.replace(str(campaign.id), str(other_campaign.id))
+    assert (await client.post(f"{other_path}/{page_id}/publish")).status_code == 404
+    authenticate(client, outsider)
+    assert (await client.get(preview_url)).status_code == 403
+    assert (await client.post(publish_url)).status_code == 403
+    authenticate(client, editor)
+
+    new_draft = await client.post(
+        f"{path}/assets/articles/{article['asset_id']}/versions",
+        json={
+            "title": "Later title",
+            "body": "Later draft",
+            "expected_current_version_id": article["id"],
+        },
+    )
+    assert new_draft.status_code == 201, new_draft.text
+
+    published = await client.post(publish_url)
+    assert published.status_code == 200, published.text
+    assert published.json()["published_at"] is not None
+    assert (await client.post(publish_url)).json() == published.json()
+    assert (await client.get(sandbox)).json() == {"enabled": True, "page": published.json()}
+    client.cookies.clear()
+    assert (await client.get(preview_url)).status_code == 401
+    public = await client.get(public_url)
+    assert public.status_code == 200, public.text
+    assert public.text == preview.text
+    assert "Later draft" not in public.text
+    monkeypatch.setattr(settings, "app_env", "production")
+    assert (await client.get(public_url)).status_code == 404
 
 
 @pytest.mark.parametrize(

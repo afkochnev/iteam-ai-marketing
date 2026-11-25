@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     openai_default_model: str | None = None
     openai_agents_disable_tracing: bool = True
     creative_media_root: Path | None = None
+    studio_website_sandbox_enabled: bool = False
     creative_image_model: str | None = None
     creative_image_timeout_seconds: int = Field(default=120, ge=1, le=180)
     agent_max_turns: int = 8

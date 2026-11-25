@@ -419,7 +419,13 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
                   Новая версия на основе v{asset.latest_version.version_number}
                 </button>
               </div>
-              <StudioVersionDetails campaignId={campaignId} version={version} busy={busy} onApprove={() => void approve(version)} />
+              <StudioVersionDetails
+                campaignId={campaignId}
+                version={version}
+                busy={busy}
+                onApprove={() => void approve(version)}
+                allowWebsiteDownload
+              />
               <StudioHistory
                 key={asset.id}
                 campaignId={campaignId}

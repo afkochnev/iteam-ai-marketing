@@ -12,6 +12,12 @@ const api = vi.hoisted(() => ({
   uploadIllustration: vi.fn(),
   approve: vi.fn(),
   media: vi.fn(),
+  websitePackage: vi.fn(),
+  websiteStatus: vi.fn(),
+  createWebsiteDraft: vi.fn(),
+  publishWebsiteDraft: vi.fn(),
+  websiteDraftUrl: vi.fn(),
+  websitePublicUrl: vi.fn(),
   generate: vi.fn(),
   generationJob: vi.fn(),
 }));
@@ -126,9 +132,63 @@ describe("campaign content studio", () => {
       return storeVersion({ ...version, approval });
     });
     api.media.mockResolvedValue(new Blob(["preview"], { type: "image/png" }));
+    api.websiteStatus.mockResolvedValue({ enabled: false, page: null });
   });
 
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("downloads the selected historical approved article and allows retry after an expired session", async () => {
+    const approved = storeVersion(article({ approval }));
+    const draft = storeVersion(article({ id: "article-2", version_number: 2, supersedes_version_id: approved.id }));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    api.websitePackage
+      .mockRejectedValueOnce(new ApiError("Требуется вход", 401, "AUTHENTICATION_REQUIRED"))
+      .mockResolvedValueOnce(new Blob(["website package"], { type: "application/zip" }));
+
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(await library().findByRole("button", { name: draft.payload.title }));
+    expect(screen.queryByRole("button", { name: "Скачать пакет для сайта" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Смотреть v1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Скачать пакет для сайта" }));
+    expect(await screen.findByRole("link", { name: "Войти в новой вкладке" })).toHaveAttribute("href", "/login");
+    expect(click).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Скачать пакет для сайта" }));
+    await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+    expect(api.websitePackage.mock.calls.map((args) => args.slice(0, 2))).toEqual([
+      [campaignId, approved.id], [campaignId, approved.id],
+    ]);
+    expect(click.mock.instances[0]).toHaveAttribute("download", "article-article-1.zip");
+  });
+
+  it("creates a separate test CMS draft before an explicit publish action", async () => {
+    const approved = storeVersion(article({ approval }));
+    const draft = {
+      id: "website-draft", article_version_id: approved.id, illustration_version_id: "visual-1",
+      created_at: timestamp, published_at: null,
+    };
+    api.websiteStatus.mockResolvedValue({ enabled: true, page: null });
+    api.createWebsiteDraft.mockResolvedValue(draft);
+    api.publishWebsiteDraft.mockResolvedValue({ ...draft, published_at: timestamp });
+    api.websiteDraftUrl.mockReturnValue("http://localhost:8000/draft-preview");
+    api.websitePublicUrl.mockReturnValue("http://localhost:8000/test-publication");
+
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(await library().findByRole("button", { name: approved.payload.title }));
+    const cms = within(await screen.findByRole("region", { name: "Тестовая CMS" }));
+    fireEvent.change(cms.getByLabelText("SEO-заголовок"), { target: { value: "Стратегическая сессия iTeam" } });
+    fireEvent.click(cms.getByRole("button", { name: "Создать черновик в тестовой CMS" }));
+    expect(await cms.findByRole("link", { name: "Посмотреть черновик" })).toHaveAttribute("href", "http://localhost:8000/draft-preview");
+    expect(api.createWebsiteDraft).toHaveBeenCalledWith(campaignId, approved.id, { seo_title: "Стратегическая сессия iTeam", seo_description: "" });
+    expect(api.publishWebsiteDraft).not.toHaveBeenCalled();
+
+    fireEvent.click(cms.getByRole("button", { name: "Опубликовать на тестовом сайте" }));
+    expect(await cms.findByRole("link", { name: "Открыть тестовую публикацию" })).toHaveAttribute("href", "http://localhost:8000/test-publication");
+    expect(api.publishWebsiteDraft).toHaveBeenCalledWith(campaignId, approved.id, draft.id);
+  });
 
   it("uploads and approves an illustration, binds its exact version to an article, and approves the article", async () => {
     render(<StudioWorkspace campaignId={campaignId} />);

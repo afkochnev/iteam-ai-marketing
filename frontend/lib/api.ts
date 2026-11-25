@@ -123,7 +123,7 @@ export interface RuntimeSnapshot {
   queues: RuntimeQueue[]; processes: RuntimeProcess[];
 }
 export class ApiError extends Error { constructor(message: string, public status: number, public code?: string) { super(message); } }
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
@@ -143,11 +143,11 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-export async function requestBlob(path: string, signal: AbortSignal): Promise<Blob> {
+export async function requestBlob(path: string, signal: AbortSignal, fallback = "Не удалось загрузить изображение."): Promise<Blob> {
   const response = await fetch(`${API_URL}${path}`, { credentials: "include", signal });
   if (!response.ok) {
     const body = (await response.json().catch(() => ({}))) as ApiErrorBody;
-    throw new ApiError(body?.error?.message ?? "Не удалось загрузить изображение.", response.status, body?.error?.code);
+    throw new ApiError(body?.error?.message ?? fallback, response.status, body?.error?.code);
   }
   return response.blob();
 }

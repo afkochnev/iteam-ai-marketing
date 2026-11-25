@@ -40,6 +40,7 @@ from app.models.publication_plan import (
     PublicationPlanItemStatus,
     PublicationPlanStatus,
 )
+from app.models.studio_website import StudioWebsitePage
 from app.models.task import Task, TaskDependency, TaskPriority, TaskStatus, TaskType
 from app.models.user import User, UserRole
 from app.models.workspace import Workspace, WorkspaceMembership, WorkspaceRole
@@ -97,6 +98,7 @@ __all__ = [
     "PublicationPlanItem",
     "PublicationPlanItemStatus",
     "PublicationPlanStatus",
+    "StudioWebsitePage",
     "FeedbackAnalysisStatus",
     "FeedbackCategory",
     "FeedbackSource",

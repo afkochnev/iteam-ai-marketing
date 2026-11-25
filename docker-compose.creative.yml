@@ -1,16 +1,16 @@
 services:
   postgres:
     ports: !override
-      - "127.0.0.1:15433:5432"
+      - "127.0.0.1:${CREATIVE_REVIEW_POSTGRES_PORT:-15433}:5432"
 
   backend:
     environment:
-      AUTH_COOKIE_NAME: iteam_creative_review
-      FRONTEND_URL: http://localhost:13000
-      CORS_ALLOWED_ORIGINS: http://localhost:13000
+      AUTH_COOKIE_NAME: ${CREATIVE_REVIEW_AUTH_COOKIE_NAME:-iteam_creative_review}
+      FRONTEND_URL: http://localhost:${CREATIVE_REVIEW_FRONTEND_PORT:-13000}
+      CORS_ALLOWED_ORIGINS: http://localhost:${CREATIVE_REVIEW_FRONTEND_PORT:-13000}
       CREATIVE_MEDIA_ROOT: /var/lib/iteam/creative-media
     ports: !override
-      - "127.0.0.1:18000:8000"
+      - "127.0.0.1:${CREATIVE_REVIEW_BACKEND_PORT:-18000}:8000"
     volumes:
       - creative_media:/var/lib/iteam/creative-media
 
@@ -23,11 +23,11 @@ services:
   frontend:
     build:
       args:
-        NEXT_PUBLIC_API_URL: http://localhost:18000/api/v1
+        NEXT_PUBLIC_API_URL: http://localhost:${CREATIVE_REVIEW_BACKEND_PORT:-18000}/api/v1
     environment:
-      NEXT_PUBLIC_API_URL: http://localhost:18000/api/v1
+      NEXT_PUBLIC_API_URL: http://localhost:${CREATIVE_REVIEW_BACKEND_PORT:-18000}/api/v1
     ports: !override
-      - "127.0.0.1:13000:3000"
+      - "127.0.0.1:${CREATIVE_REVIEW_FRONTEND_PORT:-13000}:3000"
 
 volumes:
   creative_media:
