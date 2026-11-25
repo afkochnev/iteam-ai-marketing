@@ -12,6 +12,7 @@ const api = vi.hoisted(() => ({
   uploadIllustration: vi.fn(),
   approve: vi.fn(),
   media: vi.fn(),
+  websitePackage: vi.fn(),
   generate: vi.fn(),
   generationJob: vi.fn(),
 }));
@@ -128,7 +129,34 @@ describe("campaign content studio", () => {
     api.media.mockResolvedValue(new Blob(["preview"], { type: "image/png" }));
   });
 
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("downloads the selected historical approved article and allows retry after an expired session", async () => {
+    const approved = storeVersion(article({ approval }));
+    const draft = storeVersion(article({ id: "article-2", version_number: 2, supersedes_version_id: approved.id }));
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    api.websitePackage
+      .mockRejectedValueOnce(new ApiError("Требуется вход", 401, "AUTHENTICATION_REQUIRED"))
+      .mockResolvedValueOnce(new Blob(["website package"], { type: "application/zip" }));
+
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(await library().findByRole("button", { name: draft.payload.title }));
+    expect(screen.queryByRole("button", { name: "Скачать пакет для сайта" })).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Смотреть v1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Скачать пакет для сайта" }));
+    expect(await screen.findByRole("link", { name: "Войти в новой вкладке" })).toHaveAttribute("href", "/login");
+    expect(click).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Скачать пакет для сайта" }));
+    await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+    expect(api.websitePackage.mock.calls.map((args) => args.slice(0, 2))).toEqual([
+      [campaignId, approved.id], [campaignId, approved.id],
+    ]);
+    expect(click.mock.instances[0]).toHaveAttribute("download", "article-article-1.zip");
+  });
 
   it("uploads and approves an illustration, binds its exact version to an article, and approves the article", async () => {
     render(<StudioWorkspace campaignId={campaignId} />);

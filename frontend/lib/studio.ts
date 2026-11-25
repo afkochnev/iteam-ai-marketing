@@ -143,6 +143,13 @@ export const studioApi = {
   media(campaignId: string, versionId: string, name: string, signal: AbortSignal) {
     return requestBlob(studioPath(campaignId, `/versions/${encodeURIComponent(versionId)}/media/${encodeURIComponent(name)}`), signal);
   },
+  websitePackage(campaignId: string, versionId: string, signal: AbortSignal) {
+    return requestBlob(
+      studioPath(campaignId, `/versions/${encodeURIComponent(versionId)}/website-package`),
+      signal,
+      "Не удалось скачать пакет для сайта.",
+    );
+  },
   generate(campaignId: string, input: StudioIllustrationInput, revision?: StudioRevision) {
     return request<StudioGenerationJob>(studioPath(campaignId, "/illustrations/generate"), jsonPost({ ...input, ...revision }));
   },
