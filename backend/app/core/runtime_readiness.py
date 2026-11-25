@@ -8,7 +8,7 @@ Redis is contacted only for PING. Neither successful probe admits business work.
 from app.core.config import settings
 from app.core.runtime_admission import admission_status
 
-EXPECTED_MIGRATION_HEAD = "20261124_0036"
+EXPECTED_MIGRATION_HEAD = "20261125_0037"
 
 
 async def _check_readonly_database() -> tuple[bool, bool]:

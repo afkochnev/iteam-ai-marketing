@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { FriendlyError } from "@/components/friendly-error";
 import { StatusBadge } from "@/components/status-badge";
 import { StudioPagination, useStudioPage } from "@/components/studio/pages";
+import { StudioWebsiteSandbox } from "@/components/studio/website-sandbox";
 import { formatDateTime } from "@/lib/campaigns";
 import { studioApi, type StudioAsset, type StudioMedia, type StudioVersion } from "@/lib/studio";
 
@@ -107,7 +108,10 @@ export function StudioVersionDetails({
         </div>
       )}
       {allowWebsiteDownload && version.kind === "ARTICLE" && version.approval && (
-        <WebsitePackageDownload key={version.id} campaignId={campaignId} versionId={version.id} disabled={busy} />
+        <>
+          <WebsitePackageDownload key={version.id} campaignId={campaignId} versionId={version.id} disabled={busy} />
+          <StudioWebsiteSandbox key={`site-${version.id}`} campaignId={campaignId} versionId={version.id} disabled={busy} />
+        </>
       )}
     </section>
   );

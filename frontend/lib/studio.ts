@@ -1,4 +1,4 @@
-import { request, requestBlob } from "@/lib/api";
+import { API_URL, request, requestBlob } from "@/lib/api";
 
 export type StudioAssetKind = "ARTICLE" | "ILLUSTRATION";
 
@@ -93,6 +93,24 @@ export interface StudioRevision {
   expected_current_version_id: string;
 }
 
+export interface StudioWebsiteDraft {
+  seo_title: string;
+  seo_description: string;
+}
+
+export interface StudioWebsitePage {
+  id: string;
+  article_version_id: string;
+  illustration_version_id: string | null;
+  created_at: string;
+  published_at: string | null;
+}
+
+export interface StudioWebsiteStatus {
+  enabled: boolean;
+  page: StudioWebsitePage | null;
+}
+
 const PAGE_SIZE = 50;
 
 function studioPath(campaignId: string, path: string) {
@@ -101,6 +119,10 @@ function studioPath(campaignId: string, path: string) {
 
 function jsonPost(value: unknown): RequestInit {
   return { method: "POST", body: JSON.stringify(value) };
+}
+
+function websiteSandboxPath(campaignId: string, versionId: string) {
+  return studioPath(campaignId, `/versions/${encodeURIComponent(versionId)}/website-sandbox`);
 }
 
 export const studioApi = {
@@ -149,6 +171,21 @@ export const studioApi = {
       signal,
       "Не удалось скачать пакет для сайта.",
     );
+  },
+  websiteStatus(campaignId: string, versionId: string, signal: AbortSignal) {
+    return request<StudioWebsiteStatus>(websiteSandboxPath(campaignId, versionId), { signal });
+  },
+  createWebsiteDraft(campaignId: string, versionId: string, metadata: StudioWebsiteDraft) {
+    return request<StudioWebsitePage>(`${websiteSandboxPath(campaignId, versionId)}/draft`, jsonPost(metadata));
+  },
+  publishWebsiteDraft(campaignId: string, versionId: string, pageId: string) {
+    return request<StudioWebsitePage>(`${websiteSandboxPath(campaignId, versionId)}/${encodeURIComponent(pageId)}/publish`, { method: "POST" });
+  },
+  websiteDraftUrl(campaignId: string, versionId: string, pageId: string) {
+    return `${API_URL}${websiteSandboxPath(campaignId, versionId)}/${encodeURIComponent(pageId)}/preview`;
+  },
+  websitePublicUrl(pageId: string) {
+    return `${API_URL}/website-sandbox/${encodeURIComponent(pageId)}`;
   },
   generate(campaignId: string, input: StudioIllustrationInput, revision?: StudioRevision) {
     return request<StudioGenerationJob>(studioPath(campaignId, "/illustrations/generate"), jsonPost({ ...input, ...revision }));

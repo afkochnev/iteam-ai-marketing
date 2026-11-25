@@ -1,4 +1,5 @@
 import json
+from dataclasses import dataclass
 from html import escape
 from io import BytesIO
 from uuid import UUID
@@ -13,6 +14,7 @@ from app.integrations.creative_media import (
 from app.schemas.content_asset import (
     ArticleVersionData,
     ContentAssetVersionResponse,
+    CreativeMediaObject,
     IllustrationVersionData,
 )
 from app.services.campaign_studio_service import CampaignStudioService
@@ -21,74 +23,123 @@ ARTICLE_FILENAME = "article.html"
 IMAGE_FILENAME = "illustration.webp"
 
 
-async def build_website_package(
+@dataclass(frozen=True)
+class WebsiteIllustration:
+    version: ContentAssetVersionResponse
+    details: IllustrationVersionData
+    media: CreativeMediaObject
+
+
+async def read_approved_website_article(
     studio: CampaignStudioService, user_id: UUID, campaign_id: UUID, version_id: UUID
-) -> bytes:
+) -> tuple[ContentAssetVersionResponse, ArticleVersionData]:
     article = await studio.read_version(user_id, campaign_id, version_id)
     if not isinstance(article.payload, ArticleVersionData):
         raise AppError("INVALID_ASSET_TYPE", "Выберите версию статьи.", 422)
     if article.approval is None:
         raise AppError("STUDIO_ARTICLE_APPROVAL_REQUIRED", "Сначала утвердите версию статьи.", 409)
+    return article, article.payload
 
+
+async def read_website_illustration(
+    studio: CampaignStudioService, user_id: UUID, campaign_id: UUID, version_id: UUID | None
+) -> WebsiteIllustration | None:
+    if version_id is None:
+        return None
+    illustration = await studio.read_version(user_id, campaign_id, version_id)
+    if not isinstance(illustration.payload, IllustrationVersionData):
+        raise AppError("INVALID_ILLUSTRATION", "Укажите версию иллюстрации.", 422)
+    if illustration.approval is None:
+        raise AppError(
+            "ILLUSTRATION_APPROVAL_REQUIRED", "Сначала утвердите версию иллюстрации.", 409
+        )
+    visual = illustration.payload
+    media = next((variant for variant in visual.variants if variant.name == "website"), None)
+    if media is None or media.mime_type != "image/webp":
+        raise AppError("CREATIVE_MEDIA_NOT_FOUND", "Вариант изображения для сайта не найден.", 404)
+    return WebsiteIllustration(
+        illustration, visual, CreativeMediaObject.model_validate(media.model_dump(exclude={"name"}))
+    )
+
+
+async def website_image_bytes(media: CreativeMediaObject) -> bytes:
+    try:
+        return await read_creative_image(media.sha256)
+    except CreativeMediaNotFoundError:
+        raise AppError("CREATIVE_MEDIA_NOT_FOUND", "Изображение не найдено.", 404) from None
+    except CreativeMediaStorageError:
+        raise AppError(
+            "CREATIVE_MEDIA_UNAVAILABLE", "Хранилище изображений недоступно.", 503
+        ) from None
+
+
+def render_website_figure(
+    src: str, alt: str, caption: str | None, media: CreativeMediaObject
+) -> str:
+    description = f"<figcaption>{escape(caption)}</figcaption>" if caption else ""
+    return (
+        f'<figure><img src="{escape(src)}" alt="{escape(alt)}" '
+        f'width="{media.width}" height="{media.height}" '
+        f'style="max-width: 100%; height: auto">{description}</figure>'
+    )
+
+
+def render_website_html(
+    article: ArticleVersionData,
+    figure: str,
+    *,
+    seo_title: str | None = None,
+    seo_description: str | None = None,
+) -> str:
+    title = escape(article.title)
+    body = escape(article.body)
+    page_title = escape(seo_title) if seo_title else title
+    metadata = (
+        f'<meta name="description" content="{escape(seo_description)}">\n'
+        if seo_description
+        else ""
+    )
+    return (
+        '<!doctype html>\n<html lang="ru">\n<head>\n<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f"{metadata}<title>{page_title}</title>\n</head>\n<body>\n<article>\n<h1>{title}</h1>\n"
+        f'{figure}\n<div style="white-space: pre-wrap">{body}</div>\n'
+        "</article>\n</body>\n</html>\n"
+    )
+
+
+async def build_website_package(
+    studio: CampaignStudioService, user_id: UUID, campaign_id: UUID, version_id: UUID
+) -> bytes:
+    article, content = await read_approved_website_article(studio, user_id, campaign_id, version_id)
+    illustration = await read_website_illustration(
+        studio, user_id, campaign_id, article.illustration_version_id
+    )
     illustration_metadata = None
     image = None
     figure = ""
-    if article.illustration_version_id is not None:
-        illustration = await studio.read_version(
-            user_id, campaign_id, article.illustration_version_id
-        )
-        if not isinstance(illustration.payload, IllustrationVersionData):
-            raise AppError("INVALID_ILLUSTRATION", "Укажите версию иллюстрации.", 422)
-        if illustration.approval is None:
-            raise AppError(
-                "ILLUSTRATION_APPROVAL_REQUIRED", "Сначала утвердите версию иллюстрации.", 409
-            )
-        visual = illustration.payload
-        media = next((variant for variant in visual.variants if variant.name == "website"), None)
-        if media is None or media.mime_type != "image/webp":
-            raise AppError(
-                "CREATIVE_MEDIA_NOT_FOUND", "Вариант изображения для сайта не найден.", 404
-            )
-        try:
-            image = await read_creative_image(media.sha256)
-        except CreativeMediaNotFoundError:
-            raise AppError("CREATIVE_MEDIA_NOT_FOUND", "Изображение не найдено.", 404) from None
-        except CreativeMediaStorageError:
-            raise AppError(
-                "CREATIVE_MEDIA_UNAVAILABLE", "Хранилище изображений недоступно.", 503
-            ) from None
+    if illustration is not None:
+        visual, media = illustration.details, illustration.media
+        image = await website_image_bytes(media)
         illustration_metadata = {
-            **_version_metadata(illustration),
+            **_version_metadata(illustration.version),
             "title": visual.title,
             "file": IMAGE_FILENAME,
             "variant": "website",
             "alt_text": visual.alt_text,
             "caption": visual.caption,
             "usage_rights": visual.usage_rights,
-            "media": media.model_dump(exclude={"name"}),
+            "media": media.model_dump(),
         }
-        caption = f"<figcaption>{escape(visual.caption)}</figcaption>" if visual.caption else ""
-        figure = (
-            f'<figure><img src="{IMAGE_FILENAME}" alt="{escape(visual.alt_text)}" '
-            f'width="{media.width}" height="{media.height}" '
-            f'style="max-width: 100%; height: auto">{caption}</figure>'
-        )
+        figure = render_website_figure(IMAGE_FILENAME, visual.alt_text, visual.caption, media)
 
-    title = escape(article.payload.title)
-    body = escape(article.payload.body)
-    html = (
-        '<!doctype html>\n<html lang="ru">\n<head>\n<meta charset="utf-8">\n'
-        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        f"<title>{title}</title>\n</head>\n<body>\n<article>\n<h1>{title}</h1>\n"
-        f'{figure}\n<div style="white-space: pre-wrap">{body}</div>\n'
-        "</article>\n</body>\n</html>\n"
-    )
+    html = render_website_html(content, figure)
     manifest = {
         "format_version": 1,
         "campaign_id": str(campaign_id),
         "article": {
             **_version_metadata(article),
-            "title": article.payload.title,
+            "title": content.title,
             "file": ARTICLE_FILENAME,
         },
         "illustration": illustration_metadata,

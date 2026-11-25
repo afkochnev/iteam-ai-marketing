@@ -20,6 +20,7 @@ from app.api.metrics import router as metrics_router
 from app.api.optimization import router as optimization_router
 from app.api.publication_plans import router as publication_plans_router
 from app.api.publications import router as publications_router
+from app.api.studio_website_sandbox import router as studio_website_sandbox_router
 from app.api.system import router as system_router
 from app.api.tasks import router as tasks_router
 
@@ -33,6 +34,7 @@ api_router.include_router(approvals_router)
 api_router.include_router(campaigns_router)
 api_router.include_router(campaign_hypotheses_router)
 api_router.include_router(campaign_studio_router)
+api_router.include_router(studio_website_sandbox_router)
 api_router.include_router(tasks_router)
 api_router.include_router(knowledge_router)
 api_router.include_router(knowledge_packs_router)

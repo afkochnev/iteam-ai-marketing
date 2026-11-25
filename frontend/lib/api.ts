@@ -123,7 +123,7 @@ export interface RuntimeSnapshot {
   queues: RuntimeQueue[]; processes: RuntimeProcess[];
 }
 export class ApiError extends Error { constructor(message: string, public status: number, public code?: string) { super(message); } }
-const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+export const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers);
