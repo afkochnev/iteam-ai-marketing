@@ -172,7 +172,8 @@ class StudioWordPressService:
             StudioWordPressDelivery.article_version_id == version_id,
             StudioWordPressDelivery.target_url == target_url,
         )
-        return await self.session.scalar(stmt.with_for_update() if lock else stmt)
+        result = await self.session.execute(stmt.with_for_update() if lock else stmt)
+        return result.scalar_one_or_none()
 
     async def _operation(
         self, delivery_id: UUID, action: WordPressAction, *, lock: bool = False
@@ -181,7 +182,8 @@ class StudioWordPressService:
             StudioWordPressOperation.delivery_id == delivery_id,
             StudioWordPressOperation.action == action,
         )
-        return await self.session.scalar(stmt.with_for_update() if lock else stmt)
+        result = await self.session.execute(stmt.with_for_update() if lock else stmt)
+        return result.scalar_one_or_none()
 
     async def _enqueue(self, delivery_id: UUID, action: WordPressAction, user_id: UUID) -> None:
         await self.session.execute(
@@ -200,9 +202,9 @@ class StudioWordPressService:
     ) -> WordPressDeliveryView:
         operations = (
             await self.session.scalars(
-                select(StudioWordPressOperation).where(
-                    StudioWordPressOperation.delivery_id == delivery.id
-                )
+                select(StudioWordPressOperation)
+                .where(StudioWordPressOperation.delivery_id == delivery.id)
+                .order_by(StudioWordPressOperation.action)
             )
             if delivery
             else ()
