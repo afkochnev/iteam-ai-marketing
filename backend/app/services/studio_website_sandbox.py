@@ -197,7 +197,10 @@ class WebsiteSandbox:
             StudioWebsitePage.workspace_id == DEFAULT_WORKSPACE_ID,
             StudioWebsitePage.article_version_id == version_id,
         )
-        return await self.session.scalar(query.with_for_update() if lock else query)
+        if lock:
+            query = query.with_for_update()
+        pages = await self.session.scalars(query)
+        return pages.one_or_none()
 
     @staticmethod
     def _require_enabled() -> None:
