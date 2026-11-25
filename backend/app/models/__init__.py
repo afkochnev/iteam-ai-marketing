@@ -12,6 +12,8 @@ from app.models.content import (
     ContentVersion,
     ContentVersionSource,
 )
+from app.models.content_asset import ContentAsset, ContentAssetApproval, ContentAssetVersion
+from app.models.creative_generation import CreativeGenerationJob
 from app.models.hypothesis import HypothesisVersion, MarketingHypothesis
 from app.models.knowledge import KnowledgeItem, KnowledgeSource, KnowledgeStore
 from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem
@@ -66,6 +68,9 @@ __all__ = [
     "Campaign",
     "CampaignKPI",
     "CampaignStatus",
+    "ContentAsset",
+    "ContentAssetApproval",
+    "ContentAssetVersion",
     "ContentChannel",
     "ContentDerivation",
     "ContentItem",
@@ -73,6 +78,7 @@ __all__ = [
     "ContentType",
     "ContentVersion",
     "ContentVersionSource",
+    "CreativeGenerationJob",
     "KnowledgeItem",
     "KnowledgePack",
     "KnowledgePackItem",

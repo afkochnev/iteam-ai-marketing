@@ -143,6 +143,15 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+export async function requestBlob(path: string, signal: AbortSignal): Promise<Blob> {
+  const response = await fetch(`${API_URL}${path}`, { credentials: "include", signal });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => ({}))) as ApiErrorBody;
+    throw new ApiError(body?.error?.message ?? "Не удалось загрузить изображение.", response.status, body?.error?.code);
+  }
+  return response.blob();
+}
+
 async function uploadRequest<T>(path: string, body: FormData): Promise<T> {
   const response = await fetch(`${API_URL}${path}`, { method: "POST", body, credentials: "include" });
   if (!response.ok) {

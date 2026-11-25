@@ -21,6 +21,7 @@ celery_app = Celery(
     backend=settings.celery_result_backend_url,
     include=[
         "app.workers.agent_worker",
+        "app.workers.creative_generation_tasks",
         "app.workers.knowledge_worker",
         "app.workers.dispatcher_worker",
         "app.workers.recovery_worker",
@@ -55,6 +56,8 @@ celery_app.conf.update(
         "recover_stuck_ai_tasks": {"queue": "ai_control"},
         "generate_feedback_analysis": {"queue": "ai"},
         "generate_publication_plan": {"queue": "ai"},
+        "generate_campaign_illustration": {"queue": "ai"},
+        "recover_stale_creative_generation": {"queue": "ai_control"},
         "publish_telegram_publication": {"queue": "publication"},
         "publish_vk_publication": {"queue": "publication"},
         "dispatch_due_publications": {"queue": "publication_control"},

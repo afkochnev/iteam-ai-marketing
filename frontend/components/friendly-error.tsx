@@ -22,7 +22,8 @@ export function FriendlyError({
       <p><strong>Почему:</strong> {view.reason}</p>
       <p><strong>Что сделать:</strong> {view.nextStep}</p>
       <div className="actions">
-        {view.retryable && onRetry && <button className="secondary" onClick={onRetry}>{retryLabel}</button>}
+        {view.signInRequired && <a href="/login" target="_blank" rel="noopener">Войти в новой вкладке</a>}
+        {view.retryable && onRetry && <button type="button" className="secondary" onClick={onRetry}>{retryLabel}</button>}
         {(view.code || view.technicalMessage) && <details>
           <summary>Технические сведения</summary>
           {view.code && <p>Код: <code>{view.code}</code></p>}

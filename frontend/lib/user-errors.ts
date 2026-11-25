@@ -5,6 +5,7 @@ export interface UserErrorPresentation {
   reason: string;
   nextStep: string;
   retryable: boolean;
+  signInRequired?: boolean;
   code?: string;
   technicalMessage?: string;
 }
@@ -156,6 +157,16 @@ export function presentError(error: unknown, fallback = "Не удалось в�
   const code = error instanceof ApiError ? error.code : undefined;
   const mapped = code ? ERROR_HELP[code] : undefined;
   if (mapped) return { ...mapped, code, technicalMessage: code === "FEEDBACK_ANALYSIS_REPAIR_EXHAUSTED" ? undefined : message || undefined };
+  if (error instanceof ApiError && error.status === 401 && (!code || code === "AUTHENTICATION_REQUIRED")) {
+    return {
+      title: "Требуется вход",
+      reason: "Сеанс завершился или вы ещё не вошли в приложение.",
+      nextStep: "Войдите в новой вкладке, затем вернитесь сюда и повторите действие.",
+      retryable: true,
+      signInRequired: true,
+      code,
+    };
+  }
   if (error instanceof TypeError && /fetch|network/i.test(message)) {
     return {
       title: fallback,

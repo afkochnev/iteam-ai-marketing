@@ -19,6 +19,11 @@ def build_beat_schedule(role: str | None, config: Settings) -> dict[str, Any]:
                 "schedule": config.task_dispatch_interval_seconds,
                 "options": {"queue": "ai_control"},
             },
+            "recover-stale-creative-generation": {
+                "task": "recover_stale_creative_generation",
+                "schedule": config.task_dispatch_interval_seconds,
+                "options": {"queue": "ai_control"},
+            },
             "recover-stuck-ai-tasks": {
                 "task": "recover_stuck_ai_tasks",
                 "schedule": config.task_dispatch_interval_seconds,

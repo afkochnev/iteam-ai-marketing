@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { authApi, distributionWorkspaceApi, request } from "../lib/api";
+import { authApi, distributionWorkspaceApi, request, requestBlob } from "../lib/api";
 
 describe("auth API", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -45,6 +45,28 @@ describe("request headers", () => {
     const mock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("{}"));
     await request("/upload", { method: "POST", body: new FormData() });
     expect(new Headers(mock.mock.calls[0][1]!.headers).has("Content-Type")).toBe(false);
+  });
+});
+
+describe("authenticated media request", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("preserves the authentication error from a media request", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ error: { code: "AUTHENTICATION_REQUIRED", message: "Требуется авторизация." } }), { status: 401 })
+    );
+    const { signal } = new AbortController();
+    await expect(requestBlob("/media", signal)).rejects.toMatchObject({
+      status: 401, code: "AUTHENTICATION_REQUIRED", message: "Требуется авторизация.",
+    });
+    expect(fetchMock).toHaveBeenCalledWith(expect.stringContaining("/media"), { credentials: "include", signal });
+  });
+
+  it("falls back to the media message when the error response is not JSON", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Bad gateway", { status: 502 }));
+    await expect(requestBlob("/media", new AbortController().signal)).rejects.toMatchObject({
+      status: 502, message: "Не удалось загрузить изображение.",
+    });
   });
 });
 

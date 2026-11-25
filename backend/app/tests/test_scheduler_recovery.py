@@ -35,7 +35,12 @@ from app.workers.scheduler_config import build_beat_schedule
 compose_config = worker_compose_config
 
 ROLE_TASKS = {
-    "ai": {"dispatch_ready_tasks", "recover_stuck_ai_tasks", "discover_performance_analyses"},
+    "ai": {
+        "dispatch_ready_tasks",
+        "recover_stuck_ai_tasks",
+        "discover_performance_analyses",
+        "recover_stale_creative_generation",
+    },
     "publication": {
         "dispatch_due_publications",
         "recover_stuck_publications",
