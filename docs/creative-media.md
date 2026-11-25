@@ -39,8 +39,19 @@ docker compose @creativeCompose up -d --build backend frontend
 
 Для отдельного стенда с `APP_ENV=development` добавьте в его `.env`
 `STUDIO_WEBSITE_SANDBOX_ENABLED=true` и примените миграцию `20261125_0037`.
-Для параллельной проверки используйте отдельные порты и отдельные тома базы
-и медиа. Раздел появляется в студии у утверждённой версии статьи.
+Для параллельной проверки в отдельном окне PowerShell задайте параметры:
+
+```powershell
+$env:CREATIVE_REVIEW_FRONTEND_PORT = "13001"
+$env:CREATIVE_REVIEW_BACKEND_PORT = "18001"
+$env:CREATIVE_REVIEW_POSTGRES_PORT = "15434"
+$env:CREATIVE_REVIEW_AUTH_COOKIE_NAME = "iteam_website_review"
+```
+
+В командах запуска выше используйте другое имя проекта Compose, например
+`iteam-website-review`. Это создаст отдельные тома. После входа на
+[тестовый стенд](http://localhost:13001/campaigns) раздел появится в студии
+у утверждённой версии статьи.
 
 1. Укажите SEO-заголовок и описание, если они нужны. Создайте черновик.
 2. Откройте предпросмотр и проверьте текст и иллюстрацию. Для просмотра
