@@ -17,9 +17,14 @@ import {
 } from "@/lib/studio";
 
 type IllustrationVersion = Extract<StudioVersion, { kind: "ILLUSTRATION" }>;
-type Editor =
+type Editor = (
   | { kind: "ARTICLE"; previous?: Extract<StudioVersion, { kind: "ARTICLE" }> }
-  | { kind: "ILLUSTRATION"; previous?: IllustrationVersion; draft?: StudioIllustrationInput };
+  | { kind: "ILLUSTRATION"; previous?: IllustrationVersion; draft?: StudioIllustrationInput }
+) & { revisionBase?: StudioVersion };
+
+type VersionLookup =
+  | { kind: "ready"; version: StudioVersion }
+  | { kind: "failed"; authenticationError?: ApiError };
 
 interface GenerationDraft {
   jobId: string;
@@ -50,7 +55,7 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState<unknown>(null);
-  const [versionLookupFailure, setVersionLookupFailure] = useState<{ authenticationError?: ApiError }>();
+  const [versionLookup, setVersionLookup] = useState<VersionLookup>();
   const [historyRefresh, setHistoryRefresh] = useState(0);
   const resultRequest = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => resultRequest.current?.abort(), []);
@@ -79,8 +84,11 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
   });
   const asset = assets?.find((candidate) => candidate.id === selectedAsset?.id) ?? selectedAsset;
   const version = selection?.version ?? asset?.latest_version;
+  const revisionBase = editor?.revisionBase ?? editor?.previous;
   const versionConflict = isVersionConflict(error);
-  const conflictingRevision = versionConflict ? editor?.previous : undefined;
+  const conflictingRevision = versionConflict ? revisionBase : undefined;
+  const latestConflictVersion = versionLookup?.kind === "ready" ? versionLookup.version : undefined;
+  const versionLookupFailure = versionLookup?.kind === "failed" ? versionLookup : undefined;
   const failedGeneration = generation.job?.status === "FAILED" || generation.job?.status === "UNKNOWN"
     ? generation.job
     : undefined;
@@ -104,7 +112,7 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
     setEditor(next);
     setNotice("");
     setError(null);
-    setVersionLookupFailure(undefined);
+    setVersionLookup(undefined);
   }
 
   function startRevision(current: StudioVersion) {
@@ -120,24 +128,27 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
   }
 
   async function loadLatestVersion(previous: StudioVersion) {
-    setVersionLookupFailure(undefined);
+    setVersionLookup(undefined);
     setNotice("");
     const controller = new AbortController();
     resultRequest.current = controller;
     try {
-      const page = await studioApi.versions(campaignId, previous.asset_id, 0, controller.signal);
+      const page = await studioApi.versions(campaignId, previous.asset_id, 0, controller.signal, 1);
       if (controller.signal.aborted) return;
       const latest = page.items[0];
-      if (!latest) throw new Error("Не найдена актуальная версия материала.");
+      if (!latest || latest.asset_id !== previous.asset_id || latest.kind !== previous.kind || latest.version_number <= previous.version_number) {
+        throw new Error("Не найдена актуальная версия материала.");
+      }
       setSelection((selected) => selected && selected.asset.id === latest.asset_id ? {
         asset: { ...selected.asset, latest_version: latest },
       } : selected);
+      setVersionLookup({ kind: "ready", version: latest });
       refresh();
-      setNotice(`Доступна версия v${latest.version_number}. Скопируйте нужные правки, затем закройте редактор и откройте новую редакцию.`);
+      setNotice(`Доступна версия v${latest.version_number}.`);
     } catch (reason) {
       if (controller.signal.aborted) return;
       const authenticationError = reason instanceof ApiError && reason.status === 401 ? reason : undefined;
-      setVersionLookupFailure({ authenticationError });
+      setVersionLookup({ kind: "failed", authenticationError });
     }
   }
 
@@ -156,11 +167,18 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
     }
   }
 
+  function chooseLatestRevisionBase() {
+    if (busy || !editor || !conflictingRevision || !latestConflictVersion) return;
+    setEditor({ ...editor, revisionBase: latestConflictVersion });
+    setError(null);
+    setNotice("");
+  }
+
   async function saveArticle(input: StudioArticleInput) {
     setBusy(true);
     setError(null);
     setNotice("");
-    const previous = editor?.previous;
+    const previous = revisionBase;
     try {
       showNewVersion(await studioApi.saveArticle(campaignId, input, asRevision(previous)));
     } catch (reason) {
@@ -174,7 +192,7 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
     setBusy(true);
     setError(null);
     setNotice("");
-    const previous = editor?.kind === "ILLUSTRATION" ? editor.previous : undefined;
+    const previous = revisionBase?.kind === "ILLUSTRATION" ? revisionBase : undefined;
     const revision = asRevision(previous);
     try {
       if (change.method !== "generate") {
@@ -353,11 +371,27 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
           )}
         </section>
         <div className="studio-main">
+          {editor && latestConflictVersion && (
+            <section className="card" aria-label="Актуальная версия материала">
+              <details>
+                <summary>Посмотреть актуальную версию v{latestConflictVersion.version_number}</summary>
+                <StudioVersionDetails campaignId={campaignId} version={latestConflictVersion} busy={busy} />
+              </details>
+              {conflictingRevision && (
+                <div className="actions">
+                  <button type="button" className="secondary" disabled={busy} onClick={chooseLatestRevisionBase}>
+                    Использовать v{latestConflictVersion.version_number} как основу
+                  </button>
+                </div>
+              )}
+            </section>
+          )}
           {editor?.kind === "ARTICLE" && (
             <ArticleEditor
               key={editor.previous?.id ?? "new-article"}
               campaignId={campaignId}
               previous={editor.previous}
+              baseVersionNumber={revisionBase?.version_number}
               busy={busy}
               versionConflict={versionConflict}
               onCancel={() => openEditor()}
@@ -369,6 +403,7 @@ export function StudioWorkspace({ campaignId }: { campaignId: string }) {
               key={editor.previous?.id ?? "new-illustration"}
               campaignId={campaignId}
               previous={editor.previous}
+              baseVersionNumber={revisionBase?.version_number}
               busy={busy}
               draft={editor.draft}
               versionConflict={versionConflict}

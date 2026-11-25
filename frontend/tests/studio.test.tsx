@@ -189,13 +189,18 @@ describe("campaign content studio", () => {
     });
   });
 
-  it("keeps local edits after a version conflict and opens a new revision from the latest version", async () => {
-    const initial = storeVersion(article({ illustration_version_id: null }));
+  it("keeps local edits and links while explicitly switching to the latest revision after a conflict", async () => {
+    const linkedIllustration = storeVersion(illustration({ approval }));
+    const initial = storeVersion(article({ source_version_id: "source-1", illustration_version_id: null }));
     render(<StudioWorkspace campaignId={campaignId} />);
     fireEvent.click(await library().findByRole("button", { name: initial.payload.title }));
     fireEvent.click(await screen.findByRole("button", { name: "Смотреть v1" }));
     fireEvent.click(screen.getByRole("button", { name: "Новая версия на основе v1" }));
+    fireEvent.change(screen.getByLabelText("Название статьи"), { target: { value: "Локальный заголовок" } });
     fireEvent.change(screen.getByLabelText("Текст статьи"), { target: { value: "Локальные правки" } });
+    fireEvent.click(screen.getByRole("button", { name: "Выбрать · версия иллюстрации" }));
+    fireEvent.click(await screen.findByRole("button", { name: `${linkedIllustration.payload.title} · иллюстрация` }));
+    fireEvent.click(await screen.findByRole("button", { name: "Выбрать v1 · утверждена" }));
 
     const latest = storeVersion(article({
       id: "article-2",
@@ -242,26 +247,74 @@ describe("campaign content studio", () => {
     expect(screen.getByLabelText("Текст статьи")).toHaveValue("Локальные правки");
     expect(save).toBeDisabled();
     expect(api.saveArticle).toHaveBeenCalledTimes(1);
-    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
-    expect(await screen.findByRole("heading", { name: initial.payload.title + " · v2" })).toBeInTheDocument();
-    expect(library().getByText(/Статья · v2/)).toBeInTheDocument();
-    fireEvent.click(library().getByRole("button", { name: initial.payload.title }));
-    fireEvent.click(screen.getByRole("button", { name: "Новая версия на основе v2" }));
-    expect(screen.getByLabelText("Текст статьи")).toHaveValue("Правки другого редактора");
-    fireEvent.change(screen.getByLabelText("Текст статьи"), { target: { value: "Объединённые правки" } });
+    fireEvent.click(screen.getByText("Посмотреть актуальную версию v2"));
+    expect(screen.getByText("Правки другого редактора")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Утвердить версию v2" })).not.toBeInTheDocument();
+    expect(save).toBeDisabled();
+    expect(await library().findByText(/Статья · v2/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Использовать v2 как основу" }));
+    expect(screen.getByText("Новая редакция статьи на основе v2")).toBeInTheDocument();
+    expect(screen.getByText("Посмотреть актуальную версию v2")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Использовать v2 как основу" })).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Название статьи")).toHaveValue("Локальный заголовок");
+    expect(screen.getByLabelText("Текст статьи")).toHaveValue("Локальные правки");
+    expect(screen.getByText(/source-1/)).toBeInTheDocument();
+    expect(screen.getByText(/Иллюстрация для статьи · v1/)).toBeInTheDocument();
+    expect(save).toBeEnabled();
+    expect(api.saveArticle).toHaveBeenCalledTimes(1);
+
     api.saveArticle.mockImplementationOnce(async () => storeVersion(article({
       id: "article-3",
       version_number: 3,
       supersedes_version_id: latest.id,
-      illustration_version_id: null,
-      payload: { ...initial.payload, body: "Объединённые правки" },
+      source_version_id: initial.source_version_id,
+      illustration_version_id: linkedIllustration.id,
+      payload: { title: "Локальный заголовок", body: "Локальные правки" },
     })));
-    fireEvent.click(screen.getByRole("button", { name: "Сохранить черновик статьи" }));
+    fireEvent.click(save);
 
-    expect(await screen.findByRole("heading", { name: `${initial.payload.title} · v3` })).toBeInTheDocument();
-    expect(api.saveArticle).toHaveBeenLastCalledWith(campaignId, expect.objectContaining({ body: "Объединённые правки" }), {
+    expect(await screen.findByRole("heading", { name: "Локальный заголовок · v3" })).toBeInTheDocument();
+    expect(screen.queryByText("Посмотреть актуальную версию v2")).not.toBeInTheDocument();
+    expect(api.saveArticle).toHaveBeenCalledTimes(2);
+    expect(api.saveArticle).toHaveBeenLastCalledWith(campaignId, {
+      title: "Локальный заголовок",
+      body: "Локальные правки",
+      source_version_id: initial.source_version_id,
+      illustration_version_id: linkedIllustration.id,
+    }, {
       asset_id: latest.asset_id,
       expected_current_version_id: latest.id,
+    });
+  });
+
+  it("retains the chosen upload file when an illustration revision switches its base", async () => {
+    const initial = storeVersion(illustration());
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(await library().findByRole("button", { name: initial.payload.title }));
+    fireEvent.click(screen.getByRole("button", { name: "Новая версия на основе v1" }));
+    fireEvent.change(screen.getByLabelText("Как получить изображение"), { target: { value: "upload" } });
+    const file = new File(["new image"], "new-image.png", { type: "image/png" });
+    const fileInput = screen.getByLabelText<HTMLInputElement>("Файл изображения");
+    fireEvent.change(fileInput, { target: { files: [file] } });
+
+    const latest = storeVersion(illustration({ id: "visual-2", version_number: 2, supersedes_version_id: initial.id }));
+    api.uploadIllustration.mockRejectedValueOnce(new ApiError("Материал изменился.", 409, "STUDIO_VERSION_CONFLICT"));
+    fireEvent.submit(fileInput.form!);
+    fireEvent.click(await screen.findByRole("button", { name: "Использовать v2 как основу" }));
+
+    expect(screen.getByText("Новая версия иллюстрации на основе v2")).toBeInTheDocument();
+    expect(screen.getByLabelText("Файл изображения")).toBe(fileInput);
+    expect(fileInput.files?.[0]).toBe(file);
+    expect(api.uploadIllustration).toHaveBeenCalledTimes(1);
+
+    api.uploadIllustration.mockImplementationOnce(async () => storeVersion(illustration({
+      id: "visual-3", version_number: 3, supersedes_version_id: latest.id,
+    })));
+    fireEvent.submit(fileInput.form!);
+    expect(await screen.findByRole("heading", { name: `${initial.payload.title} · v3` })).toBeInTheDocument();
+    expect(api.uploadIllustration).toHaveBeenLastCalledWith(campaignId, expect.objectContaining({ title: initial.payload.title }), file, {
+      asset_id: initial.asset_id, expected_current_version_id: latest.id,
     });
   });
 

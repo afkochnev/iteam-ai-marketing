@@ -17,6 +17,7 @@ function initialReference(id?: string | null) {
 export function ArticleEditor({
   campaignId,
   previous,
+  baseVersionNumber,
   busy,
   versionConflict,
   onSave,
@@ -24,6 +25,7 @@ export function ArticleEditor({
 }: {
   campaignId: string;
   previous?: VersionOf<"ARTICLE">;
+  baseVersionNumber?: number;
   busy: boolean;
   versionConflict: boolean;
   onSave: (input: StudioArticleInput) => void;
@@ -47,7 +49,7 @@ export function ArticleEditor({
   return (
     <form className="card studio-editor" onSubmit={submit}>
       <fieldset disabled={busy}>
-        <legend>{previous ? `Новая редакция статьи на основе v${previous.version_number}` : "Новая статья"}</legend>
+        <legend>{baseVersionNumber === undefined ? "Новая статья" : `Новая редакция статьи на основе v${baseVersionNumber}`}</legend>
         <label>Название статьи<input name="title" maxLength={255} defaultValue={previous?.payload.title} required /></label>
         <label>Текст статьи<textarea name="body" maxLength={100_000} rows={10} defaultValue={previous?.payload.body} required /></label>
         <StudioVersionPicker campaignId={campaignId} label="Исходная версия" value={source} onChange={setSource} />
@@ -72,6 +74,7 @@ export type IllustrationChange = { method: "upload"; file: File } | { method: "k
 export function IllustrationEditor({
   campaignId,
   previous,
+  baseVersionNumber,
   busy,
   draft,
   versionConflict,
@@ -81,6 +84,7 @@ export function IllustrationEditor({
 }: {
   campaignId: string;
   previous?: VersionOf<"ILLUSTRATION">;
+  baseVersionNumber?: number;
   busy: boolean;
   draft?: StudioIllustrationInput;
   versionConflict: boolean;
@@ -96,7 +100,7 @@ export function IllustrationEditor({
 
   function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (generationBlocked || versionConflict) return;
+    if (busy || generationBlocked || versionConflict) return;
     const fields = new FormData(event.currentTarget);
     const input = {
       title: textValue(fields, "title"),
@@ -124,7 +128,7 @@ export function IllustrationEditor({
   return (
     <form className="card studio-editor" onSubmit={submit}>
       <fieldset disabled={busy}>
-        <legend>{previous ? `Новая версия иллюстрации на основе v${previous.version_number}` : "Новая иллюстрация"}</legend>
+        <legend>{baseVersionNumber === undefined ? "Новая иллюстрация" : `Новая версия иллюстрации на основе v${baseVersionNumber}`}</legend>
         <label>Название иллюстрации<input name="title" maxLength={255} defaultValue={payload?.title} required /></label>
         <label>Бриф иллюстрации<textarea name="brief" maxLength={5_000} rows={4} defaultValue={payload?.brief} required /></label>
         <label>Профиль бренда<textarea name="brand_profile" maxLength={2_000} rows={3} defaultValue={payload?.brand_profile} required /></label>

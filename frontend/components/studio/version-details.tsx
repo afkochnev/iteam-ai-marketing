@@ -73,7 +73,7 @@ export function StudioVersionDetails({
   campaignId: string;
   version: StudioVersion;
   busy: boolean;
-  onApprove: () => void;
+  onApprove?: () => void;
 }) {
   return (
     <section className="section-block" aria-label="Выбранная версия">
@@ -99,7 +99,7 @@ export function StudioVersionDetails({
           <dt>Хеш снимка</dt><dd><code>{version.snapshot_hash}</code></dd>
         </dl>
       </details>
-      {!version.approval && (
+      {!version.approval && onApprove && (
         <div className="actions studio-approve">
           <button type="button" disabled={busy} onClick={onApprove}>Утвердить версию v{version.version_number}</button>
         </div>
