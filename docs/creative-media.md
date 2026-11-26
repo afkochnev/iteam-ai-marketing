@@ -75,6 +75,9 @@ $env:CREATIVE_REVIEW_AUTH_COOKIE_NAME = "iteam_website_review"
 контейнера (UID 10001). Укажите путь к файлу в
 STUDIO_WORDPRESS_CREDENTIALS_HOST_FILE перед запуском.
 
+Команды рассчитаны на новую базу стенда. Создайте тестового администратора до
+миграции, которая добавит его в рабочее пространство.
+
 ```powershell
 $env:CREATIVE_REVIEW_FRONTEND_PORT = "13002"
 $env:CREATIVE_REVIEW_BACKEND_PORT = "18002"
@@ -84,6 +87,8 @@ $wpCompose = @('compose', '-p', 'iteam-wordpress-review', '-f', 'docker-compose.
     '-f', 'docker-compose.creative.yml', '-f', 'docker-compose.studio-wordpress.yml')
 docker @wpCompose up -d --wait postgres redis
 docker @wpCompose build backend frontend studio_wordpress_worker
+docker @wpCompose run --rm --no-deps backend alembic upgrade 20261121_0029
+docker @wpCompose run --rm --no-deps backend python -m app.seed
 docker @wpCompose run --rm --no-deps backend alembic upgrade head
 docker @wpCompose up -d backend frontend studio_wordpress_worker
 ```
@@ -95,6 +100,9 @@ docker @wpCompose up -d backend frontend studio_wordpress_worker
 Studio показывает ID записи и публичную ссылку. В случае неизвестного результата
 кнопка сверки проверяет исход по данным WordPress. Если запись или иллюстрацию
 не удалось подтвердить, операция остаётся в статусе неопределённости.
+Если Studio потеряла ответ API iTeam на команду, нажмите «Обновить статус
+WordPress». Studio прочитает сохранённое состояние и покажет принятую команду
+или её результат без повторной отправки.
 
 ## Хранение
 

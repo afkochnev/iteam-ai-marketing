@@ -200,6 +200,39 @@ describe("campaign content studio", () => {
     ]);
   });
 
+  it("loads the accepted WordPress publication after losing the command response without resending it", async () => {
+    const approved = storeVersion(article({ approval, illustration_version_id: null }));
+    const target = { target_url: "https://wordpress.example.test/staging", target_author_id: "7" };
+    const base = { ...target, target_changed: false };
+    const draft = {
+      action: "draft", status: "succeeded", remote_id: "41", remote_url: null, failure_code: null,
+      reconciliation_pending: false, reconciliation_finished_at: null,
+    };
+    const publicUrl = `${target.target_url}/iteam-article`;
+    api.wordpressStatus
+      .mockResolvedValueOnce({ ...base, operations: [draft] })
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce({
+        ...base, operations: [draft, { ...draft, action: "publish", remote_url: publicUrl }],
+      });
+    api.wordpressCommand.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(await library().findByRole("button", { name: approved.payload.title }));
+    const wordpress = within(await screen.findByRole("region", { name: "Тестовый WordPress" }));
+    const publish = wordpress.getByRole("button", { name: "Подтвердить публикацию в WordPress" });
+    fireEvent.click(publish);
+    const refresh = await wordpress.findByRole("button", { name: "Обновить статус WordPress" });
+    expect(publish).toBeDisabled();
+    fireEvent.click(refresh);
+    fireEvent.click(await screen.findByRole("button", { name: "Обновить статус WordPress" }));
+
+    expect(await screen.findByRole("link", { name: "Открыть публикацию в WordPress" })).toHaveAttribute("href", publicUrl);
+    expect(screen.queryByRole("button", { name: "Подтвердить публикацию в WordPress" })).not.toBeInTheDocument();
+    expect(api.wordpressStatus).toHaveBeenCalledTimes(3);
+    expect(api.wordpressCommand.mock.calls).toEqual([[campaignId, approved.id, "publish", target, false]]);
+  });
+
   it("creates a separate test CMS draft before an explicit publish action", async () => {
     const approved = storeVersion(article({ approval }));
     const draft = {
