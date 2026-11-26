@@ -190,6 +190,52 @@ describe("campaign content studio", () => {
     expect(api.publishWebsiteDraft).toHaveBeenCalledWith(campaignId, approved.id, draft.id);
   });
 
+  it("opens a draft created by another editor after a website SEO conflict", async () => {
+    const approved = storeVersion(article({ approval }));
+    const draft = {
+      id: "existing-website-draft", article_version_id: approved.id, illustration_version_id: null,
+      created_at: timestamp, published_at: null,
+    };
+    const attemptedTitle = "SEO-заголовок второго редактора";
+    const attemptedDescription = "SEO-описание второго редактора";
+    api.websiteStatus
+      .mockResolvedValueOnce({ enabled: true, page: null })
+      .mockRejectedValueOnce(new Error("Временная ошибка проверки"))
+      .mockResolvedValueOnce({ enabled: true, page: draft });
+    api.createWebsiteDraft.mockRejectedValueOnce(
+      new ApiError("Для версии уже есть черновик с другими SEO-полями.", 409, "WEBSITE_DRAFT_ALREADY_EXISTS"),
+    );
+    api.websiteDraftUrl.mockReturnValue("http://localhost:8000/existing-draft-preview");
+
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(await library().findByRole("button", { name: approved.payload.title }));
+    const cms = within(await screen.findByRole("region", { name: "Тестовая CMS" }));
+    fireEvent.change(cms.getByLabelText("SEO-заголовок"), { target: { value: attemptedTitle } });
+    fireEvent.change(cms.getByLabelText("SEO-описание"), { target: { value: attemptedDescription } });
+    const create = cms.getByRole<HTMLButtonElement>("button", { name: "Создать черновик в тестовой CMS" });
+    fireEvent.click(create);
+
+    const openDraft = "Открыть существующий черновик";
+    const open = await cms.findByRole("button", { name: openDraft });
+    expect(create).toBeDisabled();
+    fireEvent.submit(create.form!);
+    expect(api.createWebsiteDraft).toHaveBeenCalledTimes(1);
+    fireEvent.click(open);
+    expect(await cms.findByText("Не удалось загрузить существующий черновик.")).toBeInTheDocument();
+    expect(cms.getByLabelText("SEO-заголовок")).toHaveValue(attemptedTitle);
+    expect(cms.getByLabelText("SEO-описание")).toHaveValue(attemptedDescription);
+    expect(create).toBeDisabled();
+    fireEvent.click(cms.getByRole("button", { name: openDraft }));
+
+    expect(await cms.findByRole("link", { name: "Посмотреть черновик" })).toHaveAttribute(
+      "href", "http://localhost:8000/existing-draft-preview",
+    );
+    expect(api.websiteDraftUrl).toHaveBeenCalledWith(campaignId, approved.id, draft.id);
+    expect(api.websiteStatus).toHaveBeenCalledTimes(3);
+    expect(api.createWebsiteDraft).toHaveBeenCalledTimes(1);
+    expect(api.publishWebsiteDraft).not.toHaveBeenCalled();
+  });
+
   it("uploads and approves an illustration, binds its exact version to an article, and approves the article", async () => {
     render(<StudioWorkspace campaignId={campaignId} />);
     fireEvent.click(screen.getByRole("button", { name: "Новая иллюстрация" }));
