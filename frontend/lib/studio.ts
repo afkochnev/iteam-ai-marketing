@@ -132,6 +132,7 @@ export interface StudioWordPressStatus {
     failure_code: string | null;
     reconciliation_pending: boolean;
     reconciliation_finished_at: string | null;
+    reconciliation_failure_code?: string | null;
   }[];
 }
 

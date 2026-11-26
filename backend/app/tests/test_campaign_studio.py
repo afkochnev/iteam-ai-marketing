@@ -733,6 +733,7 @@ async def test_staging_wordpress_reconciles_lost_responses_without_repeating_wri
     post: dict[str, Any] = {}
     image: dict[str, Any] = {}
     visible_in_lookup = False
+    lookup_failed = False
 
     def wordpress(request: Request) -> Response:
         endpoint = request.url.path.removeprefix("/staging/wp-json/wp/v2")
@@ -764,6 +765,8 @@ async def test_staging_wordpress_reconciles_lost_responses_without_repeating_wri
             case "GET", "/posts":
                 assert request.url.params["slug"] == post["slug"]
                 assert request.url.params["status"] == "draft,publish"
+                if lookup_failed:
+                    return Response(503)
                 return Response(200, json=[post] if visible_in_lookup else [])
             case "GET", "/posts/41":
                 return Response(200, json=post)
@@ -819,14 +822,31 @@ async def test_staging_wordpress_reconciles_lost_responses_without_repeating_wri
         assert not await run_next_wordpress_operation(sessions, adapter)
         assert (await studio_client.post(f"{route}/publish", json=confirmation)).status_code == 409
         reconcile = f"{route}/draft/reconcile"
+        lookup_failed = True
         assert (await studio_client.post(reconcile, json=confirmation)).status_code == 200
         assert await run_next_wordpress_operation(sessions, adapter)
-        assert (await state())["draft"]["status"] == "unknown"
-        assert (await state())["draft"]["reconciliation_finished_at"]
+        failed_read = (await state())["draft"]
+        assert failed_read["status"] == "unknown"
+        assert failed_read["failure_code"] == "WORDPRESS_CONNECTION_ERROR"
+        assert failed_read["reconciliation_failure_code"] == "WORDPRESS_HTTP_ERROR"
+        assert failed_read["reconciliation_finished_at"]
+
+        lookup_failed = False
+        assert (await studio_client.post(reconcile, json=confirmation)).status_code == 200
+        pending_read = (await state())["draft"]
+        assert pending_read["reconciliation_pending"]
+        assert pending_read["reconciliation_failure_code"] is None
+        assert await run_next_wordpress_operation(sessions, adapter)
+        missing_receipt = (await state())["draft"]
+        assert missing_receipt["status"] == "unknown"
+        assert missing_receipt["reconciliation_finished_at"]
+        assert missing_receipt["reconciliation_failure_code"] is None
         visible_in_lookup = True
         assert (await studio_client.post(reconcile, json=confirmation)).status_code == 200
         assert await run_next_wordpress_operation(sessions, adapter)
-        assert (await state())["draft"]["remote_id"] == "41"
+        confirmed = (await state())["draft"]
+        assert confirmed["remote_id"] == "41"
+        assert confirmed["reconciliation_failure_code"] is None
         assert (await delivery())["draft_preview_url"] == f"{origin}/?p=41&preview=true"
         with monkeypatch.context() as changed_target:
             changed_target.setattr(settings, "studio_wordpress_author_id", 99)

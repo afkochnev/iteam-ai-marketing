@@ -36,6 +36,7 @@ class WordPressOperationView(BaseModel):
     failure_code: str | None
     reconciliation_pending: bool
     reconciliation_finished_at: datetime | None
+    reconciliation_failure_code: str | None
 
 
 class WordPressDeliveryView(BaseModel):
@@ -139,6 +140,7 @@ class StudioWordPressService:
             operation.reconcile_requested_at = datetime.now(UTC)
             operation.reconcile_started_at = None
             operation.reconcile_finished_at = None
+            operation.reconciliation_failure_code = None
             await self.session.flush()
         return await self._view(target, delivery)
 
@@ -239,6 +241,7 @@ class StudioWordPressService:
                         op.reconcile_requested_at is not None and op.reconcile_finished_at is None
                     ),
                     reconciliation_finished_at=op.reconcile_finished_at,
+                    reconciliation_failure_code=op.reconciliation_failure_code,
                 )
                 for op in operations
             ],
