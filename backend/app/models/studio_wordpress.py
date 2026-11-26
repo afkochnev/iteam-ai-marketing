@@ -88,6 +88,11 @@ class StudioWordPressOperation(Base):
             "(status <> 'succeeded' AND remote_id IS NULL AND remote_url IS NULL)",
             name="receipt",
         ),
+        CheckConstraint(
+            "reconciliation_failure_code IS NULL OR "
+            "(status = 'unknown' AND reconcile_finished_at IS NOT NULL)",
+            name="reconciliation_failure",
+        ),
         Index("ix_studio_wp_operations_queue", "status", "requested_at"),
     )
 
@@ -109,3 +114,4 @@ class StudioWordPressOperation(Base):
     reconcile_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reconcile_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reconcile_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reconciliation_failure_code: Mapped[str | None] = mapped_column(String(64))

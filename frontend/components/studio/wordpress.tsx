@@ -131,7 +131,17 @@ export function StudioWordPress({ campaignId, versionId, disabled }: {
           {operation.status === "unknown" && (
             <>
               {operation.reconciliation_finished_at && !operation.reconciliation_pending && (
-                <p>Последняя сверка не подтвердила результат.</p>
+                <>
+                  <p role="status">{operation.reconciliation_failure_code
+                    ? "Последняя сверка завершилась ошибкой."
+                    : "Последняя сверка не подтвердила результат."}</p>
+                  {operation.reconciliation_failure_code && (
+                    <details>
+                      <summary>Технические сведения о сверке</summary>
+                      <code>{operation.reconciliation_failure_code}</code>
+                    </details>
+                  )}
+                </>
               )}
               <button type="button"
                 disabled={commandsDisabled || operation.reconciliation_pending}

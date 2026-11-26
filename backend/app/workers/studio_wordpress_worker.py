@@ -247,6 +247,7 @@ async def run_next_wordpress_operation(
             now = datetime.now(UTC)
             if claim.reconciliation:
                 operation.reconcile_finished_at = now
+                operation.reconciliation_failure_code = failure
             else:
                 operation.finished_at = now
                 operation.failure_code = failure
