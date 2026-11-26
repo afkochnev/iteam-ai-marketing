@@ -205,6 +205,39 @@ describe("campaign content studio", () => {
     ]);
   });
 
+  it("distinguishes a failed WordPress reconciliation from a read that did not confirm the result", async () => {
+    const approved = storeVersion(article({ approval }));
+    const draft = {
+      action: "draft", status: "unknown", remote_id: null, remote_url: null,
+      failure_code: "WORDPRESS_OPERATION_TIMEOUT",
+      reconciliation_pending: false, reconciliation_finished_at: timestamp,
+    };
+    const target = {
+      target_url: "https://wordpress.example.test/staging", target_author_id: "7", target_changed: false,
+    };
+    api.wordpressStatus
+      .mockResolvedValueOnce({ ...target, operations: [draft] })
+      .mockResolvedValueOnce({
+        ...target, operations: [{ ...draft, reconciliation_failure_code: "WORDPRESS_LOOKUP_AMBIGUOUS" }],
+      });
+
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(await library().findByRole("button", { name: approved.payload.title }));
+    const wordpress = within(await screen.findByRole("region", { name: "Тестовый WordPress" }));
+    const noConfirmation = "Последняя сверка не подтвердила результат.";
+    expect(wordpress.getByText(noConfirmation)).toBeInTheDocument();
+    expect(wordpress.queryByText("Технические сведения о сверке")).not.toBeInTheDocument();
+    fireEvent.click(wordpress.getByRole("button", { name: "Обновить статус WordPress" }));
+
+    expect(await wordpress.findByText("Последняя сверка завершилась ошибкой.")).toBeInTheDocument();
+    expect(wordpress.getByText("Технические сведения о сверке").closest("details"))
+      .toHaveTextContent("WORDPRESS_LOOKUP_AMBIGUOUS");
+    expect(wordpress.queryByText("WORDPRESS_OPERATION_TIMEOUT")).not.toBeInTheDocument();
+    expect(wordpress.queryByText(noConfirmation)).not.toBeInTheDocument();
+    expect(wordpress.getByRole("button", { name: "Сверить результат · Черновик" })).toBeEnabled();
+    expect(api.wordpressCommand).not.toHaveBeenCalled();
+  });
+
   it.each([
     ["queued", "Публикация ожидает загрузки иллюстрации"],
     ["running", "Публикация ожидает загрузки иллюстрации"],
