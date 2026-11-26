@@ -22,6 +22,15 @@ const STATES = {
   succeeded: "Подтверждено WordPress",
 };
 
+const PUBLICATION_WAITING_FOR_UPLOAD = "Публикация ожидает загрузки иллюстрации";
+const PUBLICATION_BY_IMAGE_STATE = {
+  queued: PUBLICATION_WAITING_FOR_UPLOAD,
+  running: PUBLICATION_WAITING_FOR_UPLOAD,
+  unknown: "Публикация ожидает подтверждения иллюстрации",
+  failed: "Публикация остановлена. Иллюстрация не загружена.",
+  succeeded: null,
+} satisfies Record<keyof typeof STATES, string | null>;
+
 const REFRESH_STATUS = "Обновить статус WordPress";
 
 export function StudioWordPress({ campaignId, versionId, disabled }: {
@@ -38,8 +47,8 @@ export function StudioWordPress({ campaignId, versionId, disabled }: {
   const draft = status?.operations.find((operation) => operation.action === "draft");
   const image = status?.operations.find((operation) => operation.action === "image");
   const publication = status?.operations.find((operation) => operation.action === "publish");
-  const publicationWaitingForImage = publication?.status === "queued"
-    && (image?.status === "unknown" || image?.status === "failed");
+  const publicationQueueLabel = publication?.status === "queued" && image
+    ? PUBLICATION_BY_IMAGE_STATE[image.status] : null;
   const waiting = status?.operations.some((operation) => (
     operation.reconciliation_pending
     || operation.status === "running"
@@ -102,12 +111,13 @@ export function StudioWordPress({ campaignId, versionId, disabled }: {
       {status.target_changed && <p role="status">Учётная запись WordPress изменилась.</p>}
       {status.operations.map((operation) => (
         <div key={operation.action}>
-          <p role="status">{LABELS[operation.action]} — {
-            operation.reconciliation_pending ? "Сверка запрошена" : STATES[operation.status]
-          }</p>
-          {operation.action === "publish" && publicationWaitingForImage && (
-            <p role="status">Публикация ожидает подтверждения иллюстрации</p>
-          )}
+          <p role="status">
+            {operation.action === "publish" && publicationQueueLabel ? publicationQueueLabel : (
+              <>{LABELS[operation.action]} — {
+                operation.reconciliation_pending ? "Сверка запрошена" : STATES[operation.status]
+              }</>
+            )}
+          </p>
           {operation.remote_id && <p>ID WordPress <code>{operation.remote_id}</code></p>}
           {operation.remote_url && (
             <a href={operation.remote_url} target="_blank" rel="noopener">Открыть публикацию в WordPress</a>
