@@ -123,6 +123,7 @@ export interface StudioWordPressStatus {
   target_url: string | null;
   target_author_id: string | null;
   target_changed: boolean;
+  draft_preview_url?: string | null;
   operations: {
     action: StudioWordPressAction;
     status: "queued" | "running" | "unknown" | "failed" | "succeeded";

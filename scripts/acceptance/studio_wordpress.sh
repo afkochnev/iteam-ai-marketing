@@ -67,10 +67,11 @@ update_option('siteurl', $origin);
 update_option('permalink_structure', '/%postname%/');
 flush_rewrite_rules(false);
 
+$browser_password = bin2hex(random_bytes(24));
 $author = wp_insert_user([
     'user_login' => 'studio-author',
     'user_email' => 'studio-author@example.test',
-    'user_pass' => bin2hex(random_bytes(24)),
+    'user_pass' => $browser_password,
     'role' => 'author',
 ]);
 if (is_wp_error($author)) {
@@ -82,12 +83,12 @@ if (is_wp_error($password)) {
     fwrite(STDERR, $password->get_error_message() . PHP_EOL);
     exit(1);
 }
-printf("%d %s\n", $author, $password[0]);
+printf("%d %s %s\n", $author, $password[0], $browser_password);
 PHP
 )
-read -r author_id application_password <<< "$credentials"
-if [[ ! "$author_id" =~ ^[1-9][0-9]*$ || ! "$application_password" =~ ^[[:alnum:]]{24}$ ]]; then
-    echo 'Could not provision the disposable WordPress application password.' >&2
+read -r author_id application_password browser_password <<< "$credentials"
+if [[ ! "$author_id" =~ ^[1-9][0-9]*$ || ! "$application_password" =~ ^[[:alnum:]]{24}$ || ! "$browser_password" =~ ^[0-9a-f]{48}$ ]]; then
+    echo 'Could not provision the disposable WordPress user.' >&2
     exit 1
 fi
 
@@ -95,4 +96,5 @@ cd "$(dirname "$0")/../../backend"
 ITEAM_WORDPRESS_ACCEPTANCE_URL="$origin" \
 ITEAM_WORDPRESS_ACCEPTANCE_AUTHOR_ID="$author_id" \
 ITEAM_WORDPRESS_ACCEPTANCE_PASSWORD="$application_password" \
+ITEAM_WORDPRESS_ACCEPTANCE_BROWSER_PASSWORD="$browser_password" \
     python -m pytest -q app/tests/test_campaign_studio.py::test_studio_reconciles_writes_on_a_real_wordpress_site
