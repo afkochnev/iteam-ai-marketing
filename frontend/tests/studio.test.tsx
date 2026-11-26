@@ -197,6 +197,7 @@ describe("campaign content studio", () => {
       created_at: timestamp, published_at: null,
     };
     const attemptedTitle = "SEO-заголовок второго редактора";
+    const attemptedDescription = "SEO-описание второго редактора";
     api.websiteStatus
       .mockResolvedValueOnce({ enabled: true, page: null })
       .mockRejectedValueOnce(new Error("Временная ошибка проверки"))
@@ -210,12 +211,20 @@ describe("campaign content studio", () => {
     fireEvent.click(await library().findByRole("button", { name: approved.payload.title }));
     const cms = within(await screen.findByRole("region", { name: "Тестовая CMS" }));
     fireEvent.change(cms.getByLabelText("SEO-заголовок"), { target: { value: attemptedTitle } });
-    fireEvent.click(cms.getByRole("button", { name: "Создать черновик в тестовой CMS" }));
+    fireEvent.change(cms.getByLabelText("SEO-описание"), { target: { value: attemptedDescription } });
+    const create = cms.getByRole<HTMLButtonElement>("button", { name: "Создать черновик в тестовой CMS" });
+    fireEvent.click(create);
 
     const openDraft = "Открыть существующий черновик";
-    fireEvent.click(await cms.findByRole("button", { name: openDraft }));
+    const open = await cms.findByRole("button", { name: openDraft });
+    expect(create).toBeDisabled();
+    fireEvent.submit(create.form!);
+    expect(api.createWebsiteDraft).toHaveBeenCalledTimes(1);
+    fireEvent.click(open);
     expect(await cms.findByText("Не удалось загрузить существующий черновик.")).toBeInTheDocument();
     expect(cms.getByLabelText("SEO-заголовок")).toHaveValue(attemptedTitle);
+    expect(cms.getByLabelText("SEO-описание")).toHaveValue(attemptedDescription);
+    expect(create).toBeDisabled();
     fireEvent.click(cms.getByRole("button", { name: openDraft }));
 
     expect(await cms.findByRole("link", { name: "Посмотреть черновик" })).toHaveAttribute(

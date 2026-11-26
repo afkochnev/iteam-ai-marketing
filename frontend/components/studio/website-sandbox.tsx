@@ -16,6 +16,9 @@ export function StudioWebsiteSandbox({ campaignId, versionId, disabled }: {
   const [loadingStatus, setLoadingStatus] = useState(false);
   const [error, setError] = useState<unknown>();
   const [busy, setBusy] = useState(false);
+  const draftConflict = error instanceof ApiError && error.code === "WEBSITE_DRAFT_ALREADY_EXISTS";
+  const canCreateDraft = !busy && !disabled && !loadingStatus && !draftConflict;
+
   useEffect(() => {
     const controller = new AbortController();
     void studioApi.websiteStatus(campaignId, versionId, controller.signal).then((result) => {
@@ -51,6 +54,7 @@ export function StudioWebsiteSandbox({ campaignId, versionId, disabled }: {
 
   function createDraft(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!canCreateDraft) return;
     const fields = new FormData(event.currentTarget);
     void save(() => studioApi.createWebsiteDraft(campaignId, versionId, {
       seo_title: String(fields.get("seo_title") ?? ""),
@@ -63,7 +67,6 @@ export function StudioWebsiteSandbox({ campaignId, versionId, disabled }: {
   }
   if (!status?.enabled) return null;
   const page = status.page;
-  const draftConflict = error instanceof ApiError && error.code === "WEBSITE_DRAFT_ALREADY_EXISTS";
 
   return (
     <section className="section-block" aria-label="Тестовая CMS">
@@ -89,7 +92,7 @@ export function StudioWebsiteSandbox({ campaignId, versionId, disabled }: {
         <form onSubmit={createDraft}>
           <label>SEO-заголовок <input name="seo_title" maxLength={120} /></label>
           <label>SEO-описание <textarea name="seo_description" rows={2} maxLength={320} /></label>
-          <button type="submit" disabled={busy || disabled || loadingStatus}>Создать черновик в тестовой CMS</button>
+          <button type="submit" disabled={!canCreateDraft}>Создать черновик в тестовой CMS</button>
         </form>
       )}
       {draftConflict ? (
