@@ -2,6 +2,7 @@ import json
 import os
 from base64 import b64encode
 from collections.abc import AsyncIterator
+from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,8 @@ from app.core.database import get_db_session
 from app.core.security import encode_access_token
 from app.integrations.studio_wordpress import (
     WordPressArticle,
+    WordPressError,
+    WordPressImage,
     WordPressStudioClient,
     WordPressTarget,
 )
@@ -556,6 +559,115 @@ async def test_wordpress_reads_the_full_approved_article_in_a_bounded_response()
         adapter = WordPressStudioClient(remote, target, "editor", "test")
         draft = await adapter.find_draft(article)
         assert draft is not None and draft.id == 41
+        assert not adapter.write_attempted
+
+
+@pytest.mark.parametrize("endpoint", ["posts", "media"])
+@pytest.mark.parametrize(
+    ("payload", "error_code"),
+    [
+        ([], None),
+        ([{}], "WORDPRESS_RESPONSE_MISMATCH"),
+        ({}, "WORDPRESS_RESPONSE_MISMATCH"),
+        ([{}, {}], "WORDPRESS_LOOKUP_AMBIGUOUS"),
+    ],
+)
+async def test_wordpress_lookup_distinguishes_no_match_from_invalid_or_ambiguous_response(
+    endpoint: str, payload: object, error_code: str | None
+) -> None:
+    def wordpress(request: Request) -> Response:
+        assert request.method == "GET"
+        assert request.url.path == f"/wp-json/wp/v2/{endpoint}"
+        return Response(200, json=payload)
+
+    async with AsyncClient(transport=MockTransport(wordpress)) as remote:
+        target = WordPressTarget("https://wordpress.example.test", 1)
+        adapter = WordPressStudioClient(remote, target, "editor", "test")
+        lookup = (
+            adapter.find_draft(WordPressArticle("fixture", "Guide", "<p>Text</p>"))
+            if endpoint == "posts"
+            else adapter.find_image(WordPressImage("fixture-image", "0" * 64, 1, "Cover"), 1)
+        )
+        if error_code is None:
+            assert await lookup is None
+        else:
+            with pytest.raises(WordPressError, match=error_code):
+                await lookup
+        assert not adapter.write_attempted
+
+
+@pytest.mark.parametrize(
+    ("field", "malformed"),
+    [("author", True), ("author", 1.0), ("featured_media", False), ("featured_media", 0.0)],
+)
+async def test_wordpress_draft_lookups_require_integer_author_and_featured_media_ids(
+    field: str, malformed: bool | float
+) -> None:
+    article = WordPressArticle("fixture", "Guide", "<p>Text</p>")
+    candidate: dict[str, Any] = {
+        "id": 41,
+        "type": "post",
+        "status": "draft",
+        "slug": article.slug,
+        "author": 1,
+        "title": {"raw": article.title},
+        "content": {"raw": article.html},
+        "featured_media": 0,
+    }
+
+    def wordpress(request: Request) -> Response:
+        assert request.method == "GET"
+        assert request.url.path == "/wp-json/wp/v2/posts"
+        return Response(200, json=[candidate])
+
+    async with AsyncClient(transport=MockTransport(wordpress)) as remote:
+        target = WordPressTarget("https://wordpress.example.test", 1)
+        adapter = WordPressStudioClient(remote, target, "editor", "test")
+        accepted = await adapter.find_draft(article)
+        assert accepted is not None and accepted.id == 41
+        candidate[field] = malformed
+        with pytest.raises(WordPressError, match="WORDPRESS_RESPONSE_MISMATCH"):
+            await adapter.find_draft(article)
+        assert not adapter.write_attempted
+
+
+@pytest.mark.parametrize(
+    ("field", "malformed"), [("author", True), ("author", 1.0), ("post", True), ("post", 1.0)]
+)
+async def test_wordpress_image_lookups_require_integer_author_and_parent_post_ids(
+    field: str, malformed: bool | float
+) -> None:
+    content = b"illustration fixture"
+    image = WordPressImage("fixture-image", sha256(content).hexdigest(), len(content), "Cover")
+    target = WordPressTarget("https://wordpress.example.test", 1)
+    image_path = "/wp-content/uploads/cover.webp"
+    candidate: dict[str, Any] = {
+        "id": 42,
+        "type": "attachment",
+        "slug": image.slug,
+        "mime_type": "image/webp",
+        "author": 1,
+        "post": 1,
+        "alt_text": image.alt,
+        "source_url": target.url + image_path,
+    }
+    downloads = []
+
+    def wordpress(request: Request) -> Response:
+        assert request.method == "GET"
+        if request.url.path == image_path:
+            downloads.append(request.url.path)
+            return Response(200, content=content)
+        assert request.url.path == "/wp-json/wp/v2/media"
+        return Response(200, json=[candidate])
+
+    async with AsyncClient(transport=MockTransport(wordpress)) as remote:
+        adapter = WordPressStudioClient(remote, target, "editor", "test")
+        assert await adapter.find_image(image, 1) == 42
+        candidate[field] = malformed
+        with pytest.raises(WordPressError, match="WORDPRESS_RESPONSE_MISMATCH"):
+            await adapter.find_image(image, 1)
+        assert downloads == [image_path]
         assert not adapter.write_attempted
 
 
