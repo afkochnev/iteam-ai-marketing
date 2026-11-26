@@ -104,6 +104,7 @@ export interface StudioWebsitePage {
   illustration_version_id: string | null;
   created_at: string;
   published_at: string | null;
+  metadata?: StudioWebsiteDraft;
 }
 
 export interface StudioWebsiteStatus {

@@ -353,9 +353,13 @@ async def test_sandbox_draft_and_publication_pin_exact_approved_materials(
     assert page["article_version_id"] == article["id"]
     assert page["illustration_version_id"] == visual_id
     assert page["published_at"] is None
+    assert page["metadata"] == metadata
     assert (await client.post(f"{sandbox}/draft", json=metadata)).json() == page
     different = await client.post(f"{sandbox}/draft", json={"seo_title": "New SEO title"})
     assert different.status_code == 409
+    status = await client.get(sandbox)
+    assert status.headers["cache-control"] == "private, no-store"
+    assert status.json() == {"enabled": True, "page": page}
     page_id = page["id"]
     public_url = f"/api/v1/website-sandbox/{page_id}"
     preview_url = f"{sandbox}/{page_id}/preview"
@@ -378,6 +382,7 @@ async def test_sandbox_draft_and_publication_pin_exact_approved_materials(
     other_path = sandbox.replace(str(campaign.id), str(other_campaign.id))
     assert (await client.post(f"{other_path}/{page_id}/publish")).status_code == 404
     authenticate(client, outsider)
+    assert (await client.get(sandbox)).status_code == 403
     assert (await client.get(preview_url)).status_code == 403
     assert (await client.post(publish_url)).status_code == 403
     authenticate(client, editor)
@@ -395,6 +400,7 @@ async def test_sandbox_draft_and_publication_pin_exact_approved_materials(
     published = await client.post(publish_url)
     assert published.status_code == 200, published.text
     assert published.json()["published_at"] is not None
+    assert published.json()["metadata"] == metadata
     assert (await client.post(publish_url)).json() == published.json()
     assert (await client.get(sandbox)).json() == {"enabled": True, "page": published.json()}
     client.cookies.clear()

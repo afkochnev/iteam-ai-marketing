@@ -1,9 +1,9 @@
 from base64 import b64encode
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Self
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, StringConstraints
+from pydantic import BaseModel, StringConstraints
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,13 +29,23 @@ class WebsiteDraft(StudioTextFields):
 
 
 class WebsitePage(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
     id: UUID
     article_version_id: UUID
     illustration_version_id: UUID | None
     created_at: datetime
     published_at: datetime | None
+    metadata: WebsiteDraft
+
+    @classmethod
+    def from_page(cls, page: StudioWebsitePage) -> Self:
+        return cls(
+            id=page.id,
+            article_version_id=page.article_version_id,
+            illustration_version_id=page.illustration_version_id,
+            created_at=page.created_at,
+            published_at=page.published_at,
+            metadata=WebsiteDraft.model_validate(page.snapshot["metadata"]),
+        )
 
 
 class WebsiteStatus(BaseModel):
@@ -75,7 +85,7 @@ class WebsiteSandbox:
             return WebsiteStatus(enabled=False)
         await read_approved_website_article(self.studio, user_id, campaign_id, version_id)
         page = await self._find_page(campaign_id, version_id)
-        return WebsiteStatus(enabled=True, page=WebsitePage.model_validate(page) if page else None)
+        return WebsiteStatus(enabled=True, page=WebsitePage.from_page(page) if page else None)
 
     async def create_draft(
         self, user_id: UUID, campaign_id: UUID, version_id: UUID, metadata: WebsiteDraft
@@ -130,7 +140,7 @@ class WebsiteSandbox:
                 "Для версии уже есть черновик с другими SEO-полями.",
                 409,
             )
-        return WebsitePage.model_validate(page)
+        return WebsitePage.from_page(page)
 
     async def publish(
         self, user_id: UUID, campaign_id: UUID, version_id: UUID, page_id: UUID
@@ -141,7 +151,7 @@ class WebsiteSandbox:
         if page is None or page.id != page_id:
             raise self._not_found()
         if page.published_at is not None:
-            return WebsitePage.model_validate(page)
+            return WebsitePage.from_page(page)
 
         snapshot = WebsiteSnapshot.model_validate(page.snapshot)
         if snapshot.illustration is not None:
@@ -149,7 +159,7 @@ class WebsiteSandbox:
         page.published_by = user_id
         page.published_at = await self.session.scalar(select(func.now()))
         await self.session.flush()
-        return WebsitePage.model_validate(page)
+        return WebsitePage.from_page(page)
 
     async def preview(
         self, user_id: UUID, campaign_id: UUID, version_id: UUID, page_id: UUID
