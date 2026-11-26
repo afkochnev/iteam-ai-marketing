@@ -1,0 +1,20 @@
+services:
+  studio_wordpress_worker:
+    build: ./backend
+    restart: "on-failure:5"
+    env_file: .env
+    environment:
+      CREATIVE_MEDIA_ROOT: /var/lib/iteam/creative-media
+      STUDIO_WORDPRESS_CREDENTIALS_FILE: /run/secrets/studio_wordpress_credentials
+    command: ["python", "-m", "app.workers.studio_wordpress_worker"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - creative_media:/var/lib/iteam/creative-media:ro
+    secrets:
+      - studio_wordpress_credentials
+
+secrets:
+  studio_wordpress_credentials:
+    file: ${STUDIO_WORDPRESS_CREDENTIALS_HOST_FILE:?Set the path to the staging credential file}

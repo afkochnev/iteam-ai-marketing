@@ -62,6 +62,48 @@ $env:CREATIVE_REVIEW_AUTH_COOKIE_NAME = "iteam_website_review"
 Тестовая CMS хранит черновик и опубликованную страницу в базе стенда.
 Для этого сценария используются только тестовые материалы.
 
+## Тестовый WordPress
+
+В отдельном экземпляре iTeam с APP_ENV=development или APP_ENV=test укажите в
+файле .env адрес тестового WordPress в STUDIO_WORDPRESS_URL и числовой ID его
+учётной записи в STUDIO_WORDPRESS_AUTHOR_ID. Учётной записи нужны права
+создавать и публиковать свои записи и загружать медиа. Для удалённого стенда
+используется HTTPS.
+
+Сохраните username и application_password в JSON-файле вне checkout.
+Исполнитель получает файл как секрет Compose, доступный пользователю
+контейнера (UID 10001). Укажите путь к файлу в
+STUDIO_WORDPRESS_CREDENTIALS_HOST_FILE перед запуском.
+
+Команды рассчитаны на новую базу стенда. Создайте тестового администратора до
+миграции, которая добавит его в рабочее пространство.
+
+```powershell
+$env:CREATIVE_REVIEW_FRONTEND_PORT = "13002"
+$env:CREATIVE_REVIEW_BACKEND_PORT = "18002"
+$env:CREATIVE_REVIEW_POSTGRES_PORT = "15435"
+$env:CREATIVE_REVIEW_AUTH_COOKIE_NAME = "iteam_wordpress_review"
+$wpCompose = @('compose', '-p', 'iteam-wordpress-review', '-f', 'docker-compose.yml',
+    '-f', 'docker-compose.creative.yml', '-f', 'docker-compose.studio-wordpress.yml')
+docker @wpCompose up -d --wait postgres redis
+docker @wpCompose build backend frontend studio_wordpress_worker
+docker @wpCompose run --rm --no-deps backend alembic upgrade 20261121_0029
+docker @wpCompose run --rm --no-deps backend python -m app.seed
+docker @wpCompose run --rm --no-deps backend alembic upgrade head
+docker @wpCompose up -d backend frontend studio_wordpress_worker
+```
+
+Панель WordPress появляется у утверждённой версии статьи в Studio. Создание
+черновика и публикация требуют отдельных действий. При публикации исполнитель
+загружает утверждённую иллюстрацию как главное изображение записи. Для каждой
+команды он сохраняет попытку в PostgreSQL до вызова WordPress. После выполнения
+Studio показывает ID записи и публичную ссылку. В случае неизвестного результата
+кнопка сверки проверяет исход по данным WordPress. Если запись или иллюстрацию
+не удалось подтвердить, операция остаётся в статусе неопределённости.
+Если Studio потеряла ответ API iTeam на команду, нажмите «Обновить статус
+WordPress». Studio прочитает сохранённое состояние и покажет принятую команду
+или её результат без повторной отправки.
+
 ## Хранение
 
 Том `creative_media` доступен бэкенду и исполнителю генерации. Оригиналы и

@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     openai_agents_disable_tracing: bool = True
     creative_media_root: Path | None = None
     studio_website_sandbox_enabled: bool = False
+    studio_wordpress_url: str | None = None
+    studio_wordpress_author_id: int | None = Field(default=None, gt=0, le=2**63 - 1)
     creative_image_model: str | None = None
     creative_image_timeout_seconds: int = Field(default=120, ge=1, le=180)
     agent_max_turns: int = 8
