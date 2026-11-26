@@ -124,7 +124,9 @@ class WordPressStudioClient:
 
     async def find_draft(self, article: WordPressArticle) -> WordPressPost | None:
         candidate = await self._find_one("/posts", article.slug, "draft,publish", POST_FIELDS)
-        return self._post(candidate, article, "draft", media_id=0) if candidate else None
+        if candidate is None:
+            return None
+        return self._post(candidate, article, "draft", media_id=0)
 
     async def read_draft(self, article: WordPressArticle, post_id: int) -> None:
         result = await self._request("GET", f"/posts/{post_id}", fields=POST_FIELDS)
@@ -144,7 +146,9 @@ class WordPressStudioClient:
 
     async def find_image(self, image: WordPressImage, post_id: int) -> int | None:
         candidate = await self._find_one("/media", image.slug, "inherit", IMAGE_FIELDS)
-        return await self._image(candidate, image, post_id) if candidate else None
+        if candidate is None:
+            return None
+        return await self._image(candidate, image, post_id)
 
     async def verify_image(self, image: WordPressImage, post_id: int, media_id: int) -> None:
         result = await self._request("GET", f"/media/{media_id}", fields=IMAGE_FIELDS)
@@ -186,7 +190,9 @@ class WordPressStudioClient:
             fields=fields,
             params={"slug": slug, "status": status, "per_page": 2},
         )
-        if not isinstance(result, list) or len(result) > 1:
+        if not isinstance(result, list):
+            raise WordPressError("WORDPRESS_RESPONSE_MISMATCH")
+        if len(result) > 1:
             raise WordPressError("WORDPRESS_LOOKUP_AMBIGUOUS")
         if not result:
             return None
@@ -207,15 +213,17 @@ class WordPressStudioClient:
         if not isinstance(result, dict):
             raise WordPressError("WORDPRESS_RESPONSE_MISMATCH")
         remote_id = _positive_id(result.get("id"))
+        featured_media = result.get("featured_media")
         if (
             (id is not None and remote_id != id)
             or result.get("type") != "post"
             or result.get("status") != status
             or result.get("slug") != article.slug
-            or result.get("author") != self.target.author_id
+            or _positive_id(result.get("author")) != self.target.author_id
             or _raw(result.get("title")) != article.title
             or _raw(result.get("content")) != article.html
-            or result.get("featured_media") != media_id
+            or type(featured_media) is not int
+            or featured_media != media_id
         ):
             raise WordPressError("WORDPRESS_RESPONSE_MISMATCH")
         url = result.get("link")
@@ -230,8 +238,8 @@ class WordPressStudioClient:
             result.get("type") != "attachment"
             or result.get("slug") != image.slug
             or result.get("mime_type") != "image/webp"
-            or result.get("author") != self.target.author_id
-            or result.get("post") != post_id
+            or _positive_id(result.get("author")) != self.target.author_id
+            or _positive_id(result.get("post")) != post_id
             or result.get("alt_text") != image.alt
         ):
             raise WordPressError("WORDPRESS_RESPONSE_MISMATCH")
