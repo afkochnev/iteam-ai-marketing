@@ -92,6 +92,9 @@ def check_snapshot(rows, networks, release):
         raise RuntimeError('MISSING_REVIEW_SERVICE')
     if len(network_names) != 1:
         raise RuntimeError('SHARED_INTERNAL_NETWORK_REQUIRED')
+    members = networks[next(iter(network_names))].get('Containers')
+    if not isinstance(members, dict) or set(members) != {row['Id'] for row in by_service.values()}:
+        raise RuntimeError('REVIEW_NETWORK_MEMBERSHIP_MISMATCH')
     env = dict(v.split('=', 1) for v in by_service['backend']['Config']['Env'] if '=' in v)
     if any(env.get(k, '').lower() != 'false' for k in FLAGS) or any(env.get(k) for k in CREDENTIALS):
         raise RuntimeError('PUBLISHING_OR_EXECUTION_NOT_DISABLED')

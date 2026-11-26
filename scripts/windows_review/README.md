@@ -6,7 +6,7 @@ Use these sources to run the four-service review profile in a restored, review-o
 
 Both entry points require the local `desktop-linux` context. They reject transfers with a publishing or user-post profile, and also check the engine for existing publishing or user-post Compose containers, including stopped containers. This matters because both installations use the `iteam_windows_transfer` project name for their core services.
 
-The launcher requires the transfer's existing `tools/windows_runtime.py`, `windows/release.json`, and verified database import marker. It validates the effective Compose configuration before requesting startup of PostgreSQL, Redis, backend, and frontend. The bridge checks the running containers before binding either port and rechecks the snapshot every ten seconds.
+The launcher requires the transfer's existing `tools/windows_runtime.py`, `windows/release.json`, and verified database import marker. It validates the effective Compose configuration before requesting startup of PostgreSQL, Redis, backend, and frontend. Before binding either port, the bridge checks that the internal network contains exactly those four running containers. It rechecks the snapshot every ten seconds and closes local access if validation fails.
 
 | Service | Required named volume | Destination |
 | --- | --- | --- |

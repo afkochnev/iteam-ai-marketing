@@ -72,7 +72,11 @@ def snapshot_fixture():
             if expected
             else [],
         }
-    return rows, {"review-internal": {"Internal": True}}, release
+    networks = {"review-internal": {
+        "Internal": True,
+        "Containers": {row["Id"]: {} for row in rows.values()},
+    }}
+    return rows, networks, release
 
 
 class ComposeMountTests(unittest.TestCase):
@@ -180,6 +184,20 @@ class SnapshotMountTests(unittest.TestCase):
         rows["frontend"]["NetworkSettings"]["Networks"] = {"different-internal": {}}
         with self.assertRaisesRegex(RuntimeError, "SHARED_INTERNAL_NETWORK_REQUIRED"):
             self.check(rows, networks, release)
+
+    def test_shared_review_network_must_contain_exactly_the_review_containers(self):
+        for change in ("foreign-container", "missing-container", "missing-inventory"):
+            with self.subTest(change=change):
+                rows, networks, release = snapshot_fixture()
+                network = networks["review-internal"]
+                if change == "foreign-container":
+                    network["Containers"]["another-project-container"] = {}
+                elif change == "missing-container":
+                    del network["Containers"][rows["frontend"]["Id"]]
+                else:
+                    del network["Containers"]
+                with self.assertRaisesRegex(RuntimeError, "REVIEW_NETWORK_MEMBERSHIP_MISMATCH"):
+                    self.check(rows, networks, release)
 
     def test_unrelated_volume_cannot_pass_with_same_images_and_build_sha(self):
         rows, networks, release = snapshot_fixture()
