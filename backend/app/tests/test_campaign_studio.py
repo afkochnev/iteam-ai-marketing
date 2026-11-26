@@ -599,6 +599,7 @@ async def test_staging_wordpress_reconciles_lost_responses_without_repeating_wri
     assert (await studio_client.post(f"{path}/versions/{version}/approve")).status_code == 200
     authenticate(studio_client, outsider)
     assert (await studio_client.post(f"{route}/draft", json=confirmation)).status_code == 403
+    assert (await studio_client.get(route)).status_code == 403
     authenticate(studio_client, editor)
     assert (
         await studio_client.post(
@@ -681,10 +682,13 @@ async def test_staging_wordpress_reconciles_lost_responses_without_repeating_wri
         expire_on_commit=False,
     )
 
-    async def state() -> dict[str, Any]:
+    async def delivery() -> dict[str, Any]:
         response = await studio_client.get(route)
         assert response.status_code == 200, response.text
-        return {item["action"]: item for item in response.json()["operations"]}
+        return response.json()
+
+    async def state() -> dict[str, Any]:
+        return {item["action"]: item for item in (await delivery())["operations"]}
 
     async with AsyncClient(transport=MockTransport(wordpress)) as remote:
         adapter = WordPressStudioClient(remote, WordPressTarget(origin, 7), "editor", "test")
@@ -693,6 +697,7 @@ async def test_staging_wordpress_reconciles_lost_responses_without_repeating_wri
         assert calls == []
         assert await run_next_wordpress_operation(sessions, adapter)
         assert (await state())["draft"]["status"] == "unknown"
+        assert (await delivery())["draft_preview_url"] is None
         assert not await run_next_wordpress_operation(sessions, adapter)
         assert (await studio_client.post(f"{route}/publish", json=confirmation)).status_code == 409
         reconcile = f"{route}/draft/reconcile"
@@ -704,8 +709,16 @@ async def test_staging_wordpress_reconciles_lost_responses_without_repeating_wri
         assert (await studio_client.post(reconcile, json=confirmation)).status_code == 200
         assert await run_next_wordpress_operation(sessions, adapter)
         assert (await state())["draft"]["remote_id"] == "41"
+        assert (await delivery())["draft_preview_url"] == f"{origin}/?p=41&preview=true"
+        with monkeypatch.context() as changed_target:
+            changed_target.setattr(settings, "studio_wordpress_author_id", 99)
+            changed = await delivery()
+            assert changed["target_changed"] is True
+            assert changed["draft_preview_url"] is None
 
-        assert (await studio_client.post(f"{route}/publish", json=confirmation)).status_code == 200
+        queued = await studio_client.post(f"{route}/publish", json=confirmation)
+        assert queued.status_code == 200
+        assert queued.json()["draft_preview_url"] is None
         assert (await studio_client.post(f"{route}/publish", json=confirmation)).status_code == 200
         assert await run_next_wordpress_operation(sessions, adapter)
         blocked = await state()
@@ -753,6 +766,7 @@ async def test_studio_reconciles_writes_on_a_real_wordpress_site(
     origin = os.environ["ITEAM_WORDPRESS_ACCEPTANCE_URL"]
     author_id = int(os.environ["ITEAM_WORDPRESS_ACCEPTANCE_AUTHOR_ID"])
     password = os.environ["ITEAM_WORDPRESS_ACCEPTANCE_PASSWORD"]
+    browser_password = os.environ["ITEAM_WORDPRESS_ACCEPTANCE_BROWSER_PASSWORD"]
     target = WordPressTarget.from_config(origin, author_id)
     assert target is not None and URL(target.url).host == "127.0.0.1"
     monkeypatch.setattr(settings, "studio_wordpress_url", target.url)
@@ -802,6 +816,7 @@ async def test_studio_reconciles_writes_on_a_real_wordpress_site(
     async with (
         AsyncClient(transport=LostWriteResponses(trust_env=False)) as remote,
         AsyncClient(trust_env=False) as public,
+        AsyncClient(trust_env=False) as browser,
     ):
         username = "studio-author"
         adapter = WordPressStudioClient(remote, target, username, password)
@@ -825,6 +840,26 @@ async def test_studio_reconciles_writes_on_a_real_wordpress_site(
         posts_url = f"{target.url}/wp-json/wp/v2/posts"
         draft_url = f"{posts_url}/{post_id}"
         assert (await public.get(draft_url)).status_code in (401, 403, 404)
+        status = await studio_client.get(route)
+        assert status.status_code == 200, status.text
+        preview_url = status.json()["draft_preview_url"]
+        assert preview_url == f"{target.url}/?p={post_id}&preview=true"
+        assert (await public.get(preview_url)).status_code in (401, 403, 404)
+        login_url = f"{target.url}/wp-login.php"
+        assert (await browser.get(login_url)).status_code == 200
+        login = await browser.post(
+            login_url,
+            data={
+                "log": username,
+                "pwd": browser_password,
+                "redirect_to": preview_url,
+                "testcookie": "1",
+            },
+        )
+        assert login.is_redirect
+        preview = await browser.get(preview_url)
+        assert preview.status_code == 200
+        assert "A &lt; B" in preview.text and "Next" in preview.text
 
         await command("publish")
         media_id = (await reconcile_accepted_write("image"))["remote_id"]

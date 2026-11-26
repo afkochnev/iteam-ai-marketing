@@ -178,10 +178,11 @@ describe("campaign content studio", () => {
     const confirmed = { ...uncertain, status: "succeeded", remote_id: "41" };
     const image = { ...uncertain, action: "image" };
     const publication = { ...uncertain, action: "publish", status: "queued" };
+    const previewUrl = `${target.target_url}/?p=41&preview=true`;
     api.wordpressStatus.mockResolvedValue({ ...base, operations: [] });
     api.wordpressCommand
       .mockResolvedValueOnce({ ...base, operations: [uncertain] })
-      .mockResolvedValueOnce({ ...base, operations: [confirmed] })
+      .mockResolvedValueOnce({ ...base, draft_preview_url: previewUrl, operations: [confirmed] })
       .mockResolvedValueOnce({ ...base, operations: [confirmed, image, publication] });
 
     render(<StudioWorkspace campaignId={campaignId} />);
@@ -189,10 +190,14 @@ describe("campaign content studio", () => {
     const wordpress = within(await screen.findByRole("region", { name: "Тестовый WordPress" }));
     fireEvent.click(wordpress.getByRole("button", { name: "Создать черновик в WordPress" }));
     const reconcile = await wordpress.findByRole("button", { name: "Сверить результат · Черновик" });
+    const previewLabel = "Посмотреть черновик в WordPress";
+    expect(wordpress.queryByRole("link", { name: previewLabel })).not.toBeInTheDocument();
     expect(wordpress.queryByRole("button", { name: "Подтвердить публикацию в WordPress" })).toBeNull();
     fireEvent.click(reconcile);
+    expect(await wordpress.findByRole("link", { name: previewLabel })).toHaveAttribute("href", previewUrl);
     fireEvent.click(await wordpress.findByRole("button", { name: "Подтвердить публикацию в WordPress" }));
     expect(await wordpress.findByText("Публикация ожидает подтверждения иллюстрации")).toBeInTheDocument();
+    expect(wordpress.queryByRole("link", { name: previewLabel })).not.toBeInTheDocument();
     expect(api.wordpressCommand.mock.calls).toEqual([
       [campaignId, approved.id, "draft", target, false],
       [campaignId, approved.id, "draft", target, true],

@@ -42,6 +42,7 @@ class WordPressDeliveryView(BaseModel):
     target_url: str | None = None
     target_author_id: str | None = None
     target_changed: bool = False
+    draft_preview_url: str | None = None
     operations: list[WordPressOperationView] = Field(default_factory=list)
 
 
@@ -201,18 +202,32 @@ class StudioWordPressService:
         self, target: WordPressTarget, delivery: StudioWordPressDelivery | None
     ) -> WordPressDeliveryView:
         operations = (
-            await self.session.scalars(
-                select(StudioWordPressOperation)
-                .where(StudioWordPressOperation.delivery_id == delivery.id)
-                .order_by(StudioWordPressOperation.action)
-            )
+            (
+                await self.session.scalars(
+                    select(StudioWordPressOperation)
+                    .where(StudioWordPressOperation.delivery_id == delivery.id)
+                    .order_by(StudioWordPressOperation.action)
+                )
+            ).all()
             if delivery
             else ()
         )
+        target_changed = delivery is not None and delivery.target_author_id != target.author_id
+        draft = next((op for op in operations if op.action == WordPressAction.DRAFT), None)
+        draft_preview_url = None
+        if (
+            not target_changed
+            and draft is not None
+            and draft.status == WordPressState.SUCCEEDED
+            and draft.remote_id is not None
+            and all(op.action != WordPressAction.PUBLISH for op in operations)
+        ):
+            draft_preview_url = f"{target.url}/?p={draft.remote_id}&preview=true"
         return WordPressDeliveryView(
             target_url=target.url,
             target_author_id=str(target.author_id),
-            target_changed=delivery is not None and delivery.target_author_id != target.author_id,
+            target_changed=target_changed,
+            draft_preview_url=draft_preview_url,
             operations=[
                 WordPressOperationView(
                     action=WordPressAction(op.action),

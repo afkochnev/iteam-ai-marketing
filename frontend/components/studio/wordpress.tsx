@@ -133,6 +133,12 @@ export function StudioWordPress({ campaignId, versionId, disabled }: {
         <button type="button" disabled={commandsDisabled}
           onClick={() => void act("draft")}>Создать черновик в WordPress</button>
       )}
+      {status.draft_preview_url && (
+        <div>
+          <a href={status.draft_preview_url} target="_blank" rel="noopener noreferrer">Посмотреть черновик в WordPress</a>
+          <p>Для предпросмотра войдите в WordPress с правом просмотра черновика.</p>
+        </div>
+      )}
       {draft?.status === "succeeded" && !publication && (
         <button type="button" disabled={commandsDisabled}
           onClick={() => void act("publish")}>Подтвердить публикацию в WordPress</button>
