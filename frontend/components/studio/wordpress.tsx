@@ -33,7 +33,9 @@ export function StudioWordPress({ campaignId, versionId, disabled }: {
   const [loadError, setLoadError] = useState<unknown>();
   const [actionError, setActionError] = useState<unknown>();
   const [busy, setBusy] = useState(false);
-  const commandsDisabled = busy || disabled || status?.target_changed || actionError != null;
+  const [refreshing, setRefreshing] = useState(false);
+  const statusError = loadError ?? actionError;
+  const commandsDisabled = busy || refreshing || disabled || status?.target_changed || statusError != null;
 
   const draft = status?.operations.find((operation) => operation.action === "draft");
   const image = status?.operations.find((operation) => operation.action === "image");
@@ -49,27 +51,32 @@ export function StudioWordPress({ campaignId, versionId, disabled }: {
   ));
 
   useEffect(() => {
-    if (busy || loadError != null || actionError != null || (status && (!waiting || status.target_changed))) return;
+    const shouldPoll = statusError == null && (!status || (waiting && !status.target_changed));
+    if (busy || (!refreshing && !shouldPoll)) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       void studioApi.wordpressStatus(campaignId, versionId, controller.signal)
         .then((result) => {
-          if (!controller.signal.aborted) setStatus(result);
+          if (controller.signal.aborted) return;
+          setStatus(result);
+          setActionError(undefined);
+          setRefreshing(false);
         })
         .catch((reason: unknown) => {
-          if (!controller.signal.aborted) setLoadError(reason);
+          if (controller.signal.aborted) return;
+          setLoadError(reason);
+          setRefreshing(false);
         });
-    }, status ? 1500 : 0);
+    }, status && !refreshing ? 1500 : 0);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
     };
-  }, [campaignId, versionId, status, waiting, loadError, actionError, busy]);
+  }, [campaignId, versionId, status, waiting, statusError, busy, refreshing]);
 
   function refreshStatus() {
-    setStatus(undefined);
     setLoadError(undefined);
-    setActionError(undefined);
+    setRefreshing(true);
   }
 
   async function act(action: StudioWordPressAction, reconcile = false) {
@@ -88,11 +95,10 @@ export function StudioWordPress({ campaignId, versionId, disabled }: {
     }
   }
 
-  if (loadError != null) {
-    return <FriendlyError error={loadError} fallback="Не удалось проверить WordPress."
-      onRetry={refreshStatus} retryLabel={REFRESH_STATUS} />;
+  if (!status?.target_url) {
+    return loadError != null ? <FriendlyError error={loadError} fallback="Не удалось проверить WordPress."
+      onRetry={refreshStatus} retryLabel={REFRESH_STATUS} /> : null;
   }
-  if (!status?.target_url) return null;
 
   return (
     <section className="section-block" aria-label="Тестовый WordPress">
@@ -143,12 +149,15 @@ export function StudioWordPress({ campaignId, versionId, disabled }: {
         <button type="button" disabled={commandsDisabled}
           onClick={() => void act("publish")}>Подтвердить публикацию в WordPress</button>
       )}
-      {actionError != null && (
+      {statusError != null && (
         <>
-          <FriendlyError error={actionError} fallback="Не удалось получить ответ на команду WordPress." />
-          <button type="button" className="secondary" onClick={refreshStatus}>{REFRESH_STATUS}</button>
+          <FriendlyError error={statusError} fallback={loadError != null
+            ? "Не удалось проверить WordPress." : "Не удалось получить ответ на команду WordPress."} />
+          {loadError != null && <p>Показан последний полученный статус.</p>}
         </>
       )}
+      <button type="button" className="secondary" disabled={busy || refreshing} aria-busy={refreshing}
+        onClick={refreshStatus}>{REFRESH_STATUS}</button>
     </section>
   );
 }
