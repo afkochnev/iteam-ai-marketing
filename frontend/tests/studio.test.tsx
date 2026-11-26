@@ -205,6 +205,35 @@ describe("campaign content studio", () => {
     ]);
   });
 
+  it.each([
+    ["queued", "Публикация ожидает загрузки иллюстрации"],
+    ["running", "Публикация ожидает загрузки иллюстрации"],
+    ["failed", "Публикация остановлена. Иллюстрация не загружена."],
+  ] as const)("shows WordPress publication progress while the image operation is %s", async (imageStatus, publicationLabel) => {
+    const approved = storeVersion(article({ approval }));
+    const operation = {
+      remote_id: null, remote_url: null, failure_code: null,
+      reconciliation_pending: false, reconciliation_finished_at: null,
+    };
+    api.wordpressStatus.mockResolvedValue({
+      target_url: "https://wordpress.example.test/staging", target_author_id: "7", target_changed: false,
+      operations: [
+        { ...operation, action: "draft", status: "succeeded", remote_id: "41" },
+        { ...operation, action: "image", status: imageStatus },
+        { ...operation, action: "publish", status: "queued" },
+      ],
+    });
+
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(await library().findByRole("button", { name: approved.payload.title }));
+    const wordpress = within(await screen.findByRole("region", { name: "Тестовый WordPress" }));
+
+    expect(wordpress.getByText(publicationLabel)).toHaveAttribute("role", "status");
+    expect(wordpress.queryByText("Публикация — В очереди")).not.toBeInTheDocument();
+    expect(wordpress.queryByRole("button", { name: "Подтвердить публикацию в WordPress" })).not.toBeInTheDocument();
+    expect(api.wordpressCommand).not.toHaveBeenCalled();
+  });
+
   it("loads the accepted WordPress publication after losing the command response without resending it", async () => {
     const approved = storeVersion(article({ approval, illustration_version_id: null }));
     const target = { target_url: "https://wordpress.example.test/staging", target_author_id: "7" };
