@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.database import async_session_factory
 from app.core.errors import AppError
+from app.core.runtime_readiness import EXPECTED_MIGRATION_HEAD
 from app.models.activity import ActivityLog
 from app.models.agent_run import AgentRun
 from app.models.campaign import CampaignStatus
@@ -664,9 +665,8 @@ async def test_fk_restrict_and_new_schema(db_session):
         )
     )
     assert len(rows) == 8 and all(row[0] == "r" for row in rows)
-    assert (
-        await db_session.scalar(text("SELECT version_num FROM alembic_version")) == "20261121_0030"
-    )
+    revision = await db_session.scalar(text("SELECT version_num FROM alembic_version"))
+    assert revision == EXPECTED_MIGRATION_HEAD
 
 
 async def test_approval_rechecks_exact_content_version(db_session):

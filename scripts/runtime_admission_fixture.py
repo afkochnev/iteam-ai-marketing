@@ -6,14 +6,14 @@ the disposable runtime.
 """
 
 DATABASE = "iteam_runtime_admission_drill"
-SCHEMA = "20261121_0030"
+CHECKOUT_SCHEMA = "20261125_0038"
 USER_ID = "00000000-0000-4000-8000-000000000001"
 RUN_ID = "00000000-0000-4000-8000-000000000005"
 CHAT_ID = "00000000-0000-4000-8000-000000000010"
 CANARY_NAME = "Runtime admission committed canary"
 
 SEED_CODE = r'''
-import asyncio,hashlib,json
+import asyncio,hashlib,json,sys
 from datetime import UTC,datetime,timedelta
 from uuid import UUID
 from sqlalchemy import text
@@ -25,7 +25,7 @@ def uid(n): return UUID('00000000-0000-4000-8000-'+str(n).zfill(12))
 async def main():
  async with async_session_factory() as s:
   assert await s.scalar(text('SELECT current_database()'))=='iteam_runtime_admission_drill'
-  assert await s.scalar(text('SELECT version_num FROM alembic_version'))=='20261121_0030'
+  assert (await s.scalars(text('SELECT version_num FROM alembic_version'))).all()==[sys.argv[1]]
   old=datetime.now(UTC)-timedelta(days=2)
   s.add(User(id=uid(1),email='candidate@example.invalid',password_hash=hash_password('fixture-only-password'),full_name='Candidate fixture',role=UserRole.ADMIN,is_active=True,auth_version=1))
   s.add(Agent(id=uid(2),name='Candidate writer',slug='writer',role='content_writer',system_prompt='Synthetic admission fixture.',model='gpt-4.1-mini',status=AgentStatus.ACTIVE,autonomy_level=2,settings={}))
@@ -80,7 +80,8 @@ async def main():
    claim=(await c.execute(text("SELECT status::text,started_at IS NOT NULL,completed_at IS NOT NULL FROM agent_runs WHERE id='00000000-0000-4000-8000-000000000005'"))).one()
    canaries=await c.scalar(text("SELECT count(*) FROM campaigns WHERE name='Runtime admission committed canary'"))
    stale_get=await c.scalar(text("SELECT status::text FROM agent_runs WHERE id='00000000-0000-4000-8000-000000000009'"))
-   print(json.dumps({'schema':await c.scalar(text('SELECT version_num FROM alembic_version')),'database_identity_sha256':hashed(list(identity)),'all_tables_sha256':hashed(rows),'table_counts':{k:len(v) for k,v in rows.items()},'claim_status':claim[0],'claim_started':claim[1],'claim_finished':claim[2],'committed_canary_count':canaries,'stale_get_status':stale_get},sort_keys=True))
+   schema=(await c.scalars(text('SELECT version_num FROM alembic_version'))).one()
+   print(json.dumps({'schema':schema,'database_identity_sha256':hashed(list(identity)),'all_tables_sha256':hashed(rows),'table_counts':{k:len(v) for k,v in rows.items()},'claim_status':claim[0],'claim_started':claim[1],'claim_finished':claim[2],'committed_canary_count':canaries,'stale_get_status':stale_get},sort_keys=True))
  await engine.dispose()
 asyncio.run(main())
 '''

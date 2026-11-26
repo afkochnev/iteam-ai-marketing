@@ -4,7 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -16,7 +16,12 @@ from app.integrations.metrics import (
     VKMetricsProvider,
 )
 from app.models.content import ContentChannel
-from app.models.publication import Publication, PublicationStatus
+from app.models.publication import (
+    LegacyExternalPlacement,
+    Publication,
+    PublicationClaimEvent,
+    PublicationStatus,
+)
 from app.models.publication_metrics import MetricsSource, PublicationMetricsSnapshot
 from app.models.user import User
 from app.services.activity_log_service import ActivityLogService
@@ -33,12 +38,21 @@ METRIC_FIELDS = (
 )
 
 
+def _metrics_target(publication: Publication) -> str | None:
+    target = publication.provider_target_id
+    if publication.channel is ContentChannel.TELEGRAM and target is not None:
+        digits = target.removeprefix("-")
+        if digits.isascii() and digits.isdecimal():
+            return str(int(target))
+    return target
+
+
 class MetricsService:
     def __init__(self, session: AsyncSession):
         self.session = session
 
     async def _publication(self, publication_id: UUID) -> Publication:
-        publication = await self.session.get(Publication, publication_id)
+        publication = await self.session.get(Publication, publication_id, populate_existing=True)
         if publication is None:
             raise AppError("PUBLICATION_NOT_FOUND", "Публикация не найдена.", 404)
         if publication.status is not PublicationStatus.PUBLISHED:
@@ -65,8 +79,59 @@ class MetricsService:
                 "METRICS_INVALID_VALUE", "Метрики должны быть целыми неотрицательными числами.", 422
             )
 
+    async def _placement_id(
+        self, publication: Publication, *, reject_conflict: bool = False
+    ) -> UUID | None:
+        if (
+            publication.status is not PublicationStatus.PUBLISHED
+            or publication.provider_target_id is None
+            or publication.external_id is None
+        ):
+            return None
+        # Legacy decimal IDs can contain leading zeroes. The adapters look them up as integers.
+        object_id = publication.external_id.lstrip("0")
+        match = (
+            await self.session.execute(
+                select(
+                    LegacyExternalPlacement.id,
+                    PublicationClaimEvent.publication_id,
+                    PublicationClaimEvent.channel,
+                    PublicationClaimEvent.content_version_id,
+                )
+                .join(
+                    PublicationClaimEvent,
+                    PublicationClaimEvent.id == LegacyExternalPlacement.claim_event_id,
+                )
+                .where(
+                    LegacyExternalPlacement.channel == publication.channel,
+                    LegacyExternalPlacement.provider_target_id == _metrics_target(publication),
+                    LegacyExternalPlacement.external_id == object_id,
+                )
+            )
+        ).one_or_none()
+        if match is None:
+            return None
+        placement_id, owner_id, channel, version_id = match._tuple()
+        if (owner_id, channel, version_id) == (
+            publication.id,
+            publication.channel,
+            publication.content_version_id,
+        ):
+            return placement_id if object_id == publication.external_id else None
+        if reject_conflict:
+            raise AppError(
+                "METRICS_PLACEMENT_CONFLICT",
+                "Внешнее размещение закреплено за другой публикацией или версией.",
+                409,
+            )
+        return None
+
     async def _latest(
-        self, publication_id: UUID, source: MetricsSource, provider: str | None
+        self,
+        publication_id: UUID,
+        source: MetricsSource,
+        provider: str | None,
+        placement_id: UUID | None,
     ) -> PublicationMetricsSnapshot | None:
         return cast(
             PublicationMetricsSnapshot | None,
@@ -76,6 +141,7 @@ class MetricsService:
                     PublicationMetricsSnapshot.publication_id == publication_id,
                     PublicationMetricsSnapshot.source == source,
                     PublicationMetricsSnapshot.provider == provider,
+                    PublicationMetricsSnapshot.external_placement_id == placement_id,
                 )
                 .order_by(
                     PublicationMetricsSnapshot.observed_at.desc(),
@@ -94,6 +160,7 @@ class MetricsService:
         observed_at: datetime,
         provider: str | None,
         values: dict[str, int | None],
+        placement_id: UUID | None = None,
         user: User | None = None,
         note: str | None = None,
     ) -> PublicationMetricsSnapshot:
@@ -103,16 +170,19 @@ class MetricsService:
             )
         self._validate_values(values)
         observed_at = observed_at.astimezone(UTC)
-        latest = await self._latest(publication.id, source, provider)
+        latest = await self._latest(publication.id, source, provider, placement_id)
         if (
             latest is not None
             and all(getattr(latest, field) == values.get(field) for field in METRIC_FIELDS)
             and latest.source is source
             and latest.provider == provider
         ):
+            if source is MetricsSource.PROVIDER:
+                await self.session.commit()  # Release the publication lock on a duplicate read.
             return latest
         snapshot = PublicationMetricsSnapshot(
             publication_id=publication.id,
+            external_placement_id=placement_id,
             channel=publication.channel,
             observed_at=observed_at,
             source=source,
@@ -169,10 +239,12 @@ class MetricsService:
         expected_target: str | None = None
         if publication.channel is ContentChannel.TELEGRAM:
             provider: MetricsProvider = TelegramMetricsProvider()
+            provider_name = "telegram_mtproto"
             if settings.telegram_metrics_enabled and settings.telegram_metrics_chat_id is not None:
                 expected_target = str(settings.telegram_metrics_chat_id)
         elif publication.channel is ContentChannel.VK:
             provider = VKMetricsProvider()
+            provider_name = "vk_wall"
             if settings.vk_metrics_enabled and settings.vk_metrics_owner_id is not None:
                 expected_target = str(settings.vk_metrics_owner_id)
         else:
@@ -184,14 +256,50 @@ class MetricsService:
                     "Публикация не привязана к точной внешней площадке.",
                     409,
                 )
-            if publication.provider_target_id != expected_target:
+            if _metrics_target(publication) != expected_target:
                 raise AppError(
                     "METRICS_PROVIDER_TARGET_MISMATCH",
                     "Публикация относится к другой внешней площадке.",
                     409,
                 )
+        # An unchanged read reuses the previous snapshot. Serialize sampling as well as
+        # storage so a delayed older observation cannot become the latest visible value.
         try:
-            result = await provider.get_metrics(external_id=publication.external_id or "")
+            await self.session.execute(
+                select(
+                    func.pg_advisory_xact_lock(
+                        func.hashtextextended(f"iteam:publication-metrics:{publication_id}", 0)
+                    )
+                )
+            )
+            return await self._sync_provider(publication, provider, provider_name)
+        except BaseException:
+            # Cancellation and validation failures must release the transaction-scoped lock.
+            await self.session.rollback()
+            raise
+
+    async def _sync_provider(
+        self, publication: Publication, provider: MetricsProvider, provider_name: str
+    ) -> PublicationMetricsSnapshot:
+        publication_id = publication.id
+        channel = publication.channel
+        version_id = publication.content_version_id
+        target_id = publication.provider_target_id
+        receipt_target_id = _metrics_target(publication)
+        external_id = publication.external_id or ""
+        try:
+            result = await provider.get_metrics(external_id=external_id)
+            verified = result.provider_target_id is not None or result.external_id is not None
+            if verified and (
+                result.provider != provider_name
+                or result.provider_target_id is None
+                or result.provider_target_id != receipt_target_id
+                or result.external_id != external_id
+            ):
+                raise MetricsProviderError(
+                    "METRICS_PROVIDER_TARGET_MISMATCH",
+                    "Ответ провайдера относится к другой внешней публикации.",
+                )
         except MetricsProviderError as error:
             await ActivityLogService(self.session).record(
                 "PUBLICATION_METRICS_SYNC_FAILED",
@@ -217,8 +325,29 @@ class MetricsService:
                 "Провайдер не вернул ни одной наблюдаемой метрики.",
                 502,
             )
+        # The advisory lock only covers metrics readers. A delivery or correction may
+        # have changed the publication while the provider was responding.
+        locked = await self.session.scalar(
+            select(Publication)
+            .where(
+                Publication.id == publication_id,
+                Publication.status == PublicationStatus.PUBLISHED,
+                Publication.channel == channel,
+                Publication.content_version_id == version_id,
+                Publication.provider_target_id == target_id,
+                Publication.external_id == external_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if locked is None:
+            raise AppError(
+                "METRICS_PUBLICATION_CHANGED", "Публикация изменилась во время чтения метрик.", 409
+            )
+        placement_id = await self._placement_id(locked, reject_conflict=True)
         return await self._store(
-            publication,
+            locked,
+            placement_id=placement_id if verified else None,
             source=MetricsSource.PROVIDER,
             observed_at=result.observed_at,
             provider=result.provider,
@@ -226,7 +355,7 @@ class MetricsService:
         )
 
     async def publication_metrics(self, publication_id: UUID) -> dict[str, Any]:
-        publication = await self.session.get(Publication, publication_id)
+        publication = await self.session.get(Publication, publication_id, populate_existing=True)
         if publication is None:
             raise AppError("PUBLICATION_NOT_FOUND", "Публикация не найдена.", 404)
         snapshots = list(
@@ -240,6 +369,7 @@ class MetricsService:
         )
         return {
             "publication_id": publication_id,
+            "external_placement_id": await self._placement_id(publication),
             "sync_capable": False,
             "latest": snapshots[0] if snapshots else None,
             "history": snapshots,

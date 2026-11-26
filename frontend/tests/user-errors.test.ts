@@ -1,5 +1,8 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
+import { FriendlyError } from "@/components/friendly-error";
 import { ApiError } from "@/lib/api";
 import { presentError, safeAnalysisValidationCategory } from "@/lib/user-errors";
 
@@ -24,6 +27,24 @@ describe("user-facing error presentation", () => {
     const view = presentError(new TypeError("Failed to fetch"), "Не удалось открыть задачу");
     expect(view.reason).toContain("связаться с API");
     expect(view.retryable).toBe(true);
+  });
+
+  it.each(["AUTHENTICATION_REQUIRED", undefined])("opens sign-in separately after a 401 (%s)", (code) => {
+    const error = new ApiError("Требуется авторизация.", 401, code);
+    const view = presentError(error);
+    expect(view.title).toBe("Требуется вход");
+    expect(view.nextStep).toContain("вернитесь сюда");
+    expect(view.retryable).toBe(true);
+    const html = renderToStaticMarkup(createElement(FriendlyError, { error, onRetry: () => {} }));
+    expect(html).toContain('href="/login" target="_blank" rel="noopener"');
+    expect(html).toContain('button type="button"');
+  });
+
+  it("keeps missing permissions distinct from an expired session", () => {
+    const view = presentError(new ApiError("Forbidden", 403));
+    expect(view.reason).toContain("нет доступа");
+    expect(view.signInRequired).toBeUndefined();
+    expect(view.retryable).toBe(false);
   });
 
   it("explains a blocked plan-item run without exposing only 409", () => {

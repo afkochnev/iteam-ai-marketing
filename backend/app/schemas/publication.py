@@ -133,6 +133,7 @@ class PublicationMetricsSnapshotResponse(BaseModel):
 
     id: UUID
     publication_id: UUID
+    external_placement_id: UUID | None = None
     channel: ContentChannel
     observed_at: datetime
     views: int | None
@@ -150,6 +151,7 @@ class PublicationMetricsSnapshotResponse(BaseModel):
 
 class PublicationMetricsResponse(BaseModel):
     publication_id: UUID
+    external_placement_id: UUID | None = None
     sync_capable: bool
     latest: PublicationMetricsSnapshotResponse | None
     history: list[PublicationMetricsSnapshotResponse]

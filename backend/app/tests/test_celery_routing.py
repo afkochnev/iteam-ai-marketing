@@ -78,6 +78,8 @@ def assert_message(app, task_name, expected_queue, *, options=None):
         ("execute_agent_run", "ai"),
         ("generate_feedback_analysis", "ai"),
         ("generate_publication_plan", "ai"),
+        ("generate_campaign_illustration", "ai"),
+        ("recover_stale_creative_generation", "ai_control"),
         ("publish_telegram_publication", "publication"),
         ("publish_vk_publication", "publication"),
         ("dispatch_due_publications", "publication_control"),
@@ -119,6 +121,7 @@ def test_declared_queues_exclude_legacy_default():
     [
         ("ai", "dispatch-ready-ai-tasks", "ai_control"),
         ("ai", "recover-stuck-ai-tasks", "ai_control"),
+        ("ai", "recover-stale-creative-generation", "ai_control"),
         ("publication", "dispatch-due-publications", "publication_control"),
         ("publication", "recover-stuck-publications", "publication_control"),
         ("publication", "sync-recent-publication-metrics", "metrics"),

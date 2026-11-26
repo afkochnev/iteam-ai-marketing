@@ -12,6 +12,9 @@ from app.models.content import (
     ContentVersion,
     ContentVersionSource,
 )
+from app.models.content_asset import ContentAsset, ContentAssetApproval, ContentAssetVersion
+from app.models.creative_generation import CreativeGenerationJob
+from app.models.hypothesis import HypothesisVersion, MarketingHypothesis
 from app.models.knowledge import KnowledgeItem, KnowledgeSource, KnowledgeStore
 from app.models.knowledge_pack import KnowledgePack, KnowledgePackItem
 from app.models.marketing_feedback import (
@@ -22,7 +25,10 @@ from app.models.marketing_feedback import (
     MarketingFeedbackAnalysis,
 )
 from app.models.publication import (
+    LegacyExternalPlacement,
+    LegacyPublicationAttempt,
     Publication,
+    PublicationClaimEvent,
     PublicationReconciliation,
     PublicationStatus,
     ReconciliationDecision,
@@ -34,11 +40,15 @@ from app.models.publication_plan import (
     PublicationPlanItemStatus,
     PublicationPlanStatus,
 )
+from app.models.studio_website import StudioWebsitePage
+from app.models.studio_wordpress import StudioWordPressDelivery, StudioWordPressOperation
 from app.models.task import Task, TaskDependency, TaskPriority, TaskStatus, TaskType
 from app.models.user import User, UserRole
 from app.models.workspace import Workspace, WorkspaceMembership, WorkspaceRole
 
 __all__ = [
+    "HypothesisVersion",
+    "MarketingHypothesis",
     "MarketingExperiment",
     "MarketingExperimentPublication",
     "CampaignOptimizationAction",
@@ -60,6 +70,9 @@ __all__ = [
     "Campaign",
     "CampaignKPI",
     "CampaignStatus",
+    "ContentAsset",
+    "ContentAssetApproval",
+    "ContentAssetVersion",
     "ContentChannel",
     "ContentDerivation",
     "ContentItem",
@@ -67,12 +80,16 @@ __all__ = [
     "ContentType",
     "ContentVersion",
     "ContentVersionSource",
+    "CreativeGenerationJob",
     "KnowledgeItem",
     "KnowledgePack",
     "KnowledgePackItem",
     "KnowledgeSource",
     "KnowledgeStore",
+    "LegacyExternalPlacement",
+    "LegacyPublicationAttempt",
     "Publication",
+    "PublicationClaimEvent",
     "PublicationReconciliation",
     "PublicationStatus",
     "ReconciliationDecision",
@@ -82,6 +99,9 @@ __all__ = [
     "PublicationPlanItem",
     "PublicationPlanItemStatus",
     "PublicationPlanStatus",
+    "StudioWebsitePage",
+    "StudioWordPressDelivery",
+    "StudioWordPressOperation",
     "FeedbackAnalysisStatus",
     "FeedbackCategory",
     "FeedbackSource",

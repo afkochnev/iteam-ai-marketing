@@ -56,9 +56,10 @@ it("replaces old hash on overview without changing stored artifacts", () => {
   expect(mock.replace).toHaveBeenCalledWith("/campaigns/c/performance");
 });
 
-it("renders eight campaign sections, omits duplicate publications, and highlights results", () => {
+it("links to the content studio, omits duplicate publications, and highlights results", () => {
   render(<CampaignNavigation id="c" />);
-  expect(screen.getAllByRole("link")).toHaveLength(8);
+  expect(screen.getAllByRole("link")).toHaveLength(9);
+  expect(screen.getByRole("link", { name: "Студия контента" })).toHaveAttribute("href", "/campaigns/c/studio");
   expect(screen.queryByRole("link", { name: "Публикации" })).not.toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Результаты" })).toHaveAttribute("aria-current", "page");
   expect(screen.getByRole("link", { name: "Директор" })).toHaveAttribute("href", "/campaigns/c/director");

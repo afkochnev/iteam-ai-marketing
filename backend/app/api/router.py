@@ -5,7 +5,9 @@ from app.api.agent_runs import router as agent_runs_router
 from app.api.agents import router as agents_router
 from app.api.approvals import router as approvals_router
 from app.api.auth import router as auth_router
+from app.api.campaign_hypotheses import router as campaign_hypotheses_router
 from app.api.campaign_kpis import router as campaign_kpis_router
+from app.api.campaign_studio import router as campaign_studio_router
 from app.api.campaigns import router as campaigns_router
 from app.api.content import router as content_router
 from app.api.distribution_workspace import router as distribution_workspace_router
@@ -18,6 +20,8 @@ from app.api.metrics import router as metrics_router
 from app.api.optimization import router as optimization_router
 from app.api.publication_plans import router as publication_plans_router
 from app.api.publications import router as publications_router
+from app.api.studio_website_sandbox import router as studio_website_sandbox_router
+from app.api.studio_wordpress import router as studio_wordpress_router
 from app.api.system import router as system_router
 from app.api.tasks import router as tasks_router
 
@@ -29,6 +33,10 @@ api_router.include_router(agent_runs_router)
 api_router.include_router(activities_router)
 api_router.include_router(approvals_router)
 api_router.include_router(campaigns_router)
+api_router.include_router(campaign_hypotheses_router)
+api_router.include_router(campaign_studio_router)
+api_router.include_router(studio_website_sandbox_router)
+api_router.include_router(studio_wordpress_router)
 api_router.include_router(tasks_router)
 api_router.include_router(knowledge_router)
 api_router.include_router(knowledge_packs_router)

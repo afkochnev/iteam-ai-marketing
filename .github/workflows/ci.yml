@@ -54,6 +54,8 @@ jobs:
       - run: mypy app --exclude "app/tests"
       - run: alembic upgrade head
       - run: alembic check
+      - name: Campaign Studio against real WordPress
+        run: bash ../scripts/acceptance/studio_wordpress.sh
       - run: pytest
       - run: alembic downgrade base
       - run: alembic upgrade head
