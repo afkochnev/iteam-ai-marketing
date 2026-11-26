@@ -24,7 +24,7 @@ From the repository root, run:
 python -B -m unittest discover -s scripts/tests -p 'test_windows_review*.py' -v
 ```
 
-This suite runs with the Python standard library and synthetic Compose and Docker inspect fixtures. The existing release-tools CI job discovers it under `scripts/tests`.
+This suite runs with the Python standard library and synthetic Compose and Docker inspect fixtures. The release-tools CI job discovers it under `scripts/tests`. Pull requests that change the review scripts, their tests or their workflow also run the suite on a GitHub-hosted Windows runner with Python 3.13.
 
 ## Use in a dedicated review transfer
 
