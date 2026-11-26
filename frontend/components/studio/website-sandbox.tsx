@@ -75,6 +75,12 @@ export function StudioWebsiteSandbox({ campaignId, versionId, disabled }: {
         <>
           <p role="status">{page.published_at ? "Опубликовано на тестовом сайте" : "Черновик подготовлен"}</p>
           <p>ID страницы <code>{page.id}</code></p>
+          {page.metadata && (
+            <dl className="studio-metadata">
+              <dt>SEO-заголовок</dt><dd>{page.metadata.seo_title || "Используется заголовок статьи"}</dd>
+              <dt>SEO-описание</dt><dd>{page.metadata.seo_description || "Не задано"}</dd>
+            </dl>
+          )}
           <div className="actions">
             {page.published_at ? (
               <a href={studioApi.websitePublicUrl(page.id)} target="_blank" rel="noopener">Открыть тестовую публикацию</a>
