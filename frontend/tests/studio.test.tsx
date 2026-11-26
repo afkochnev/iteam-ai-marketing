@@ -256,15 +256,59 @@ describe("campaign content studio", () => {
     const wordpress = within(await screen.findByRole("region", { name: "Тестовый WordPress" }));
     const publish = wordpress.getByRole("button", { name: "Подтвердить публикацию в WordPress" });
     fireEvent.click(publish);
-    const refresh = await wordpress.findByRole("button", { name: "Обновить статус WordPress" });
+    await wordpress.findByText("Не удалось получить ответ на команду WordPress.");
+    const refresh = wordpress.getByRole("button", { name: "Обновить статус WordPress" });
     expect(publish).toBeDisabled();
     fireEvent.click(refresh);
-    fireEvent.click(await screen.findByRole("button", { name: "Обновить статус WordPress" }));
+    await wordpress.findByText("Не удалось проверить WordPress.");
+    fireEvent.click(refresh);
 
     expect(await screen.findByRole("link", { name: "Открыть публикацию в WordPress" })).toHaveAttribute("href", publicUrl);
     expect(screen.queryByRole("button", { name: "Подтвердить публикацию в WordPress" })).not.toBeInTheDocument();
     expect(api.wordpressStatus).toHaveBeenCalledTimes(3);
     expect(api.wordpressCommand.mock.calls).toEqual([[campaignId, approved.id, "publish", target, false]]);
+  });
+
+  it("refreshes a draft published by another editor and retains the last status if reading fails", async () => {
+    const approved = storeVersion(article({ approval, illustration_version_id: null }));
+    const targetUrl = "https://wordpress.example.test/staging";
+    const draft = {
+      action: "draft", status: "succeeded", remote_id: "41", remote_url: null,
+      failure_code: null, reconciliation_pending: false, reconciliation_finished_at: null,
+    };
+    const current = { target_url: targetUrl, target_author_id: "7", target_changed: false };
+    const previewUrl = `${targetUrl}/?p=41&preview=true`;
+    const publicationUrl = `${targetUrl}/iteam-article`;
+    api.wordpressStatus
+      .mockResolvedValueOnce({ ...current, draft_preview_url: previewUrl, operations: [draft] })
+      .mockRejectedValueOnce(new TypeError("Failed to fetch"))
+      .mockResolvedValueOnce({
+        ...current,
+        operations: [draft, { ...draft, action: "publish", remote_url: publicationUrl }],
+      });
+
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(await library().findByRole("button", { name: approved.payload.title }));
+    const wordpress = within(await screen.findByRole("region", { name: "Тестовый WordPress" }));
+    const refresh = wordpress.getByRole("button", { name: "Обновить статус WordPress" });
+    const publish = wordpress.getByRole("button", { name: "Подтвердить публикацию в WordPress" });
+    const preview = wordpress.getByRole("link", { name: "Посмотреть черновик в WordPress" });
+    fireEvent.click(refresh);
+    expect(refresh).toBeDisabled();
+    expect(publish).toBeDisabled();
+
+    expect(await wordpress.findByRole("alert")).toHaveTextContent("Не удалось проверить WordPress.");
+    expect(wordpress.getByText("Показан последний полученный статус.")).toBeInTheDocument();
+    expect(preview).toBeInTheDocument();
+    expect(publish).toBeDisabled();
+    fireEvent.click(refresh);
+
+    expect(await wordpress.findByRole("link", { name: "Открыть публикацию в WordPress" })).toHaveAttribute("href", publicationUrl);
+    expect(publish).not.toBeInTheDocument();
+    expect(preview).not.toBeInTheDocument();
+    expect(wordpress.queryByRole("alert")).not.toBeInTheDocument();
+    expect(api.wordpressStatus).toHaveBeenCalledTimes(3);
+    expect(api.wordpressCommand).not.toHaveBeenCalled();
   });
 
   it("creates a separate test CMS draft before an explicit publish action", async () => {
