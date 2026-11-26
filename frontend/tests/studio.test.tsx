@@ -238,6 +238,7 @@ describe("campaign content studio", () => {
     const draft = {
       id: "website-draft", article_version_id: approved.id, illustration_version_id: "visual-1",
       created_at: timestamp, published_at: null,
+      metadata: { seo_title: "Стратегическая сессия iTeam", seo_description: "" },
     };
     api.websiteStatus.mockResolvedValue({ enabled: true, page: null });
     api.createWebsiteDraft.mockResolvedValue(draft);
@@ -251,6 +252,8 @@ describe("campaign content studio", () => {
     fireEvent.change(cms.getByLabelText("SEO-заголовок"), { target: { value: "Стратегическая сессия iTeam" } });
     fireEvent.click(cms.getByRole("button", { name: "Создать черновик в тестовой CMS" }));
     expect(await cms.findByRole("link", { name: "Посмотреть черновик" })).toHaveAttribute("href", "http://localhost:8000/draft-preview");
+    expect(cms.getByText(draft.metadata.seo_title)).toBeInTheDocument();
+    expect(cms.getByText("Не задано")).toBeInTheDocument();
     expect(api.createWebsiteDraft).toHaveBeenCalledWith(campaignId, approved.id, { seo_title: "Стратегическая сессия iTeam", seo_description: "" });
     expect(api.publishWebsiteDraft).not.toHaveBeenCalled();
 
@@ -264,6 +267,7 @@ describe("campaign content studio", () => {
     const draft = {
       id: "existing-website-draft", article_version_id: approved.id, illustration_version_id: null,
       created_at: timestamp, published_at: null,
+      metadata: { seo_title: "Заголовок первого редактора", seo_description: 'Описание с "кавычками"' },
     };
     const attemptedTitle = "SEO-заголовок второго редактора";
     const attemptedDescription = "SEO-описание второго редактора";
@@ -299,6 +303,9 @@ describe("campaign content studio", () => {
     expect(await cms.findByRole("link", { name: "Посмотреть черновик" })).toHaveAttribute(
       "href", "http://localhost:8000/existing-draft-preview",
     );
+    expect(cms.getByText(draft.metadata.seo_title)).toBeInTheDocument();
+    expect(cms.getByText(draft.metadata.seo_description)).toBeInTheDocument();
+    expect(cms.queryByText(attemptedTitle)).not.toBeInTheDocument();
     expect(api.websiteDraftUrl).toHaveBeenCalledWith(campaignId, approved.id, draft.id);
     expect(api.websiteStatus).toHaveBeenCalledTimes(3);
     expect(api.createWebsiteDraft).toHaveBeenCalledTimes(1);
