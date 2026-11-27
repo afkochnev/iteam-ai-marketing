@@ -1,0 +1,249 @@
+name: Isolated migration 0028 to 0039
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  actions: read
+  packages: read
+
+jobs:
+  synthetic-schema-rehearsal:
+    if: github.head_ref == 'codex/rehearse-0028-to-0039'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      TARGET_SHA: 62cd51fa744ffbc25ad5471ce5cdab6570b14eda
+      SOURCE_SCHEMA: '20261009_0028'
+      TARGET_SCHEMA: '20261126_0039'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: 62cd51fa744ffbc25ad5471ce5cdab6570b14eda
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
+      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v3.1.4
+      - name: Verify signed reference and target images
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+          source_sha="$(jq -er '.source_release_sha' scripts/fixtures/migration-0028-to-0030.json)"
+          source_image="$(jq -er '.source_images.backend' scripts/fixtures/migration-0028-to-0030.json)"
+          target_run="$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/release-images.yml/runs?branch=main&event=workflow_run&status=success&head_sha=$TARGET_SHA" --jq '.workflow_runs[0].id // empty')"
+          test -n "$target_run"
+          echo "target_build_run=$target_run"
+          for component in backend frontend; do
+            gh run download "$target_run" --repo "$GITHUB_REPOSITORY" \
+              --name "release-$component-$TARGET_SHA" --dir "$RUNNER_TEMP/iteam-release"
+          done
+          SOURCE_SHA="$source_sha" SOURCE_IMAGE="$source_image" TARGET_RUN="$target_run" PYTHONPATH=scripts python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          from release_ops import accepted, require_image_schema, run_info, verify_image
+
+          source_sha, source_image = os.environ["SOURCE_SHA"], os.environ["SOURCE_IMAGE"]
+          target_sha = os.environ["TARGET_SHA"]
+          run = run_info(int(os.environ["TARGET_RUN"]), "release-images.yml", "workflow_run")
+          assert run["head_sha"] == target_sha, run["head_sha"]
+          accepted(source_sha)
+          accepted(target_sha)
+          for component in ("backend", "frontend"):
+              path = Path(os.environ["RUNNER_TEMP"]) / "iteam-release" / f"release-{component}.json"
+              record = json.loads(path.read_text())
+              assert record["release_sha"] == target_sha
+              assert set(record["platforms"]) == {"linux/amd64", "linux/arm64"}
+              assert record["frontend_api_url"] == "http://localhost:8000/api/v1"
+              verify_image(component, record["image"], target_sha, "cosign")
+              if component == "backend":
+                  target_image = record["image"]
+              else:
+                  frontend_image = record["image"]
+          verify_image("backend", source_image, source_sha, "cosign")
+          require_image_schema(source_image, os.environ["SOURCE_SCHEMA"])
+          require_image_schema(target_image, os.environ["TARGET_SCHEMA"])
+          values = {
+              "SOURCE_IMAGE": source_image,
+              "REFERENCE_SOURCE_SHA": source_sha,
+              "TARGET_IMAGE": target_image,
+              "TARGET_FRONTEND_IMAGE": frontend_image,
+              "TARGET_BUILD_RUN": str(run["id"]),
+          }
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as output:
+              for key, value in values.items():
+                  print(f"{key}={value}", file=output)
+                  print(f"{key}={value}")
+          PY
+      - name: Restore synthetic 0028 data and rehearse upgrade and rollback
+        run: |
+          prefix="iteam-migration-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          network="$prefix-net"
+          export FIXTURE_PG="$prefix-pg"
+          export FIXTURE_SOURCE=iteam_migration_drill
+          export FIXTURE_RESTORED=iteam_migration_restore
+          dump="$RUNNER_TEMP/iteam-fixture-$GITHUB_RUN_ID.dump"
+          cleanup() {
+            rm -f "$dump"
+            docker rm -f -v "$FIXTURE_PG" >/dev/null 2>&1 || true
+            docker network rm "$network" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          docker network create --internal "$network" >/dev/null
+          docker run -d --rm --name "$FIXTURE_PG" --network "$network" --network-alias postgres \
+            -e POSTGRES_USER=iteam -e POSTGRES_PASSWORD=fixture-only -e POSTGRES_DB="$FIXTURE_SOURCE" \
+            postgres:17-alpine >/dev/null
+          for _ in {1..40}; do
+            if docker exec "$FIXTURE_PG" pg_isready -h 127.0.0.1 -U iteam -d "$FIXTURE_SOURCE"; then
+              break
+            fi
+            sleep 1
+          done
+          docker exec "$FIXTURE_PG" pg_isready -h 127.0.0.1 -U iteam -d "$FIXTURE_SOURCE"
+
+          backend() {
+            local image="$1" database="$2" entrypoint="$3"
+            shift 3
+            docker run --rm --network "$network" --env APP_ENV=development \
+              --env "DATABASE_URL=postgresql+asyncpg://iteam:fixture-only@postgres:5432/$database" \
+              --env ADMIN_PASSWORD=migration-fixture-only --entrypoint "$entrypoint" "$image" "$@"
+          }
+
+          backend "$SOURCE_IMAGE" "$FIXTURE_SOURCE" alembic upgrade "$SOURCE_SCHEMA"
+          backend "$SOURCE_IMAGE" "$FIXTURE_SOURCE" python -m app.seed
+
+          PYTHONPATH=scripts python3 - <<'PY'
+          import os
+          import subprocess
+          from migration_business_fixture import BUSINESS_FIXTURE_SQL
+
+          def execute(sql):
+              subprocess.run(
+                  ["docker", "exec", "-i", os.environ["FIXTURE_PG"], "psql", "-Xq",
+                   "-v", "ON_ERROR_STOP=1", "-U", "iteam", "-d", os.environ["FIXTURE_SOURCE"]],
+                  input=sql, text=True, check=True,
+              )
+
+          execute("""
+              INSERT INTO users (id,email,password_hash,full_name,role,is_active,auth_version)
+              VALUES ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa','active.manager@example.com','fixture',
+                      'Active Manager','MANAGER',true,1),
+                     ('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb','inactive.manager@example.com','fixture',
+                      'Inactive Manager','MANAGER',false,1);
+          """)
+          execute(BUSINESS_FIXTURE_SQL)
+          PY
+
+          docker exec "$FIXTURE_PG" pg_dump -Fc -U iteam "$FIXTURE_SOURCE" > "$dump"
+          docker exec "$FIXTURE_PG" createdb -U iteam "$FIXTURE_RESTORED"
+          docker exec -i "$FIXTURE_PG" pg_restore --exit-on-error -U iteam -d "$FIXTURE_RESTORED" < "$dump"
+
+          cat > "$RUNNER_TEMP/iteam-check-fixture.py" <<'PY'
+          import hashlib
+          import json
+          import os
+          import re
+          import subprocess
+          from pathlib import Path
+
+          from migration_business_fixture import REQUIRED_BUSINESS_TABLES
+
+          pg = os.environ["FIXTURE_PG"]
+          source, restored = os.environ["FIXTURE_SOURCE"], os.environ["FIXTURE_RESTORED"]
+
+          def sql(database, query):
+              return subprocess.check_output(
+                  ["docker", "exec", pg, "psql", "-XqAt", "-v", "ON_ERROR_STOP=1",
+                   "-U", "iteam", "-d", database, "-c", query],
+                  text=True,
+              ).strip()
+
+          def snapshot(database, columns):
+              payloads = {}
+              for table, fields in columns.items():
+                  assert all(re.fullmatch(r"[a-z_][a-z0-9_]*", name) for name in [table, *fields])
+                  keys = ", ".join(f"'{name}'" for name in fields)
+                  rows = sql(database, f"""
+                      SELECT COALESCE(jsonb_agg(data ORDER BY data::text), '[]'::jsonb)::text
+                      FROM (
+                          SELECT (SELECT jsonb_object_agg(key, value)
+                                  FROM jsonb_each(to_jsonb(original))
+                                  WHERE key IN ({keys})) AS data
+                          FROM public.{table} AS original
+                      ) AS projected_rows
+                  """)
+                  assert rows and rows != "[]", table
+                  payloads[table] = rows
+              return payloads
+
+          phase = os.environ["SCHEMA_PHASE"]
+          expected = os.environ["EXPECTED_SCHEMA"]
+          revision = sql(restored, "SELECT version_num FROM public.alembic_version")
+          assert revision == expected, revision
+          columns = {
+              table: json.loads(sql(source, f"""
+                  SELECT json_agg(column_name ORDER BY ordinal_position)
+                  FROM information_schema.columns
+                  WHERE table_schema = 'public' AND table_name = '{table}'
+              """))
+              for table in sorted(REQUIRED_BUSINESS_TABLES | {"users"})
+          }
+          original, current = snapshot(source, columns), snapshot(restored, columns)
+          assert original == current, [table for table in columns if original[table] != current[table]]
+          if expected == os.environ["TARGET_SCHEMA"]:
+              assert sql(restored, """
+                  SELECT is_nullable || ':' || data_type
+                  FROM information_schema.columns
+                  WHERE table_schema='public' AND table_name='studio_wordpress_operations'
+                    AND column_name='reconciliation_failure_code'
+              """) == "YES:character varying"
+              assert sql(restored, """
+                  SELECT count(*) FROM pg_constraint
+                  WHERE conname='ck_studio_wordpress_operations_reconciliation_failure'
+                    AND convalidated
+              """) == "1"
+              assert sql(restored, """
+                  SELECT count(*) FROM public.workspace_memberships
+                  WHERE user_id='aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'
+              """) == "1"
+              assert sql(restored, """
+                  SELECT count(*) FROM public.workspace_memberships
+                  WHERE user_id='bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+              """) == "0"
+
+          evidence = {"phase": phase, "revision": revision,
+                      "preserved_source_tables": sorted(columns),
+                      "business_sha256": hashlib.sha256(json.dumps(current, sort_keys=True).encode()).hexdigest()}
+          print(json.dumps(evidence, sort_keys=True))
+          with (Path(os.environ["RUNNER_TEMP"]) / "iteam-migration-evidence.jsonl").open("a") as output:
+              print(json.dumps(evidence, sort_keys=True), file=output)
+          PY
+
+          check() {
+            SCHEMA_PHASE="$1" EXPECTED_SCHEMA="$2" PYTHONPATH="$GITHUB_WORKSPACE/scripts" \
+              python3 "$RUNNER_TEMP/iteam-check-fixture.py"
+          }
+
+          check restored "$SOURCE_SCHEMA"
+          backend "$TARGET_IMAGE" "$FIXTURE_RESTORED" alembic upgrade "$TARGET_SCHEMA"
+          backend "$TARGET_IMAGE" "$FIXTURE_RESTORED" alembic check
+          check upgraded "$TARGET_SCHEMA"
+          backend "$TARGET_IMAGE" "$FIXTURE_RESTORED" alembic downgrade "$SOURCE_SCHEMA"
+          check downgraded_pre_activation "$SOURCE_SCHEMA"
+          backend "$TARGET_IMAGE" "$FIXTURE_RESTORED" alembic upgrade "$TARGET_SCHEMA"
+          backend "$TARGET_IMAGE" "$FIXTURE_RESTORED" alembic check
+          check upgraded_again "$TARGET_SCHEMA"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: synthetic-migration-0028-to-0039-evidence
+          path: ${{ runner.temp }}/iteam-migration-evidence.jsonl
+          if-no-files-found: error
