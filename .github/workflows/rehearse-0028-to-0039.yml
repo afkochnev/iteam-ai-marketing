@@ -23,6 +23,11 @@ jobs:
         with:
           ref: 62cd51fa744ffbc25ad5471ce5cdab6570b14eda
           persist-credentials: false
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          path: rehearsal-tools
+          persist-credentials: false
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6
         with:
@@ -92,7 +97,11 @@ jobs:
           export FIXTURE_SOURCE=iteam_migration_drill
           export FIXTURE_RESTORED=iteam_migration_restore
           dump="$RUNNER_TEMP/iteam-fixture-$GITHUB_RUN_ID.dump"
+          backend_fixture=
           cleanup() {
+            if [[ -n "$backend_fixture" ]]; then
+              docker rm -f "$backend_fixture" >/dev/null 2>&1 || true
+            fi
             rm -f "$dump"
             docker rm -f -v "$FIXTURE_PG" >/dev/null 2>&1 || true
             docker network rm "$network" >/dev/null 2>&1 || true
@@ -100,6 +109,7 @@ jobs:
           trap cleanup EXIT
           docker network create --internal "$network" >/dev/null
           docker run -d --rm --name "$FIXTURE_PG" --network "$network" --network-alias postgres \
+            --label "com.docker.compose.project=$prefix" --label com.docker.compose.service=postgres \
             -e POSTGRES_USER=iteam -e POSTGRES_PASSWORD=fixture-only -e POSTGRES_DB="$FIXTURE_SOURCE" \
             postgres:17-alpine >/dev/null
           for _ in {1..40}; do
@@ -242,8 +252,20 @@ jobs:
           backend "$TARGET_IMAGE" "$FIXTURE_RESTORED" alembic upgrade "$TARGET_SCHEMA"
           backend "$TARGET_IMAGE" "$FIXTURE_RESTORED" alembic check
           check upgraded_again "$TARGET_SCHEMA"
+
+          backend_fixture="$(docker run -d --rm --name "$prefix-reference" --network none \
+            --label "com.docker.compose.project=$prefix" --label com.docker.compose.service=backend \
+            --env "BUILD_SHA=$REFERENCE_SOURCE_SHA" --entrypoint=sleep "$SOURCE_IMAGE" infinity)"
+          fixture_image_id="$(docker inspect --format '{{.Image}}' "$backend_fixture")"
+          python3 rehearsal-tools/scripts/acceptance/rehearse_windows_migration.py \
+            --project "$prefix" --backend "$backend_fixture" --postgres "$FIXTURE_PG" \
+            --source-build-sha "$REFERENCE_SOURCE_SHA" --source-image-id "$fixture_image_id" \
+            > "$RUNNER_TEMP/iteam-local-rehearsal-check.txt"
+          cat "$RUNNER_TEMP/iteam-local-rehearsal-check.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: synthetic-migration-0028-to-0039-evidence
-          path: ${{ runner.temp }}/iteam-migration-evidence.jsonl
+          path: |
+            ${{ runner.temp }}/iteam-migration-evidence.jsonl
+            ${{ runner.temp }}/iteam-local-rehearsal-check.txt
           if-no-files-found: error
