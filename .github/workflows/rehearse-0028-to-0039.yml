@@ -262,10 +262,17 @@ jobs:
             --source-build-sha "$REFERENCE_SOURCE_SHA" --source-image-id "$fixture_image_id" \
             > "$RUNNER_TEMP/iteam-local-rehearsal-check.txt"
           cat "$RUNNER_TEMP/iteam-local-rehearsal-check.txt"
+
+          python3 rehearsal-tools/scripts/acceptance/backup_windows_migration.py \
+            --project "$prefix" --backend "$backend_fixture" --postgres "$FIXTURE_PG" \
+            --source-build-sha "$REFERENCE_SOURCE_SHA" --source-image-id "$fixture_image_id" \
+            > "$RUNNER_TEMP/iteam-local-backup-check.txt"
+          cat "$RUNNER_TEMP/iteam-local-backup-check.txt"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: synthetic-migration-0028-to-0039-evidence
           path: |
             ${{ runner.temp }}/iteam-migration-evidence.jsonl
             ${{ runner.temp }}/iteam-local-rehearsal-check.txt
+            ${{ runner.temp }}/iteam-local-backup-check.txt
           if-no-files-found: error
