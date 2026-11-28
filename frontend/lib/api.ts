@@ -86,6 +86,25 @@ export interface DistributionWorkspace {
 }
 export interface PublicationMetricsSnapshot { id: string; publication_id: string; channel: "TELEGRAM" | "VK"; observed_at: string; views: number | null; impressions: number | null; reactions: number | null; likes: number | null; comments: number | null; shares: number | null; clicks: number | null; subscribers: number | null; source: "PROVIDER" | "MANUAL"; provider: string | null; created_at: string; }
 export interface PublicationMetrics { publication_id: string; sync_capable: boolean; latest: PublicationMetricsSnapshot | null; history: PublicationMetricsSnapshot[]; }
+export interface WordPressPagePlacement {
+  placement_id: string;
+  site_url: string;
+  post_id: string;
+  canonical_url: string;
+  article_asset_id: string;
+  original_version_id: string;
+  current_version_id: string;
+  current_version_number: number;
+  current_title: string;
+  current_revision_id: string | null;
+  published_at: string;
+}
+
+export interface WordPressPerformance {
+  placements: WordPressPagePlacement[];
+  analytics_status: "not_configured";
+}
+
 export interface CampaignPerformance { total_published: number; with_metrics: number; metric_coverage: Record<string, number>; totals: Record<string, number | null>; campaign_id?: string; period?: { from: string; to: string }; data_quality?: { publication_count: number; publications_with_any_metrics: number; coverage_ratio: number }; derived?: { ctr: number | null; engagement_rate: number | null }; kpis?: KPIEvaluation[]; publications: Array<{ content_title?: string | null; version_number?: number | null; publication_id: string; content_item_id: string; content_version_id: string; channel: "TELEGRAM" | "VK"; published_at: string | null; latest_metrics_snapshot_id?: string | null; source?: string | null; observed_at?: string | null; views?: number | null; impressions?: number | null; reactions?: number | null; likes?: number | null; comments?: number | null; shares?: number | null; clicks?: number | null; subscribers?: number | null; metrics: PublicationMetricsSnapshot | null }>; }
 export interface Activity { id: string; event_type: string; campaign_id: string | null; task_id: string | null; content_item_id: string | null; approval_id: string | null; metadata: Record<string, unknown>; created_at: string; }
 export interface MarketingFeedback { id: string; campaign_id: string; publication_id: string | null; content_item_id: string | null; content_version_id: string | null; source_type: string; category: string; rating: number | null; comment: string | null; observed_at: string | null; created_by_user_id: string | null; created_at: string; }
@@ -278,6 +297,8 @@ export const publicationsApi = {
   syncMetrics: (id: string) => request<PublicationMetrics>(`/publications/${id}/metrics/sync`, { method: "POST" }),
 };
 export const metricsApi = {
+  wordpress: (campaignId: string, signal: AbortSignal) =>
+    request<WordPressPerformance>(`/campaigns/${encodeURIComponent(campaignId)}/performance/wordpress`, { signal }),
   campaign: (campaignId: string, from: string, to: string, channel?: string) => request<CampaignPerformance>(`/campaigns/${campaignId}/performance?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}${channel ? `&channel=${channel}` : ""}`),
 };
 export const feedbackApi = {

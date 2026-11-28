@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -190,3 +190,22 @@ class CampaignPerformanceResponse(BaseModel):
     derived: dict[str, float | None]
     kpis: list[dict[str, Any]]
     publications: list[PerformancePublicationResponse]
+
+
+class WordPressPagePlacement(BaseModel):
+    placement_id: UUID
+    site_url: str
+    post_id: str
+    canonical_url: str
+    article_asset_id: UUID
+    original_version_id: UUID
+    current_version_id: UUID
+    current_version_number: int
+    current_title: str
+    current_revision_id: UUID | None
+    published_at: datetime
+
+
+class CampaignWordPressPerformanceResponse(BaseModel):
+    placements: list[WordPressPagePlacement] = Field(default_factory=list)
+    analytics_status: Literal["not_configured"] = "not_configured"
