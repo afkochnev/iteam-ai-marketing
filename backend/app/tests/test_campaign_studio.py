@@ -22,10 +22,14 @@ from httpx import (
     Response,
 )
 from PIL import Image
-from sqlalchemy import update
+from sqlalchemy import Connection, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from alembic.config import Config
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from alembic.script import ScriptDirectory
 from app.api.dependencies import get_read_snapshot_session
 from app.core.config import settings
 from app.core.database import get_db_session
@@ -708,6 +712,164 @@ async def create_wordpress_article(client: AsyncClient, path: str) -> tuple[str,
     )
     assert article.status_code == 201, article.text
     return article.json()["id"], image_bytes
+
+
+async def test_wordpress_0039_upgrade_preserves_existing_publication(
+    studio_client: AsyncClient,
+    db_session: AsyncSession,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "app_env", "test")
+    monkeypatch.setattr(settings, "creative_media_root", tmp_path)
+
+    source = "20261126_0039"
+    schedule = "20261128_0040"
+    target = "20261128_0041"
+    # Exercise exact migrations on the fixture connection. Its rollback contains
+    # both the PostgreSQL DDL and the records, even if an assertion fails.
+    assert await db_session.scalar(text("SELECT version_num FROM alembic_version")) == target
+    config = Config()
+    config.set_main_option("script_location", str(Path(__file__).resolve().parents[2] / "alembic"))
+    scripts = ScriptDirectory.from_config(config)
+    schedule_script = scripts.get_revision(schedule)
+    target_script = scripts.get_revision(target)
+    assert schedule_script is not None and schedule_script.down_revision == source
+    assert target_script is not None and target_script.down_revision == schedule
+    connection = await db_session.connection()
+
+    async def migrate(*, upgrade: bool) -> None:
+        def run_migrations(sync_connection: Connection) -> None:
+            with Operations.context(MigrationContext.configure(sync_connection)):
+                if upgrade:
+                    schedule_script.module.upgrade()
+                    target_script.module.upgrade()
+                else:
+                    target_script.module.downgrade()
+                    schedule_script.module.downgrade()
+
+        await connection.run_sync(run_migrations)
+
+    async def original_rows() -> dict[str, list[str]]:
+        projections = {
+            "campaigns": "to_jsonb(r)",
+            "content_assets": "to_jsonb(r)",
+            "content_asset_versions": "to_jsonb(r)",
+            "content_asset_approvals": "to_jsonb(r)",
+            "studio_wordpress_deliveries": "to_jsonb(r)",
+            "studio_wordpress_operations": "to_jsonb(r) - 'scheduled_for'",
+        }
+        return {
+            table: list(
+                await db_session.scalars(
+                    text(f"SELECT ({projection})::text FROM {table} r ORDER BY 1")
+                )
+            )
+            for table, projection in projections.items()
+        }
+
+    async def has_schedule_column() -> bool:
+        return bool(
+            await db_session.scalar(
+                text(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                    "WHERE table_schema = current_schema() "
+                    "AND table_name = 'studio_wordpress_operations' "
+                    "AND column_name = 'scheduled_for')"
+                )
+            )
+        )
+
+    await migrate(upgrade=False)
+    assert not await has_schedule_column()
+    assert await db_session.scalar(text("SELECT to_regclass('studio_wordpress_revisions')")) is None
+
+    editor, _, campaign, _ = await seed_studio(db_session)
+    authenticate(studio_client, editor)
+    studio_path = f"/api/v1/campaigns/{campaign.id}/studio"
+    version, _ = await create_wordpress_article(studio_client, studio_path)
+    article = await studio_client.post(f"{studio_path}/versions/{version}/approve")
+    assert article.status_code == 200, article.text
+    site = "https://wordpress.example.test/staging"
+    canonical = f"{site}/guide/"
+    delivery = StudioWordPressDelivery(
+        workspace_id=DEFAULT_WORKSPACE_ID,
+        campaign_id=campaign.id,
+        article_version_id=UUID(version),
+        illustration_version_id=UUID(article.json()["illustration_version_id"]),
+        target_url=site,
+        target_author_id=42,
+    )
+    db_session.add(delivery)
+    await db_session.flush()
+
+    now = datetime.now(UTC)
+    for action, remote_id, remote_url in (
+        ("draft", 41, None),
+        ("image", 31, None),
+        ("publish", 41, canonical),
+    ):
+        operation_id = uuid4()
+        await db_session.execute(
+            text(
+                "INSERT INTO studio_wordpress_operations "
+                "(id, delivery_id, action, status, requested_by) "
+                "VALUES (:id, :delivery_id, :action, 'queued', :requested_by)"
+            ),
+            {
+                "id": operation_id,
+                "delivery_id": delivery.id,
+                "action": action,
+                "requested_by": editor.id,
+            },
+        )
+        await db_session.execute(
+            text(
+                "UPDATE studio_wordpress_operations SET status = 'running', started_at = :now "
+                "WHERE id = :id"
+            ),
+            {"id": operation_id, "now": now},
+        )
+        await db_session.execute(
+            text(
+                "UPDATE studio_wordpress_operations SET status = 'succeeded', "
+                "finished_at = :now, remote_id = :remote_id, remote_url = :remote_url "
+                "WHERE id = :id"
+            ),
+            {"id": operation_id, "now": now, "remote_id": remote_id, "remote_url": remote_url},
+        )
+
+    expected = await original_rows()
+    assert len(expected["content_asset_versions"]) == len(expected["content_asset_approvals"]) == 2
+    assert len(expected["studio_wordpress_operations"]) == 3
+
+    await migrate(upgrade=True)
+    assert await has_schedule_column()
+    assert await original_rows() == expected
+    assert list(
+        await db_session.scalars(
+            text("SELECT scheduled_for FROM studio_wordpress_operations ORDER BY action")
+        )
+    ) == [None, None, None]
+    assert await db_session.scalar(text("SELECT count(*) FROM studio_wordpress_revisions")) == 0
+
+    placement = await studio_client.get(f"/api/v1/campaigns/{campaign.id}/performance/wordpress")
+    assert placement.status_code == 200, placement.text
+    (page,) = placement.json()["placements"]
+    assert (page["placement_id"], page["post_id"], page["canonical_url"]) == (
+        str(delivery.id),
+        "41",
+        canonical,
+    )
+    assert page["current_version_id"] == version
+    assert page["current_revision_id"] is None
+    assert page["current_version_number"] == 1
+
+    await migrate(upgrade=False)
+    assert not await has_schedule_column()
+    assert await original_rows() == expected
+    await migrate(upgrade=True)
+    assert await original_rows() == expected
 
 
 @pytest.mark.parametrize("schedule_publication", [False, True], ids=["immediate", "scheduled"])
