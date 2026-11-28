@@ -145,14 +145,6 @@ export function StudioWordPress({ campaignId, versionId, disabled }: {
     }
   }
 
-  function schedulePublication() {
-    const currentTime = Date.now();
-    setNow(currentTime);
-    if (chosenSchedule && chosenSchedule.getTime() > currentTime) {
-      void act("publish", false, chosenSchedule.toISOString());
-    }
-  }
-
   if (!status?.target_url) {
     return loadError != null ? <FriendlyError error={loadError} fallback="Не удалось проверить WordPress."
       onRetry={refreshStatus} retryLabel={REFRESH_STATUS} /> : null;
@@ -237,7 +229,13 @@ export function StudioWordPress({ campaignId, versionId, disabled }: {
               {scheduleInvalid && " Укажите допустимые дату и время в будущем."}
             </p>
             <button type="button" disabled={commandsDisabled || !chosenSchedule || scheduleInvalid}
-              onClick={schedulePublication}>
+              onClick={() => {
+                const currentTime = Date.now();
+                setNow(currentTime);
+                if (chosenSchedule && chosenSchedule.getTime() > currentTime) {
+                  void act("publish", false, chosenSchedule.toISOString());
+                }
+              }}>
               Запланировать публикацию в WordPress
             </button>
           </div>
