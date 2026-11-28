@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import AwareDatetime, BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,9 +28,14 @@ class WordPressConfirmation(BaseModel):
     target_author_id: str = Field(pattern=r"^[1-9][0-9]{0,18}$")
 
 
+class WordPressPublicationConfirmation(WordPressConfirmation):
+    scheduled_for: AwareDatetime | None = None
+
+
 class WordPressOperationView(BaseModel):
     action: WordPressAction
     status: WordPressState
+    scheduled_for: datetime | None
     remote_id: str | None
     remote_url: str | None
     failure_code: str | None
@@ -106,7 +111,7 @@ class StudioWordPressService:
         user_id: UUID,
         campaign_id: UUID,
         version_id: UUID,
-        confirmation: WordPressConfirmation,
+        confirmation: WordPressPublicationConfirmation,
     ) -> WordPressDeliveryView:
         target = self._target(confirmation)
         await self.studio.require_campaign_access(user_id, campaign_id, write=True)
@@ -114,9 +119,29 @@ class StudioWordPressService:
         draft = await self._operation(delivery.id, WordPressAction.DRAFT)
         if draft is None or draft.status != WordPressState.SUCCEEDED:
             raise AppError("WORDPRESS_DRAFT_REQUIRED", "Подтвердите черновик WordPress.", 409)
+        scheduled_for = confirmation.scheduled_for
+        publication = await self._operation(delivery.id, WordPressAction.PUBLISH)
+        if publication is not None:
+            if publication.scheduled_for != scheduled_for:
+                raise AppError(
+                    "WORDPRESS_SCHEDULE_CONFLICT",
+                    "Для этой версии уже подтверждено другое время публикации.",
+                    409,
+                )
+            return await self._view(target, delivery)
+        if scheduled_for is not None and scheduled_for <= datetime.now(UTC):
+            raise AppError(
+                "WORDPRESS_SCHEDULE_IN_PAST",
+                "Укажите дату и время публикации в будущем.",
+                409,
+            )
         if delivery.illustration_version_id is not None:
-            await self._enqueue(delivery.id, WordPressAction.IMAGE, user_id)
-        await self._enqueue(delivery.id, WordPressAction.PUBLISH, user_id)
+            await self._enqueue(
+                delivery.id, WordPressAction.IMAGE, user_id, scheduled_for=scheduled_for
+            )
+        await self._enqueue(
+            delivery.id, WordPressAction.PUBLISH, user_id, scheduled_for=scheduled_for
+        )
         return await self._view(target, delivery)
 
     async def request_reconciliation(
@@ -188,7 +213,14 @@ class StudioWordPressService:
         result = await self.session.execute(stmt.with_for_update() if lock else stmt)
         return result.scalar_one_or_none()
 
-    async def _enqueue(self, delivery_id: UUID, action: WordPressAction, user_id: UUID) -> None:
+    async def _enqueue(
+        self,
+        delivery_id: UUID,
+        action: WordPressAction,
+        user_id: UUID,
+        *,
+        scheduled_for: datetime | None = None,
+    ) -> None:
         await self.session.execute(
             insert(StudioWordPressOperation)
             .values(
@@ -196,6 +228,7 @@ class StudioWordPressService:
                 action=action,
                 status=WordPressState.QUEUED,
                 requested_by=user_id,
+                scheduled_for=scheduled_for,
             )
             .on_conflict_do_nothing(constraint="uq_studio_wp_delivery_action")
         )
@@ -216,13 +249,21 @@ class StudioWordPressService:
         )
         target_changed = delivery is not None and delivery.target_author_id != target.author_id
         draft = next((op for op in operations if op.action == WordPressAction.DRAFT), None)
+        publication = next((op for op in operations if op.action == WordPressAction.PUBLISH), None)
         draft_preview_url = None
         if (
             not target_changed
             and draft is not None
             and draft.status == WordPressState.SUCCEEDED
             and draft.remote_id is not None
-            and all(op.action != WordPressAction.PUBLISH for op in operations)
+            and (
+                publication is None
+                or (
+                    publication.status == WordPressState.QUEUED
+                    and publication.scheduled_for is not None
+                    and publication.scheduled_for > datetime.now(UTC)
+                )
+            )
         ):
             draft_preview_url = f"{target.url}/?p={draft.remote_id}&preview=true"
         return WordPressDeliveryView(
@@ -234,6 +275,7 @@ class StudioWordPressService:
                 WordPressOperationView(
                     action=WordPressAction(op.action),
                     status=WordPressState(op.status),
+                    scheduled_for=op.scheduled_for,
                     remote_id=str(op.remote_id) if op.remote_id is not None else None,
                     remote_url=op.remote_url,
                     failure_code=op.failure_code,

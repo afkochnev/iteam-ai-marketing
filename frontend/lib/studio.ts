@@ -117,6 +117,7 @@ export type StudioWordPressAction = "draft" | "image" | "publish";
 export interface StudioWordPressConfirmation {
   target_url: string;
   target_author_id: string;
+  scheduled_for?: string;
 }
 
 export interface StudioWordPressStatus {
@@ -127,6 +128,7 @@ export interface StudioWordPressStatus {
   operations: {
     action: StudioWordPressAction;
     status: "queued" | "running" | "unknown" | "failed" | "succeeded";
+    scheduled_for?: string | null;
     remote_id: string | null;
     remote_url: string | null;
     failure_code: string | null;

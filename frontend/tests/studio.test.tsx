@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StudioWorkspace } from "@/components/studio/workspace";
 import { ApiError } from "@/lib/api";
@@ -203,6 +203,57 @@ describe("campaign content studio", () => {
       [campaignId, approved.id, "draft", target, true],
       [campaignId, approved.id, "publish", target, false],
     ]);
+  });
+
+  it("submits one timed publication and waits until it is due before polling", async () => {
+    const approved = storeVersion(article({ approval }));
+    const target = { target_url: "https://wordpress.example.test/staging", target_author_id: "7" };
+    const base = { ...target, target_changed: false };
+    const draft = {
+      action: "draft", status: "succeeded", remote_id: "41", remote_url: null, failure_code: null,
+      reconciliation_pending: false, reconciliation_finished_at: null,
+    };
+    const scheduledFor = new Date(2036, 5, 14, 10, 30).toISOString();
+    const image = { ...draft, action: "image", status: "queued", remote_id: null, scheduled_for: scheduledFor };
+    const publication = { ...image, action: "publish" };
+    api.wordpressStatus
+      .mockResolvedValueOnce({ ...base, operations: [draft] })
+      .mockResolvedValueOnce({ ...base, operations: [draft, { ...image, status: "running" }, publication] });
+    api.wordpressCommand.mockResolvedValueOnce({ ...base, operations: [draft, image, publication] });
+
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(await library().findByRole("button", { name: approved.payload.title }));
+    const wordpress = within(await screen.findByRole("region", { name: "Тестовый WordPress" }));
+    const schedule = wordpress.getByLabelText("Дата и время публикации");
+    const submit = wordpress.getByRole("button", { name: "Запланировать публикацию в WordPress" });
+    expect(submit).toBeDisabled();
+
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(2036, 5, 14, 10, 0));
+      fireEvent.change(schedule, { target: { value: "2036-06-14T09:59" } });
+      expect(schedule).toHaveAttribute("aria-invalid", "true");
+      expect(submit).toBeDisabled();
+      fireEvent.change(schedule, { target: { value: "2036-06-14T10:30" } });
+      expect(submit).toBeEnabled();
+      await act(async () => { fireEvent.click(submit); });
+
+      expect(api.wordpressCommand.mock.calls).toEqual([
+        [campaignId, approved.id, "publish", { ...target, scheduled_for: scheduledFor }, false],
+      ]);
+      expect(wordpress.getByText("Публикация запланирована")).toHaveAttribute("role", "status");
+      expect(wordpress.getByText("Запланированное время").querySelector("time"))
+        .toHaveAttribute("datetime", scheduledFor);
+      expect(wordpress.queryByText("Публикация ожидает загрузки иллюстрации")).not.toBeInTheDocument();
+
+      await act(async () => { await vi.advanceTimersByTimeAsync(1_799_999); });
+      expect(api.wordpressStatus).toHaveBeenCalledTimes(1);
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+      expect(api.wordpressStatus).toHaveBeenCalledTimes(2);
+      expect(wordpress.getByText("Публикация ожидает загрузки иллюстрации")).toHaveAttribute("role", "status");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("distinguishes a failed WordPress reconciliation from a read that did not confirm the result", async () => {

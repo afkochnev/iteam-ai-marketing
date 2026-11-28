@@ -93,6 +93,10 @@ class StudioWordPressOperation(Base):
             "(status = 'unknown' AND reconcile_finished_at IS NOT NULL)",
             name="reconciliation_failure",
         ),
+        CheckConstraint(
+            "scheduled_for IS NULL OR action IN ('image','publish')",
+            name="schedule",
+        ),
         Index("ix_studio_wp_operations_queue", "status", "requested_at"),
     )
 
@@ -104,6 +108,7 @@ class StudioWordPressOperation(Base):
     requested_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    scheduled_for: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     lease_id: Mapped[UUID | None]
