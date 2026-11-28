@@ -20,7 +20,8 @@ def upgrade() -> None:
     op.create_check_constraint(
         op.f("ck_studio_wordpress_operations_schedule"),
         "studio_wordpress_operations",
-        "scheduled_for IS NULL OR action IN ('image','publish')",
+        "scheduled_for IS NULL OR (action IN ('image','publish') "
+        "AND (started_at IS NULL OR started_at >= scheduled_for))",
     )
     op.execute(
         """

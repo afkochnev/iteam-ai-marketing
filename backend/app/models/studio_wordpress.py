@@ -94,7 +94,8 @@ class StudioWordPressOperation(Base):
             name="reconciliation_failure",
         ),
         CheckConstraint(
-            "scheduled_for IS NULL OR action IN ('image','publish')",
+            "scheduled_for IS NULL OR (action IN ('image','publish') "
+            "AND (started_at IS NULL OR started_at >= scheduled_for))",
             name="schedule",
         ),
         Index("ix_studio_wp_operations_queue", "status", "requested_at"),

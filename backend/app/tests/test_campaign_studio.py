@@ -22,6 +22,8 @@ from httpx import (
     Response,
 )
 from PIL import Image
+from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.dependencies import get_read_snapshot_session
@@ -38,6 +40,7 @@ from app.integrations.studio_wordpress import (
 from app.main import app
 from app.models.campaign import Campaign
 from app.models.creative_generation import CreativeGenerationStatus
+from app.models.studio_wordpress import StudioWordPressOperation
 from app.models.user import User, UserRole
 from app.models.workspace import DEFAULT_WORKSPACE_ID, Workspace, WorkspaceMembership, WorkspaceRole
 from app.services.creative_generation_service import CreativeGenerationService
@@ -915,6 +918,22 @@ async def test_staging_wordpress_reconciles_lost_responses_without_repeating_wri
             assert conflicting.status_code == 409, conflicting.text
             assert conflicting.json()["error"]["code"] == "WORDPRESS_SCHEDULE_CONFLICT"
             FrozenWordPressClock.current = scheduled_for - timedelta(microseconds=1)
+            operation = StudioWordPressOperation
+            with pytest.raises(IntegrityError, match="ck_studio_wordpress_operations_schedule"):
+                async with sessions.begin() as savepoint:
+                    await savepoint.execute(
+                        update(operation)
+                        .where(
+                            operation.action == "image",
+                            operation.status == "queued",
+                            operation.scheduled_for == scheduled_for,
+                        )
+                        .values(
+                            status="running",
+                            started_at=FrozenWordPressClock.current,
+                            lease_id=uuid4(),
+                        )
+                    )
             monkeypatch.setattr(studio_wordpress_worker, "datetime", FrozenWordPressClock)
             assert not await run_next_wordpress_operation(sessions, adapter)
 
