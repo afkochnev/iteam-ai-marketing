@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import CampaignSections, { type CampaignSection } from "../components/campaign-sections";
@@ -8,15 +8,15 @@ import EditCampaignPage from "../app/campaigns/[id]/edit/page";
 import NewCampaignPage from "../app/campaigns/new/page";
 import CampaignsPage from "../app/campaigns/page";
 
-const { replace, push, list, get, workspace, agentsList, agentRunList, agentRunGet, create, taskCreate, taskGet, taskRun, update, previewChange, applyChange, prepareStrategyRevision, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList, contentList, contentGet, activityList, publicationList, publicationCalendar, publicationCreate, publicationScheduleContent, publicationApprove, publicationSchedule, publicationCancel, publicationPublishNow, publicationRetry, publicationReconcilePublished, publicationReconcileNotPublished, feedbackList, feedbackAnalyses, feedbackCreate, feedbackGenerate, feedbackAccept, feedbackReject, performance, plansList, planGenerate, planTransition, planRevise, planAddItem, planUpdateItem, planRemoveItem, planReorder, manualMetrics } = vi.hoisted(() => ({
-  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), workspace: vi.fn(), agentsList: vi.fn(), agentRunList: vi.fn(), agentRunGet: vi.fn(), create: vi.fn(), taskCreate: vi.fn(), taskGet: vi.fn(), taskRun: vi.fn(), update: vi.fn(), previewChange: vi.fn(), applyChange: vi.fn(), prepareStrategyRevision: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(), contentList: vi.fn(), contentGet: vi.fn(), activityList: vi.fn(), publicationList: vi.fn(), publicationCalendar: vi.fn(), publicationCreate: vi.fn(), publicationScheduleContent: vi.fn(), publicationApprove: vi.fn(), publicationSchedule: vi.fn(), publicationCancel: vi.fn(), publicationPublishNow: vi.fn(), publicationRetry: vi.fn(), publicationReconcilePublished: vi.fn(), publicationReconcileNotPublished: vi.fn(), feedbackList: vi.fn(), feedbackAnalyses: vi.fn(), feedbackCreate: vi.fn(), feedbackGenerate: vi.fn(), feedbackAccept: vi.fn(), feedbackReject: vi.fn(), performance: vi.fn(), plansList: vi.fn(), planGenerate: vi.fn(), planTransition: vi.fn(), planRevise: vi.fn(), planAddItem: vi.fn(), planUpdateItem: vi.fn(), planRemoveItem: vi.fn(), planReorder: vi.fn(), manualMetrics: vi.fn(),
+const { replace, push, list, get, workspace, agentsList, agentRunList, agentRunGet, create, taskCreate, taskGet, taskRun, update, previewChange, applyChange, prepareStrategyRevision, archive, generateStrategy, approveStrategy, requestRevision, rejectStrategy, taskList, approvalList, contentList, contentGet, activityList, publicationList, publicationCalendar, publicationCreate, publicationScheduleContent, publicationApprove, publicationSchedule, publicationCancel, publicationPublishNow, publicationRetry, publicationReconcilePublished, publicationReconcileNotPublished, feedbackList, feedbackAnalyses, feedbackCreate, feedbackGenerate, feedbackAccept, feedbackReject, performance, wordpressPerformance, plansList, planGenerate, planTransition, planRevise, planAddItem, planUpdateItem, planRemoveItem, planReorder, manualMetrics } = vi.hoisted(() => ({
+  replace: vi.fn(), push: vi.fn(), list: vi.fn(), get: vi.fn(), workspace: vi.fn(), agentsList: vi.fn(), agentRunList: vi.fn(), agentRunGet: vi.fn(), create: vi.fn(), taskCreate: vi.fn(), taskGet: vi.fn(), taskRun: vi.fn(), update: vi.fn(), previewChange: vi.fn(), applyChange: vi.fn(), prepareStrategyRevision: vi.fn(), archive: vi.fn(), generateStrategy: vi.fn(), approveStrategy: vi.fn(), requestRevision: vi.fn(), rejectStrategy: vi.fn(), taskList: vi.fn(), approvalList: vi.fn(), contentList: vi.fn(), contentGet: vi.fn(), activityList: vi.fn(), publicationList: vi.fn(), publicationCalendar: vi.fn(), publicationCreate: vi.fn(), publicationScheduleContent: vi.fn(), publicationApprove: vi.fn(), publicationSchedule: vi.fn(), publicationCancel: vi.fn(), publicationPublishNow: vi.fn(), publicationRetry: vi.fn(), publicationReconcilePublished: vi.fn(), publicationReconcileNotPublished: vi.fn(), feedbackList: vi.fn(), feedbackAnalyses: vi.fn(), feedbackCreate: vi.fn(), feedbackGenerate: vi.fn(), feedbackAccept: vi.fn(), feedbackReject: vi.fn(), performance: vi.fn(), wordpressPerformance: vi.fn().mockResolvedValue({ placements: [], analytics_status: "not_configured" }), plansList: vi.fn(), planGenerate: vi.fn(), planTransition: vi.fn(), planRevise: vi.fn(), planAddItem: vi.fn(), planUpdateItem: vi.fn(), planRemoveItem: vi.fn(), planReorder: vi.fn(), manualMetrics: vi.fn(),
 }));
 vi.mock("next/navigation", () => ({ useRouter: () => ({ replace, push }), usePathname: () => "/campaigns/campaign-1", useParams: () => ({ id: "campaign-1" }) }));
 vi.mock("@/components/auth-provider", () => ({ useAuth: () => ({ user: { role: "ADMIN" }, loading: false }) }));
 vi.mock("@/lib/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api")>();
   return { ...actual, experimentsApi: {...actual.experimentsApi, list: vi.fn().mockResolvedValue([])}, campaignsApi: { list, get, workspace, create, update, previewChange, applyChange, prepareStrategyRevision, archive, generateStrategy, approveStrategy, requestStrategyRevision: requestRevision, rejectStrategy }, agentsApi: { list: agentsList }, agentRunsApi: { ...actual.agentRunsApi, list: agentRunList, get: agentRunGet }, approvalsApi: { list: approvalList, get: vi.fn() }, tasksApi: { ...actual.tasksApi, list: taskList, get: taskGet, create: taskCreate, run: taskRun }, contentApi: { ...actual.contentApi, list: contentList, get: contentGet }, activitiesApi: { list: activityList }, feedbackApi: { list: feedbackList, analyses: feedbackAnalyses, create: feedbackCreate, generate: feedbackGenerate, accept: feedbackAccept, reject: feedbackReject }, campaignKpisApi: { list: vi.fn().mockResolvedValue([]) },
-  metricsApi: { campaign: performance }, publicationPlansApi: { list: plansList, generate: planGenerate, submit: planTransition, approve: planTransition, reject: planTransition, revise: planRevise, addItem: planAddItem, updateItem: planUpdateItem, removeItem: planRemoveItem, reorder: planReorder }, publicationsApi: { listCampaign: publicationList, calendar: publicationCalendar, approve: publicationApprove, create: publicationCreate, scheduleContent: publicationScheduleContent, schedule: publicationSchedule, cancel: publicationCancel, publishNow: publicationPublishNow, retry: publicationRetry, reconcilePublished: publicationReconcilePublished, reconcileNotPublished: publicationReconcileNotPublished, addManualMetrics: manualMetrics } };
+  metricsApi: { campaign: performance, wordpress: wordpressPerformance }, publicationPlansApi: { list: plansList, generate: planGenerate, submit: planTransition, approve: planTransition, reject: planTransition, revise: planRevise, addItem: planAddItem, updateItem: planUpdateItem, removeItem: planRemoveItem, reorder: planReorder }, publicationsApi: { listCampaign: publicationList, calendar: publicationCalendar, approve: publicationApprove, create: publicationCreate, scheduleContent: publicationScheduleContent, schedule: publicationSchedule, cancel: publicationCancel, publishNow: publicationPublishNow, retry: publicationRetry, reconcilePublished: publicationReconcilePublished, reconcileNotPublished: publicationReconcileNotPublished, addManualMetrics: manualMetrics } };
 });
 
 const campaign = {
@@ -633,6 +633,34 @@ describe("PR32 functional campaign routes",()=>{
   render(<CampaignDetailsPage sections={["performance"]}/>);
   const list = await screen.findByRole("heading",{name:"Результаты публикаций"});
   await waitFor(()=>expect(list.closest("section")?.querySelector("ul a")?.textContent).toBe("Exact performance title"));
+ });
+ it("shows verified WordPress placement even when social performance fails", async () => {
+  performance.mockRejectedValue(new Error("Социальные метрики недоступны"));
+  const placement = {
+    placement_id: "placement",
+    site_url: "https://wordpress.example",
+    post_id: "9007199254740993",
+    canonical_url: "https://wordpress.example/confirmed-article/",
+    article_asset_id: "article",
+    original_version_id: "original-version",
+    current_version_id: "confirmed-version-id",
+    current_version_number: 3,
+    current_title: "Подтверждённая статья",
+    current_revision_id: "confirmed-revision",
+    published_at: "2026-11-28T08:00:00Z",
+  };
+  wordpressPerformance.mockResolvedValueOnce({ placements: [placement], analytics_status: "not_configured" });
+  render(<CampaignDetailsPage sections={["performance"]} />);
+  const results = await screen.findByRole("table", { name: "Страницы WordPress" });
+  expect(within(results).getByRole("link", { name: placement.current_title })).toHaveAttribute("href", placement.canonical_url);
+  expect(within(results).getByText(placement.site_url)).toBeInTheDocument();
+  expect(within(results).getByText(placement.post_id)).toBeInTheDocument();
+  expect(within(results).getByTitle(placement.current_version_id)).toHaveTextContent("v3");
+  expect(within(results).queryByText("0")).not.toBeInTheDocument();
+  expect(screen.getByText("Сбор веб-метрик пока не подключён.")).toBeInTheDocument();
+  expect(screen.getByText("Метрики соцсетей пока недоступны.")).toBeInTheDocument();
+  expect(wordpressPerformance).toHaveBeenCalledWith("campaign-1", expect.any(AbortSignal));
+  performance.mockResolvedValue(null);
  });
  it.each([["overview","Проверить материалы"],["strategy","Стратегия кампании и согласование"],["content","Статьи"],["plan","Медиаплан"],["publications","Публикации кампании"],["performance","Результаты и оптимизация"],["tasks","Задачи"],["activity","Активность"]] as const)("renders %s purpose with persistent navigation",async(section,title)=>{
   // Earlier suite initializes these persisted read fixtures; each route owns only its functional area.

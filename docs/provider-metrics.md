@@ -15,3 +15,21 @@ No schema migration or production acceptance is part of PR35. All provider calls
 References: [Telegram getMessagesViews](https://core.telegram.org/method/messages.getMessagesViews), [Telethon StringSession](https://docs.telethon.dev/en/stable/concepts/sessions.html), [VK official wall API schema](https://github.com/VKCOM/vk-api-schema/blob/master/wall/methods.json).
 
 Provider metrics are target-bound. A successful publication persists the exact external target (`provider_target_id`): Telegram uses the numeric chat id returned by Bot API; VK uses the exact negative wall owner id. Automatic/provider sync runs only when this durable target matches the configured metrics target. Telegram accepts leading ASCII zeroes in stored numeric chat IDs. For example, `-000987` matches `-987`. This also applies to manual confirmations and preserves their original placement evidence. Legacy PUBLISHED rows without a target, and rows bound to another target, are never inferred or synced automatically. This prevents historical test-channel message/post ids from being reinterpreted inside a production peer or wall.
+
+## WordPress page identity
+
+The campaign Results tab reads `GET /campaigns/{campaign_id}/performance/wordpress`
+as a campaign member. A confirmed publication supplies the WordPress site, post
+ID and canonical page URL. The site and post ID together identify the external
+page. The Studio placement ID and the original publish attempt's recorded
+finish time also stay stable through updates and restores.
+
+The exact article version shown is the original version until an update or
+restore is confirmed. Pending and uncertain operations leave the previously
+confirmed version visible. The identity comes from saved receipts and remains
+available when the test WordPress configuration changes.
+
+WordPress analytics has status `not_configured`. This read uses the existing
+publication history, so it contacts no provider and emits no metric snapshots.
+The section lists current page identities independently of the date and channel
+filters used for social results.

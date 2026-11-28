@@ -40,7 +40,7 @@ from app.integrations.studio_wordpress import (
 from app.main import app
 from app.models.campaign import Campaign
 from app.models.creative_generation import CreativeGenerationStatus
-from app.models.studio_wordpress import StudioWordPressOperation
+from app.models.studio_wordpress import StudioWordPressDelivery, StudioWordPressOperation
 from app.models.user import User, UserRole
 from app.models.workspace import DEFAULT_WORKSPACE_ID, Workspace, WorkspaceMembership, WorkspaceRole
 from app.services.creative_generation_service import CreativeGenerationService
@@ -982,6 +982,75 @@ async def test_staging_wordpress_reconciles_lost_responses_without_repeating_wri
     assert (await studio_client.post(f"{route}/draft", json=confirmation)).status_code == 404
 
 
+async def test_wordpress_performance_keeps_site_scoped_identity_across_configuration_changes(
+    studio_client: AsyncClient,
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "app_env", "test")
+    editor, _, campaign, _ = await seed_studio(db_session)
+    authenticate(studio_client, editor)
+    route = f"/api/v1/campaigns/{campaign.id}/studio"
+    created = await studio_client.post(
+        f"{route}/assets/articles", json={"title": "Shared guide", "body": "One article"}
+    )
+    assert created.status_code == 201, created.text
+    version = created.json()["id"]
+    approved = await studio_client.post(f"{route}/versions/{version}/approve")
+    assert approved.status_code == 200, approved.text
+
+    first = "https://wordpress-first.example.test/blog"
+    second = "https://wordpress-second.example.test/blog"
+    unverified = "https://wordpress-third.example.test/blog"
+    site_replies = {first: f"{first}/guide/", second: f"{second}/guide/", unverified: f"{first}/"}
+    post_id = 2**53 + 1
+    now = datetime.now(UTC)
+    identities: dict[str, str] = {}
+    for site_url, canonical_url in site_replies.items():
+        delivery = StudioWordPressDelivery(
+            workspace_id=DEFAULT_WORKSPACE_ID,
+            campaign_id=campaign.id,
+            article_version_id=UUID(version),
+            target_url=site_url,
+            target_author_id=42,
+        )
+        db_session.add(delivery)
+        await db_session.flush()
+        identities[site_url] = str(delivery.id)
+        receipt = StudioWordPressOperation(
+            delivery_id=delivery.id, action="publish", status="queued", requested_by=editor.id
+        )
+        db_session.add(receipt)
+        await db_session.flush()
+        receipt.status, receipt.started_at = "running", now
+        await db_session.flush()
+        receipt.status, receipt.finished_at = "succeeded", now
+        receipt.remote_id, receipt.remote_url = post_id, canonical_url
+        await db_session.flush()
+
+    monkeypatch.setattr(settings, "studio_wordpress_url", None)
+    monkeypatch.setattr(settings, "studio_wordpress_author_id", None)
+    metrics_path = f"/api/v1/campaigns/{campaign.id}/performance/wordpress"
+    response = await studio_client.get(metrics_path)
+    assert response.status_code == 200, response.text
+    assert response.json()["analytics_status"] == "not_configured"
+    pages = response.json()["placements"]
+    assert len(pages) == 2
+    by_site = {page["site_url"]: page for page in pages}
+    assert set(by_site) == {first, second}
+    for site, page in by_site.items():
+        assert page["post_id"] == str(post_id)
+        assert page["placement_id"] == identities[site]
+        assert page["canonical_url"] == site_replies[site]
+        assert page["current_version_id"] == version
+        assert page["current_revision_id"] is None
+
+    monkeypatch.setattr(settings, "app_env", "production")
+    disabled = await studio_client.get(metrics_path)
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json()["placements"] == []
+
+
 @pytest.mark.skipif(
     not os.environ.get("ITEAM_WORDPRESS_ACCEPTANCE_URL"),
     reason="Requires an isolated WordPress fixture",
@@ -1002,9 +1071,26 @@ async def test_studio_reconciles_writes_on_a_real_wordpress_site(
     monkeypatch.setattr(settings, "studio_wordpress_author_id", target.author_id)
     monkeypatch.setattr(settings, "creative_media_root", tmp_path)
 
-    editor, _, campaign, _ = await seed_studio(db_session)
+    editor, outsider, campaign, other_campaign = await seed_studio(db_session)
     authenticate(studio_client, editor)
     path = f"/api/v1/campaigns/{campaign.id}/studio"
+
+    async def reject_provider_request(_transport: AsyncHTTPTransport, request: Request) -> Response:
+        pytest.fail(f"Reading placements contacted {request.url.path}")
+
+    async def placements(campaign_id: UUID = campaign.id) -> list[dict[str, Any]]:
+        with monkeypatch.context() as isolated:
+            isolated.setattr(AsyncHTTPTransport, "handle_async_request", reject_provider_request)
+            response = await studio_client.get(
+                f"/api/v1/campaigns/{campaign_id}/performance/wordpress"
+            )
+        assert response.status_code == 200, response.text
+        assert response.headers["Cache-Control"] == "private, no-store"
+        view = response.json()
+        assert view["analytics_status"] == "not_configured"
+        return view["placements"]
+
+    assert await placements() == []
     version, image_bytes = await create_wordpress_article(studio_client, path)
     approved = await studio_client.post(f"{path}/versions/{version}/approve")
     assert approved.status_code == 200, approved.text
@@ -1056,6 +1142,7 @@ async def test_studio_reconciles_writes_on_a_real_wordpress_site(
             unknown = await operation(action)
             assert unknown["status"] == "unknown", (unknown, writes)
             assert unknown["failure_code"] == "WORDPRESS_CONNECTION_ERROR", (unknown, writes)
+            assert await placements() == []
             assert not await run_next_wordpress_operation(sessions, adapter)
             await command(f"{action}/reconcile")
             assert await run_next_wordpress_operation(sessions, adapter)
@@ -1096,6 +1183,7 @@ async def test_studio_reconciles_writes_on_a_real_wordpress_site(
         )
         assert queued.status_code == 200, queued.text
         assert queued.json()["draft_preview_url"] == preview_url
+        assert await placements() == []
         FrozenWordPressClock.current = scheduled_for - timedelta(microseconds=1)
         monkeypatch.setattr(studio_wordpress_worker, "datetime", FrozenWordPressClock)
         writes_before_due = writes.copy()
@@ -1108,6 +1196,30 @@ async def test_studio_reconciles_writes_on_a_real_wordpress_site(
         published = await reconcile_accepted_write("publish")
         assert published["remote_id"] == post_id
         assert not await run_next_wordpress_operation(sessions, adapter)
+
+        pages = await placements()
+        assert len(pages) == 1
+        original_placement = pages[0]
+        assert UUID(original_placement["placement_id"]).version == 4
+        assert datetime.fromisoformat(original_placement["published_at"]) == scheduled_for
+        assert original_placement == {
+            "placement_id": original_placement["placement_id"],
+            "site_url": target.url,
+            "post_id": post_id,
+            "canonical_url": published["remote_url"],
+            "article_asset_id": approved.json()["asset_id"],
+            "original_version_id": version,
+            "current_version_id": version,
+            "current_version_number": 1,
+            "current_title": "Guide",
+            "current_revision_id": None,
+            "published_at": original_placement["published_at"],
+        }
+        assert await placements(other_campaign.id) == []
+        authenticate(studio_client, outsider)
+        denied = await studio_client.get(f"/api/v1/campaigns/{campaign.id}/performance/wordpress")
+        assert denied.status_code == 403, denied.text
+        authenticate(studio_client, editor)
 
         article = await public.get(draft_url)
         assert article.status_code == 200, article.text
@@ -1136,12 +1248,15 @@ async def test_studio_reconciles_writes_on_a_real_wordpress_site(
                 item for item in (await revisions())["revisions"] if item["id"] == command_id
             )
 
-        async def reconcile_revision(command_id: str, phase: str) -> dict[str, Any]:
+        async def reconcile_revision(
+            command_id: str, phase: str, confirmed_placement: dict[str, Any]
+        ) -> dict[str, Any]:
             assert await run_next_wordpress_operation(sessions, adapter)
             unknown = await revision_status(command_id)
             assert unknown["status"] == "unknown", (unknown, writes)
             assert unknown["phase"] == phase
             assert unknown["failure_code"] == "WORDPRESS_CONNECTION_ERROR"
+            assert await placements() == [confirmed_placement]
             assert not await run_next_wordpress_operation(sessions, adapter)
             writes_before_reconciliation = writes.copy()
             response = await studio_client.post(
@@ -1206,8 +1321,9 @@ async def test_studio_reconciles_writes_on_a_real_wordpress_site(
             queued_revision = await studio_client.post(revisions_url, json=update)
             assert queued_revision.status_code == 200, queued_revision.text
         assert len((await revisions())["revisions"]) == 1
+        assert await placements() == [original_placement]
 
-        image_confirmed = await reconcile_revision(update_id, "image")
+        image_confirmed = await reconcile_revision(update_id, "image", original_placement)
         assert image_confirmed["status"] == "queued", image_confirmed
         assert image_confirmed["phase"] == "replace"
         before_replace = await public.get(draft_url)
@@ -1215,8 +1331,16 @@ async def test_studio_reconciles_writes_on_a_real_wordpress_site(
         assert before_replace.json()["featured_media"] == int(media_id)
         assert before_replace.json()["content"] == original["content"]
 
-        updated = await reconcile_revision(update_id, "replace")
+        updated = await reconcile_revision(update_id, "replace", original_placement)
         assert updated["status"] == "succeeded", updated
+        revised_placement = {
+            **original_placement,
+            "current_version_id": revised_version,
+            "current_version_number": 2,
+            "current_title": "Guide revised",
+            "current_revision_id": update_id,
+        }
+        assert await placements() == [revised_placement]
         current = await revisions()
         assert current["current_version_id"] == revised_version
         assert current["current_revision_id"] == update_id
@@ -1251,8 +1375,10 @@ async def test_studio_reconciles_writes_on_a_real_wordpress_site(
         assert not await run_next_wordpress_operation(sessions, adapter)
         accepted = await studio_client.post(revisions_url, json=restore)
         assert accepted.status_code == 200, accepted.text
-        restored = await reconcile_revision(restore_id, "replace")
+        assert await placements() == [revised_placement]
+        restored = await reconcile_revision(restore_id, "replace", revised_placement)
         assert restored["status"] == "succeeded", restored
+        assert await placements() == [{**original_placement, "current_revision_id": restore_id}]
         current = await revisions()
         assert current["current_version_id"] == version
         assert current["current_revision_id"] == restore_id

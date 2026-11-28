@@ -52,8 +52,12 @@ class WordPressDeliveryView(BaseModel):
     operations: list[WordPressOperationView] = Field(default_factory=list)
 
 
+def wordpress_staging_enabled() -> bool:
+    return settings.app_env.lower() in {"development", "test"}
+
+
 def configured_wordpress_target() -> WordPressTarget | None:
-    if settings.app_env.lower() not in {"development", "test"}:
+    if not wordpress_staging_enabled():
         return None
     return WordPressTarget.from_config(
         settings.studio_wordpress_url, settings.studio_wordpress_author_id
