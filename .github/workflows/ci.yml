@@ -203,11 +203,15 @@ jobs:
           name: migration-apply-drill-proof
           path: migration-apply-drill-proof.json
           if-no-files-found: error
-      - name: Isolated upgrade, rollback and failure recovery with published images
+      # Keep this schema-0028 drill on the proven historical releases as main advances.
+      - name: Isolated upgrade, rollback and failure recovery on schema 0028
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          python3 scripts/release_drill.py --latest-two --output release-drill-proof.json
+          python3 scripts/release_drill.py \
+            --from-build-run 44934401980 \
+            --to-build-run 44937076752 \
+            --output release-drill-proof.json
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: release-drill-proof

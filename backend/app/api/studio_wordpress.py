@@ -13,6 +13,7 @@ from app.services.studio_wordpress import (
     StudioWordPressService,
     WordPressConfirmation,
     WordPressDeliveryView,
+    WordPressPublicationConfirmation,
 )
 
 router = APIRouter(
@@ -52,7 +53,7 @@ async def request_wordpress_draft(
 async def request_wordpress_publication(
     campaign_id: UUID,
     version_id: UUID,
-    confirmation: WordPressConfirmation,
+    confirmation: WordPressPublicationConfirmation,
     user: CurrentUser,
     session: SessionDependency,
 ) -> WordPressDeliveryView:

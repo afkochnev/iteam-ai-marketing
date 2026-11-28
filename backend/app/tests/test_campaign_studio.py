@@ -2,6 +2,7 @@ import json
 import os
 from base64 import b64encode
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 from hashlib import sha256
 from io import BytesIO
 from pathlib import Path
@@ -21,6 +22,8 @@ from httpx import (
     Response,
 )
 from PIL import Image
+from sqlalchemy import update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.api.dependencies import get_read_snapshot_session
@@ -37,10 +40,11 @@ from app.integrations.studio_wordpress import (
 from app.main import app
 from app.models.campaign import Campaign
 from app.models.creative_generation import CreativeGenerationStatus
+from app.models.studio_wordpress import StudioWordPressOperation
 from app.models.user import User, UserRole
 from app.models.workspace import DEFAULT_WORKSPACE_ID, Workspace, WorkspaceMembership, WorkspaceRole
 from app.services.creative_generation_service import CreativeGenerationService
-from app.workers import creative_generation_tasks
+from app.workers import creative_generation_tasks, studio_wordpress_worker
 from app.workers.studio_wordpress_worker import run_next_wordpress_operation
 
 pytestmark = pytest.mark.integration
@@ -671,6 +675,15 @@ async def test_wordpress_image_lookups_require_integer_author_and_parent_post_id
         assert not adapter.write_attempted
 
 
+class FrozenWordPressClock(datetime):
+    current: datetime
+
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> datetime:
+        assert tz is UTC
+        return cls.current
+
+
 async def create_wordpress_article(client: AsyncClient, path: str) -> tuple[str, bytes]:
     visual = await client.post(
         f"{path}/assets/illustrations",
@@ -697,7 +710,9 @@ async def create_wordpress_article(client: AsyncClient, path: str) -> tuple[str,
     return article.json()["id"], image_bytes
 
 
+@pytest.mark.parametrize("schedule_publication", [False, True], ids=["immediate", "scheduled"])
 async def test_staging_wordpress_reconciles_lost_responses_without_repeating_writes(
+    schedule_publication: bool,
     studio_client: AsyncClient,
     db_session: AsyncSession,
     tmp_path: Path,
@@ -854,10 +869,86 @@ async def test_staging_wordpress_reconciles_lost_responses_without_repeating_wri
             assert changed["target_changed"] is True
             assert changed["draft_preview_url"] is None
 
-        queued = await studio_client.post(f"{route}/publish", json=confirmation)
-        assert queued.status_code == 200
-        assert queued.json()["draft_preview_url"] is None
-        assert (await studio_client.post(f"{route}/publish", json=confirmation)).status_code == 200
+        publish_path = f"{route}/publish"
+        publication = confirmation
+        scheduled_for = datetime.now(UTC) + timedelta(days=1) if schedule_publication else None
+        calls_before_publication = calls.copy()
+        assert confirmed["scheduled_for"] is None
+        if scheduled_for is not None:
+            past = await studio_client.post(
+                publish_path,
+                json={
+                    **confirmation,
+                    "scheduled_for": (scheduled_for - timedelta(days=2)).isoformat(),
+                },
+            )
+            assert past.status_code == 409, past.text
+            assert past.json()["error"]["code"] == "WORDPRESS_SCHEDULE_IN_PAST"
+            naive = await studio_client.post(
+                publish_path,
+                json={
+                    **confirmation,
+                    "scheduled_for": scheduled_for.replace(tzinfo=None).isoformat(),
+                },
+            )
+            assert naive.status_code == 422, naive.text
+            assert set(await state()) == {"draft"}
+            publication = {**confirmation, "scheduled_for": scheduled_for.isoformat()}
+
+        queued = await studio_client.post(publish_path, json=publication)
+        assert queued.status_code == 200, queued.text
+        expected_preview = f"{origin}/?p=41&preview=true" if scheduled_for is not None else None
+        assert queued.json()["draft_preview_url"] == expected_preview
+        duplicate = publication
+        if scheduled_for is not None:
+            same_instant = scheduled_for.astimezone(timezone(timedelta(hours=2)))
+            duplicate = {**confirmation, "scheduled_for": same_instant.isoformat()}
+        repeated = await studio_client.post(publish_path, json=duplicate)
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["operations"] == queued.json()["operations"]
+
+        if scheduled_for is not None:
+            conflicting = await studio_client.post(
+                publish_path,
+                json={
+                    **confirmation,
+                    "scheduled_for": (scheduled_for + timedelta(hours=1)).isoformat(),
+                },
+            )
+            assert conflicting.status_code == 409, conflicting.text
+            assert conflicting.json()["error"]["code"] == "WORDPRESS_SCHEDULE_CONFLICT"
+            FrozenWordPressClock.current = scheduled_for - timedelta(microseconds=1)
+            operation = StudioWordPressOperation
+            with pytest.raises(IntegrityError, match="ck_studio_wordpress_operations_schedule"):
+                async with sessions.begin() as savepoint:
+                    await savepoint.execute(
+                        update(operation)
+                        .where(
+                            operation.action == "image",
+                            operation.status == "queued",
+                            operation.scheduled_for == scheduled_for,
+                        )
+                        .values(
+                            status="running",
+                            started_at=FrozenWordPressClock.current,
+                            lease_id=uuid4(),
+                        )
+                    )
+            monkeypatch.setattr(studio_wordpress_worker, "datetime", FrozenWordPressClock)
+            assert not await run_next_wordpress_operation(sessions, adapter)
+
+        waiting = await state()
+        for action in ("image", "publish"):
+            assert waiting[action]["status"] == "queued"
+            scheduled_value = waiting[action]["scheduled_for"]
+            if scheduled_for is None:
+                assert scheduled_value is None
+            else:
+                assert datetime.fromisoformat(scheduled_value) == scheduled_for
+        assert calls == calls_before_publication
+        if scheduled_for is not None:
+            FrozenWordPressClock.current = scheduled_for
+
         assert await run_next_wordpress_operation(sessions, adapter)
         blocked = await state()
         assert blocked["image"]["status"] == "unknown"
@@ -999,7 +1090,20 @@ async def test_studio_reconciles_writes_on_a_real_wordpress_site(
         assert preview.status_code == 200
         assert "A &lt; B" in preview.text and "Next" in preview.text
 
-        await command("publish")
+        scheduled_for = datetime.now(UTC) + timedelta(days=1)
+        queued = await studio_client.post(
+            f"{route}/publish", json={**confirmation, "scheduled_for": scheduled_for.isoformat()}
+        )
+        assert queued.status_code == 200, queued.text
+        assert queued.json()["draft_preview_url"] == preview_url
+        FrozenWordPressClock.current = scheduled_for - timedelta(microseconds=1)
+        monkeypatch.setattr(studio_wordpress_worker, "datetime", FrozenWordPressClock)
+        writes_before_due = writes.copy()
+        assert not await run_next_wordpress_operation(sessions, adapter)
+        assert writes == writes_before_due
+        assert (await public.get(draft_url)).status_code in (401, 403, 404)
+
+        FrozenWordPressClock.current = scheduled_for
         media_id = (await reconcile_accepted_write("image"))["remote_id"]
         published = await reconcile_accepted_write("publish")
         assert published["remote_id"] == post_id

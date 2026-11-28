@@ -104,7 +104,10 @@ async def _claim(session: AsyncSession, target: WordPressTarget) -> Claim | None
                 image_ready,
             ),
             or_(
-                operation.status == WordPressState.QUEUED,
+                and_(
+                    operation.status == WordPressState.QUEUED,
+                    or_(operation.scheduled_for.is_(None), operation.scheduled_for <= now),
+                ),
                 and_(
                     operation.status == WordPressState.UNKNOWN,
                     operation.reconcile_requested_at.is_not(None),
