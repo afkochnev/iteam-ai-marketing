@@ -2,7 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { StudioWorkspace } from "@/components/studio/workspace";
 import { ApiError } from "@/lib/api";
-import type { StudioAsset, StudioVersion } from "@/lib/studio";
+import type { StudioAsset, StudioVersion, StudioWordPressRevisionsState } from "@/lib/studio";
 
 const api = vi.hoisted(() => ({
   assets: vi.fn(),
@@ -15,6 +15,9 @@ const api = vi.hoisted(() => ({
   websitePackage: vi.fn(),
   wordpressStatus: vi.fn(),
   wordpressCommand: vi.fn(),
+  wordpressRevisions: vi.fn(),
+  confirmWordPressRevision: vi.fn(),
+  reconcileWordPressRevision: vi.fn(),
   websiteStatus: vi.fn(),
   createWebsiteDraft: vi.fn(),
   publishWebsiteDraft: vi.fn(),
@@ -136,6 +139,9 @@ describe("campaign content studio", () => {
     api.media.mockResolvedValue(new Blob(["preview"], { type: "image/png" }));
     api.websiteStatus.mockResolvedValue({ enabled: false, page: null });
     api.wordpressStatus.mockResolvedValue({ target_url: null, target_author_id: null, target_changed: false, operations: [] });
+    api.wordpressRevisions.mockImplementation(async (_campaign: string, versionId: string) => ({
+      current_revision_id: null, current_version_id: versionId, versions: [], revisions: [],
+    }));
   });
 
   afterEach(() => {
@@ -393,6 +399,105 @@ describe("campaign content studio", () => {
     expect(wordpress.queryByRole("alert")).not.toBeInTheDocument();
     expect(api.wordpressStatus).toHaveBeenCalledTimes(3);
     expect(api.wordpressCommand).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a stale WordPress revision confirmation and restores an approved version on the same page", async () => {
+    const first = storeVersion(article({ approval }));
+    const second = storeVersion(article({
+      id: "article-2", version_number: 2, approval,
+      payload: { title: "Уточнённая стратегическая сессия", body: "Обновлённый текст" },
+    }));
+    const target = { target_url: "https://wordpress.example.test/staging", target_author_id: "7" };
+    const publicUrl = `${target.target_url}/iteam-article`;
+    api.wordpressStatus.mockImplementation(async (_campaign: string, versionId: string) => ({
+      ...target, target_changed: false,
+      operations: versionId === first.id ? [{
+        action: "publish", status: "succeeded", remote_id: "41", remote_url: publicUrl, failure_code: null,
+        reconciliation_pending: false, reconciliation_finished_at: null,
+      }] : [],
+    }));
+    const record = {
+      id: "revision-2", article_version_id: second.id, version_number: second.version_number,
+      title: second.payload.title, mode: "update", phase: "replace", status: "succeeded",
+      failure_code: null, reconciliation_pending: false, reconciliation_finished_at: null,
+      reconciliation_failure_code: null, requested_at: timestamp,
+    } as const;
+    const applied: StudioWordPressRevisionsState = {
+      current_revision_id: record.id, current_version_id: second.id,
+      versions: [{ id: first.id, version_number: first.version_number, title: first.payload.title, mode: "restore" }],
+      revisions: [record],
+    };
+    const queueRestore = {
+      ...record, id: "revision-3", article_version_id: first.id, version_number: first.version_number,
+      title: first.payload.title, mode: "restore", status: "queued",
+    } as const;
+    const unknown = { ...queueRestore, status: "unknown" } as const;
+    const restored: StudioWordPressRevisionsState = {
+      ...applied,
+      current_revision_id: queueRestore.id, current_version_id: first.id, versions: [],
+      revisions: [{ ...queueRestore, status: "succeeded" }, record],
+    };
+    api.wordpressRevisions
+      .mockResolvedValueOnce({
+        current_revision_id: null, current_version_id: first.id,
+        versions: [{ id: second.id, version_number: second.version_number, title: second.payload.title, mode: "update" }],
+        revisions: [],
+      } satisfies StudioWordPressRevisionsState)
+      .mockResolvedValueOnce(applied)
+      .mockResolvedValueOnce({ ...applied, revisions: [unknown, record] })
+      .mockResolvedValueOnce(restored);
+    api.confirmWordPressRevision
+      .mockRejectedValueOnce(new ApiError("Текущая версия изменилась.", 409, "WORDPRESS_REVISION_CONFLICT"))
+      .mockResolvedValueOnce({ ...applied, revisions: [queueRestore, record] });
+    api.reconcileWordPressRevision.mockResolvedValueOnce({
+      ...applied, revisions: [{ ...unknown, reconciliation_pending: true }, record],
+    });
+
+    render(<StudioWorkspace campaignId={campaignId} />);
+    fireEvent.click(await library().findByRole("button", { name: second.payload.title }));
+    fireEvent.click(await screen.findByRole("button", { name: "Смотреть v1" }));
+    const publication = within(await screen.findByRole("region", { name: "Тестовый WordPress" }));
+    const history = within(await publication.findByRole("region", { name: "Версии публикации WordPress" }));
+    const selector = await history.findByRole("combobox", { name: "Утверждённая версия для публикации" });
+    const refresh = history.getByRole("button", { name: "Обновить историю публикации" });
+    expect(publication.getByRole("link", { name: "Открыть публикацию в WordPress" })).toHaveAttribute("href", publicUrl);
+
+    fireEvent.change(selector, { target: { value: second.id } });
+    const updateButton = history.getByRole("button", { name: "Подтвердить обновление до v2" });
+    fireEvent.click(updateButton);
+    await history.findByRole("alert");
+    expect(updateButton).toBeDisabled();
+    expect(api.confirmWordPressRevision).toHaveBeenNthCalledWith(1, campaignId, first.id, {
+      ...target, command_id: expect.stringMatching(/^[\da-f-]{36}$/),
+      expected_revision_id: null, article_version_id: second.id, mode: "update",
+    });
+
+    fireEvent.click(refresh);
+    await history.findByText("Обновление до v2");
+    expect(updateButton).not.toBeInTheDocument();
+    fireEvent.change(selector, { target: { value: first.id } });
+    fireEvent.click(history.getByRole("button", { name: "Восстановить версию v1" }));
+    await history.findByText("В очереди");
+    expect(selector).toBeDisabled();
+    expect(api.confirmWordPressRevision).toHaveBeenNthCalledWith(2, campaignId, first.id, {
+      ...target, command_id: expect.stringMatching(/^[\da-f-]{36}$/),
+      expected_revision_id: record.id, article_version_id: first.id, mode: "restore",
+    });
+
+    fireEvent.click(refresh);
+    const reconcile = await history.findByRole("button", { name: "Сверить результат для v1" });
+    expect(selector).toBeDisabled();
+    fireEvent.click(reconcile);
+    await history.findByText("Сверка запрошена");
+    expect(reconcile).toBeDisabled();
+    expect(api.reconcileWordPressRevision).toHaveBeenCalledExactlyOnceWith(campaignId, first.id, queueRestore.id, target);
+
+    fireEvent.click(refresh);
+    await history.findByText("Нет утверждённых версий для обновления или восстановления.");
+    expect(history.getByText("Текущая версия на WordPress").querySelector("strong")).toHaveTextContent("v1");
+    expect(history.getByText("Восстановление до v1")).toBeInTheDocument();
+    expect(publication.getByRole("link", { name: "Открыть публикацию в WordPress" })).toHaveAttribute("href", publicUrl);
+    expect(api.confirmWordPressRevision).toHaveBeenCalledTimes(2);
   });
 
   it("creates a separate test CMS draft before an explicit publish action", async () => {

@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useState } from "react";
 import { FriendlyError } from "@/components/friendly-error";
+import { StudioWordPressRevisions } from "@/components/studio/wordpress-revisions";
 import {
   studioApi,
   type StudioWordPressAction,
@@ -57,9 +58,10 @@ function readLocalSchedule(value: string): Date | null {
   return local.toISOString().slice(0, 16) === value ? date : null;
 }
 
-export function StudioWordPress({ campaignId, versionId, disabled }: {
+export function StudioWordPress({ campaignId, versionId, versionNumber, disabled }: {
   campaignId: string;
   versionId: string;
+  versionNumber: number;
   disabled: boolean;
 }) {
   const [status, setStatus] = useState<StudioWordPressStatus>();
@@ -240,6 +242,16 @@ export function StudioWordPress({ campaignId, versionId, disabled }: {
             </button>
           </div>
         </div>
+      )}
+      {publication?.status === "succeeded" && publication.remote_url && status.target_author_id && !status.target_changed && (
+        <StudioWordPressRevisions
+          key={`${status.target_url}:${status.target_author_id}`}
+          campaignId={campaignId}
+          versionId={versionId}
+          versionNumber={versionNumber}
+          target={{ target_url: status.target_url, target_author_id: status.target_author_id }}
+          disabled={Boolean(commandsDisabled)}
+        />
       )}
       {statusError != null && (
         <>

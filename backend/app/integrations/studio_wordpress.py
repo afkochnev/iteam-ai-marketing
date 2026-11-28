@@ -181,6 +181,80 @@ class WordPressStudioClient:
             return None
         return self._post(result, article, "publish", id=post_id, media_id=media_id)
 
+    async def read_published(
+        self, article: WordPressArticle, post_id: int, media_id: int, expected_url: str
+    ) -> WordPressPost:
+        result = await self._request("GET", f"/posts/{post_id}", fields=POST_FIELDS)
+        return self._post(
+            result, article, "publish", id=post_id, media_id=media_id, expected_url=expected_url
+        )
+
+    async def replace_publication(
+        self,
+        previous: WordPressArticle,
+        replacement: WordPressArticle,
+        post_id: int,
+        previous_media_id: int,
+        replacement_media_id: int,
+        expected_url: str,
+    ) -> WordPressPost:
+        if previous.slug != replacement.slug:
+            raise WordPressError("WORDPRESS_APPROVED_VERSION_MISMATCH")
+        await self.read_published(previous, post_id, previous_media_id, expected_url)
+        result = await self._request(
+            "POST",
+            f"/posts/{post_id}",
+            fields=POST_FIELDS,
+            json={
+                "title": replacement.title,
+                "content": replacement.html,
+                "featured_media": replacement_media_id,
+            },
+        )
+        return self._post(
+            result,
+            replacement,
+            "publish",
+            id=post_id,
+            media_id=replacement_media_id,
+            expected_url=expected_url,
+        )
+
+    async def find_replacement(
+        self,
+        previous: WordPressArticle,
+        replacement: WordPressArticle,
+        post_id: int,
+        previous_media_id: int,
+        replacement_media_id: int,
+        expected_url: str,
+    ) -> WordPressPost | None:
+        if previous.slug != replacement.slug:
+            raise WordPressError("WORDPRESS_APPROVED_VERSION_MISMATCH")
+        result = await self._request("GET", f"/posts/{post_id}", fields=POST_FIELDS)
+        try:
+            return self._post(
+                result,
+                replacement,
+                "publish",
+                id=post_id,
+                media_id=replacement_media_id,
+                expected_url=expected_url,
+            )
+        except WordPressError as error:
+            try:
+                self._post(
+                    result,
+                    previous,
+                    "publish",
+                    id=post_id,
+                    media_id=previous_media_id,
+                    expected_url=expected_url,
+                )
+            except WordPressError:
+                raise error from None
+            return None
+
     async def _find_one(
         self, endpoint: str, slug: str, status: str, fields: str
     ) -> dict[str, Any] | None:
@@ -209,6 +283,7 @@ class WordPressStudioClient:
         *,
         media_id: int,
         id: int | None = None,
+        expected_url: str | None = None,
     ) -> WordPressPost:
         if not isinstance(result, dict):
             raise WordPressError("WORDPRESS_RESPONSE_MISMATCH")
@@ -229,6 +304,8 @@ class WordPressStudioClient:
         url = result.get("link")
         if status == "publish":
             if not isinstance(url, str) or not self.target.contains_url(url):
+                raise WordPressError("WORDPRESS_URL_MISMATCH")
+            if expected_url is not None and expected_url != url:
                 raise WordPressError("WORDPRESS_URL_MISMATCH")
             return WordPressPost(remote_id, url)
         return WordPressPost(remote_id)

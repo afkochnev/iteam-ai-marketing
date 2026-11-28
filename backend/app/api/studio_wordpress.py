@@ -15,6 +15,11 @@ from app.services.studio_wordpress import (
     WordPressDeliveryView,
     WordPressPublicationConfirmation,
 )
+from app.services.studio_wordpress_revisions import (
+    StudioWordPressRevisionService,
+    WordPressRevisionConfirmation,
+    WordPressRevisionsView,
+)
 
 router = APIRouter(
     prefix="/campaigns/{campaign_id}/studio/versions/{version_id}/wordpress",
@@ -75,6 +80,51 @@ async def request_wordpress_reconciliation(
 ) -> WordPressDeliveryView:
     result = await StudioWordPressService(session).request_reconciliation(
         user.id, campaign_id, version_id, action, confirmation
+    )
+    await session.commit()
+    return result
+
+
+@router.get("/revisions", response_model=WordPressRevisionsView)
+async def wordpress_revisions_status(
+    campaign_id: UUID,
+    version_id: UUID,
+    user: CurrentSnapshotUser,
+    session: ReadSnapshotSession,
+    response: Response,
+) -> WordPressRevisionsView:
+    response.headers["Cache-Control"] = "private, no-store"
+    return await StudioWordPressRevisionService(session).revision_status(
+        user.id, campaign_id, version_id
+    )
+
+
+@router.post("/revisions", response_model=WordPressRevisionsView)
+async def request_wordpress_revision(
+    campaign_id: UUID,
+    version_id: UUID,
+    confirmation: WordPressRevisionConfirmation,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> WordPressRevisionsView:
+    result = await StudioWordPressRevisionService(session).request_revision(
+        user.id, campaign_id, version_id, confirmation
+    )
+    await session.commit()
+    return result
+
+
+@router.post("/revisions/{command_id}/reconcile", response_model=WordPressRevisionsView)
+async def request_wordpress_revision_reconciliation(
+    campaign_id: UUID,
+    version_id: UUID,
+    command_id: UUID,
+    confirmation: WordPressConfirmation,
+    user: CurrentUser,
+    session: SessionDependency,
+) -> WordPressRevisionsView:
+    result = await StudioWordPressRevisionService(session).request_revision_reconciliation(
+        user.id, campaign_id, version_id, command_id, confirmation
     )
     await session.commit()
     return result
