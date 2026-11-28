@@ -112,7 +112,13 @@ export function StudioVersionDetails({
         <>
           <WebsitePackageDownload key={version.id} campaignId={campaignId} versionId={version.id} disabled={busy} />
           <StudioWebsiteSandbox key={`site-${version.id}`} campaignId={campaignId} versionId={version.id} disabled={busy} />
-          <StudioWordPress key={`wordpress-${version.id}`} campaignId={campaignId} versionId={version.id} disabled={busy} />
+          <StudioWordPress
+            key={`wordpress-${version.id}`}
+            campaignId={campaignId}
+            versionId={version.id}
+            versionNumber={version.version_number}
+            disabled={busy}
+          />
         </>
       )}
     </section>

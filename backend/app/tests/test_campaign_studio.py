@@ -97,8 +97,8 @@ def authenticate(client: AsyncClient, user: User) -> None:
     client.cookies.set(settings.auth_cookie_name, encode_access_token(user.id, user.auth_version))
 
 
-def sample_png() -> bytes:
-    with BytesIO() as buffer, Image.new("RGB", (26, 20), "green") as image:
+def sample_png(color: str = "green") -> bytes:
+    with BytesIO() as buffer, Image.new("RGB", (26, 20), color) as image:
         image.save(buffer, format="PNG")
         return buffer.getvalue()
 
@@ -1124,8 +1124,150 @@ async def test_studio_reconciles_writes_on_a_real_wordpress_site(
         assert uploaded.status_code == 200
         assert uploaded.content == image_bytes
 
+        revisions_url = f"{route}/revisions"
+
+        async def revisions() -> dict[str, Any]:
+            response = await studio_client.get(revisions_url)
+            assert response.status_code == 200, response.text
+            return response.json()
+
+        async def revision_status(command_id: str) -> dict[str, Any]:
+            return next(
+                item for item in (await revisions())["revisions"] if item["id"] == command_id
+            )
+
+        async def reconcile_revision(command_id: str, phase: str) -> dict[str, Any]:
+            assert await run_next_wordpress_operation(sessions, adapter)
+            unknown = await revision_status(command_id)
+            assert unknown["status"] == "unknown", (unknown, writes)
+            assert unknown["phase"] == phase
+            assert unknown["failure_code"] == "WORDPRESS_CONNECTION_ERROR"
+            assert not await run_next_wordpress_operation(sessions, adapter)
+            writes_before_reconciliation = writes.copy()
+            response = await studio_client.post(
+                f"{revisions_url}/{command_id}/reconcile", json=confirmation
+            )
+            assert response.status_code == 200, response.text
+            assert await run_next_wordpress_operation(sessions, adapter)
+            assert writes == writes_before_reconciliation
+            return await revision_status(command_id)
+
+        original = article.json()
+        initial = await revisions()
+        assert initial["current_revision_id"] is None
+        assert initial["current_version_id"] == version
+
+        revised_cover = await studio_client.post(
+            f"{path}/assets/illustrations",
+            data={
+                "title": "Revised cover",
+                "brief": "One blue card",
+                "brand_profile": "Blue and white",
+                "alt_text": "A blue card",
+                "usage_rights": "Original editorial artwork",
+            },
+            files={"file": ("new-cover.png", sample_png("blue"), "image/png")},
+        )
+        assert revised_cover.status_code == 201, revised_cover.text
+        revised_cover_id = revised_cover.json()["id"]
+        cover_approval = await studio_client.post(f"{path}/versions/{revised_cover_id}/approve")
+        assert cover_approval.status_code == 200, cover_approval.text
+
+        article_asset_id = approved.json()["asset_id"]
+        revised_article = await studio_client.post(
+            f"{path}/assets/articles/{article_asset_id}/versions",
+            json={
+                "title": "Guide revised",
+                "body": "New description\nRevised final",
+                "illustration_version_id": revised_cover_id,
+                "expected_current_version_id": version,
+            },
+        )
+        assert revised_article.status_code == 201, revised_article.text
+        revised_version = revised_article.json()["id"]
+        update_id = str(uuid4())
+        update = {
+            **confirmation,
+            "command_id": update_id,
+            "expected_revision_id": None,
+            "article_version_id": revised_version,
+            "mode": "update",
+        }
+        unapproved = await studio_client.post(revisions_url, json=update)
+        assert unapproved.status_code == 409, unapproved.text
+        assert not await run_next_wordpress_operation(sessions, adapter)
+
+        approval = await studio_client.post(f"{path}/versions/{revised_version}/approve")
+        assert approval.status_code == 200, approval.text
+        options = {item["id"]: item["mode"] for item in (await revisions())["versions"]}
+        assert options == {revised_version: "update"}
+
+        for _ in range(2):
+            queued_revision = await studio_client.post(revisions_url, json=update)
+            assert queued_revision.status_code == 200, queued_revision.text
+        assert len((await revisions())["revisions"]) == 1
+
+        image_confirmed = await reconcile_revision(update_id, "image")
+        assert image_confirmed["status"] == "queued", image_confirmed
+        assert image_confirmed["phase"] == "replace"
+        before_replace = await public.get(draft_url)
+        assert before_replace.status_code == 200, before_replace.text
+        assert before_replace.json()["featured_media"] == int(media_id)
+        assert before_replace.json()["content"] == original["content"]
+
+        updated = await reconcile_revision(update_id, "replace")
+        assert updated["status"] == "succeeded", updated
+        current = await revisions()
+        assert current["current_version_id"] == revised_version
+        assert current["current_revision_id"] == update_id
+        assert {item["id"]: item["mode"] for item in current["versions"]} == {version: "restore"}
+        changed = await public.get(draft_url)
+        assert changed.status_code == 200, changed.text
+        revised_post = changed.json()
+        assert revised_post["id"] == original["id"] == int(post_id)
+        assert revised_post["slug"] == original["slug"]
+        assert revised_post["link"] == original["link"] == published["remote_url"]
+        assert revised_post["title"]["rendered"] == "Guide revised"
+        assert "New description" in revised_post["content"]["rendered"]
+        assert "Revised final" in revised_post["content"]["rendered"]
+        revised_media_id = revised_post["featured_media"]
+        assert revised_media_id > 0 and revised_media_id != int(media_id)
+        new_media = await public.get(f"{target.url}/wp-json/wp/v2/media/{revised_media_id}")
+        assert new_media.status_code == 200, new_media.text
+        assert new_media.json()["alt_text"] == "A blue card"
+
+        restore_id = str(uuid4())
+        restore = {
+            **confirmation,
+            "command_id": restore_id,
+            "expected_revision_id": update_id,
+            "article_version_id": version,
+            "mode": "restore",
+        }
+        stale = await studio_client.post(
+            revisions_url, json={**restore, "expected_revision_id": None}
+        )
+        assert stale.status_code == 409, stale.text
+        assert not await run_next_wordpress_operation(sessions, adapter)
+        accepted = await studio_client.post(revisions_url, json=restore)
+        assert accepted.status_code == 200, accepted.text
+        restored = await reconcile_revision(restore_id, "replace")
+        assert restored["status"] == "succeeded", restored
+        current = await revisions()
+        assert current["current_version_id"] == version
+        assert current["current_revision_id"] == restore_id
+        assert len(current["revisions"]) == 2
+        assert not await run_next_wordpress_operation(sessions, adapter)
+        restored_article = await public.get(draft_url)
+        assert restored_article.status_code == 200, restored_article.text
+        for field in ("id", "slug", "link", "title", "content", "featured_media"):
+            assert restored_article.json()[field] == original[field]
+
     assert writes == [
         ("/wp-json/wp/v2/posts", 201),
         ("/wp-json/wp/v2/media", 201),
+        (f"/wp-json/wp/v2/posts/{post_id}", 200),
+        ("/wp-json/wp/v2/media", 201),
+        (f"/wp-json/wp/v2/posts/{post_id}", 200),
         (f"/wp-json/wp/v2/posts/{post_id}", 200),
     ]

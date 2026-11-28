@@ -114,10 +114,48 @@ export interface StudioWebsiteStatus {
 
 export type StudioWordPressAction = "draft" | "image" | "publish";
 
-export interface StudioWordPressConfirmation {
+export interface StudioWordPressTarget {
   target_url: string;
   target_author_id: string;
+}
+
+export interface StudioWordPressConfirmation extends StudioWordPressTarget {
   scheduled_for?: string;
+}
+
+type StudioWordPressState = "queued" | "running" | "unknown" | "failed" | "succeeded";
+type StudioWordPressRevisionMode = "update" | "restore";
+
+export interface StudioWordPressRevisionConfirmation extends StudioWordPressTarget {
+  command_id: string;
+  expected_revision_id: string | null;
+  article_version_id: string;
+  mode: StudioWordPressRevisionMode;
+}
+
+export interface StudioWordPressRevisionsState {
+  current_revision_id: string | null;
+  current_version_id: string;
+  versions: {
+    id: string;
+    version_number: number;
+    title: string;
+    mode: StudioWordPressRevisionMode;
+  }[];
+  revisions: {
+    id: string;
+    article_version_id: string;
+    version_number: number;
+    title: string;
+    mode: StudioWordPressRevisionMode;
+    phase: "image" | "replace";
+    status: StudioWordPressState;
+    failure_code: string | null;
+    reconciliation_pending: boolean;
+    reconciliation_finished_at: string | null;
+    reconciliation_failure_code: string | null;
+    requested_at: string;
+  }[];
 }
 
 export interface StudioWordPressStatus {
@@ -127,7 +165,7 @@ export interface StudioWordPressStatus {
   draft_preview_url?: string | null;
   operations: {
     action: StudioWordPressAction;
-    status: "queued" | "running" | "unknown" | "failed" | "succeeded";
+    status: StudioWordPressState;
     scheduled_for?: string | null;
     remote_id: string | null;
     remote_url: string | null;
@@ -150,6 +188,10 @@ function jsonPost(value: unknown): RequestInit {
 
 function websiteSandboxPath(campaignId: string, versionId: string) {
   return studioPath(campaignId, `/versions/${encodeURIComponent(versionId)}/website-sandbox`);
+}
+
+function wordpressPath(campaignId: string, versionId: string) {
+  return studioPath(campaignId, `/versions/${encodeURIComponent(versionId)}/wordpress`);
 }
 
 export const studioApi = {
@@ -200,16 +242,26 @@ export const studioApi = {
     );
   },
   wordpressStatus(campaignId: string, versionId: string, signal: AbortSignal) {
-    const path = studioPath(campaignId, `/versions/${encodeURIComponent(versionId)}/wordpress`);
-    return request<StudioWordPressStatus>(path, { signal });
+    return request<StudioWordPressStatus>(wordpressPath(campaignId, versionId), { signal });
   },
   wordpressCommand(
     campaignId: string, versionId: string, action: StudioWordPressAction,
     confirmation: StudioWordPressConfirmation, reconcile: boolean,
   ) {
     const suffix = reconcile ? "/reconcile" : "";
-    const path = studioPath(campaignId, `/versions/${encodeURIComponent(versionId)}/wordpress/${action}${suffix}`);
+    const path = `${wordpressPath(campaignId, versionId)}/${action}${suffix}`;
     return request<StudioWordPressStatus>(path, jsonPost(confirmation));
+  },
+  wordpressRevisions(campaignId: string, versionId: string, signal: AbortSignal) {
+    return request<StudioWordPressRevisionsState>(`${wordpressPath(campaignId, versionId)}/revisions`, { signal });
+  },
+  confirmWordPressRevision(campaignId: string, versionId: string, confirmation: StudioWordPressRevisionConfirmation) {
+    const path = `${wordpressPath(campaignId, versionId)}/revisions`;
+    return request<StudioWordPressRevisionsState>(path, jsonPost(confirmation));
+  },
+  reconcileWordPressRevision(campaignId: string, versionId: string, revisionId: string, target: StudioWordPressTarget) {
+    const path = `${wordpressPath(campaignId, versionId)}/revisions/${encodeURIComponent(revisionId)}/reconcile`;
+    return request<StudioWordPressRevisionsState>(path, jsonPost(target));
   },
   websiteStatus(campaignId: string, versionId: string, signal: AbortSignal) {
     return request<StudioWebsiteStatus>(websiteSandboxPath(campaignId, versionId), { signal });

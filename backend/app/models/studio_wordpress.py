@@ -12,6 +12,7 @@ from sqlalchemy import (
     String,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -116,6 +117,84 @@ class StudioWordPressOperation(Base):
     failure_code: Mapped[str | None] = mapped_column(String(64))
     remote_id: Mapped[int | None] = mapped_column(BigInteger)
     remote_url: Mapped[str | None] = mapped_column(String(2048))
+    reconcile_requested_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
+    reconcile_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reconcile_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reconcile_finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    reconciliation_failure_code: Mapped[str | None] = mapped_column(String(64))
+
+
+class StudioWordPressRevision(Base):
+    __tablename__ = "studio_wordpress_revisions"
+    __table_args__ = (
+        UniqueConstraint("id", "delivery_id", name="uq_studio_wp_revision_scope"),
+        ForeignKeyConstraint(
+            ["expected_revision_id", "delivery_id"],
+            ["studio_wordpress_revisions.id", "studio_wordpress_revisions.delivery_id"],
+            name="fk_studio_wp_revision_expected",
+        ),
+        CheckConstraint("expected_revision_id <> id", name="expected"),
+        CheckConstraint("mode IN ('update','restore')", name="mode"),
+        CheckConstraint("phase IN ('image','replace')", name="phase"),
+        CheckConstraint(
+            "(status = 'queued' AND started_at IS NULL AND finished_at IS NULL) OR "
+            "(status = 'running' AND started_at IS NOT NULL AND finished_at IS NULL) OR "
+            "(status IN ('unknown','failed','succeeded') AND started_at IS NOT NULL "
+            "AND finished_at IS NOT NULL)",
+            name="lifecycle",
+        ),
+        CheckConstraint(
+            "status <> 'succeeded' OR phase = 'replace'",
+            name="success",
+        ),
+        CheckConstraint(
+            "(media_id IS NULL AND media_slug IS NULL) OR "
+            "(phase = 'replace' AND media_id IS NOT NULL AND media_id > 0 "
+            "AND media_slug IS NOT NULL AND char_length(media_slug) > 0)",
+            name="media",
+        ),
+        CheckConstraint(
+            "reconciliation_failure_code IS NULL OR "
+            "(status = 'unknown' AND reconcile_finished_at IS NOT NULL)",
+            name="reconciliation_failure",
+        ),
+        Index(
+            "uq_studio_wp_revision_active",
+            "delivery_id",
+            unique=True,
+            postgresql_where=text("status IN ('queued','running','unknown')"),
+        ),
+        Index(
+            "uq_studio_wp_revision_successor",
+            "delivery_id",
+            "expected_revision_id",
+            unique=True,
+            postgresql_where=text("status = 'succeeded'"),
+            postgresql_nulls_not_distinct=True,
+        ),
+        Index("ix_studio_wp_revisions_queue", "status", "requested_at"),
+        Index("ix_studio_wp_revisions_history", "delivery_id", "requested_at"),
+    )
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    delivery_id: Mapped[UUID] = mapped_column(ForeignKey("studio_wordpress_deliveries.id"))
+    expected_revision_id: Mapped[UUID | None]
+    article_version_id: Mapped[UUID] = mapped_column(
+        ForeignKey("content_asset_approvals.version_id")
+    )
+    mode: Mapped[str] = mapped_column(String(12))
+    phase: Mapped[str] = mapped_column(String(12))
+    status: Mapped[str] = mapped_column(String(12))
+    requested_by: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_id: Mapped[UUID | None]
+    failure_code: Mapped[str | None] = mapped_column(String(64))
+    media_id: Mapped[int | None] = mapped_column(BigInteger)
+    media_slug: Mapped[str | None] = mapped_column(String(200))
     reconcile_requested_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     reconcile_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     reconcile_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

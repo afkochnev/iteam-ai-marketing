@@ -3,10 +3,9 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
-from html import escape
+from datetime import UTC, datetime
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import httpx
 from sqlalchemy import and_, or_, select, update
@@ -37,17 +36,15 @@ from app.services.studio_website_package import (
     website_image_bytes,
 )
 from app.services.studio_wordpress import configured_wordpress_target
+from app.workers.studio_wordpress_execution import (
+    LEASE_DURATION,
+    OPERATION_TIMEOUT,
+    Claim,
+    render_article,
+)
+from app.workers.studio_wordpress_revision_worker import run_next_wordpress_revision
 
 logger = logging.getLogger(__name__)
-LEASE_DURATION = timedelta(minutes=2)
-OPERATION_TIMEOUT = 60
-
-
-@dataclass(frozen=True)
-class Claim:
-    operation_id: UUID
-    lease_id: UUID
-    reconciliation: bool
 
 
 @dataclass(frozen=True)
@@ -157,10 +154,7 @@ async def _load_work(session: AsyncSession, claim: Claim, target: WordPressTarge
     if version.illustration_version_id != delivery.illustration_version_id:
         raise WordPressError("WORDPRESS_APPROVED_VERSION_MISMATCH")
     slug = f"iteam-{delivery.id.hex}"
-    html = "\n".join(
-        f"<p>{escape(line, quote=False)}</p>" for line in article.body.splitlines() if line
-    )
-    payload = WordPressArticle(slug, article.title, html)
+    payload = render_article(slug, article)
     action = WordPressAction(operation.action)
     if action == WordPressAction.DRAFT:
         return Work(action, payload, None, None, None, 0)
@@ -223,7 +217,7 @@ async def run_next_wordpress_operation(
     async with sessions.begin() as session:
         claim = await _claim(session, adapter.target)
     if claim is None:
-        return False
+        return await run_next_wordpress_revision(sessions, adapter)
 
     receipt = None
     failure = None
