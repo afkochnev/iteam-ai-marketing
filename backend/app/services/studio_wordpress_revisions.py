@@ -107,7 +107,7 @@ class StudioWordPressRevisionService(StudioWordPressService):
                 409,
             )
 
-        approved, article = await read_approved_website_article(
+        approved, _ = await read_approved_website_article(
             self.studio, user_id, campaign_id, confirmation.article_version_id
         )
         if approved.asset_id != original.asset_id:
@@ -119,7 +119,7 @@ class StudioWordPressRevisionService(StudioWordPressService):
             raise AppError("WORDPRESS_REVISION_STALE", "Обновите историю публикации.", 409)
 
         visual = await read_website_illustration(
-            self.studio, user_id, campaign_id, article.illustration_version_id
+            self.studio, user_id, campaign_id, approved.illustration_version_id
         )
         media_id, media_slug = await self._existing_media(delivery, approved)
         phase = "image" if visual is not None and media_id is None else "replace"
